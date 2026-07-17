@@ -6,7 +6,7 @@
 
 **Architecture:** The Rust process owns persistence, secrets, plugin discovery, permission decisions, and background job state. The trusted React shell renders navigation and hosts each plugin in a `sandbox="allow-scripts"` iframe; plugin messages cross a typed RPC bridge and are authorized by Rust before handlers run. This phase loads only bundled plugins, while later phases add Git/Release installation and upgrade hardening.
 
-**Tech Stack:** Tauri 2.11, Rust 1.88 (edition 2024), React 19.2, TypeScript 7, Vite 8, Zod 4, SQLite/rusqlite, keyring 4, Vitest/Testing Library, WebdriverIO Tauri service, npm workspaces.
+**Tech Stack:** Tauri 2.11, Rust 1.88 (edition 2024), React 19.2, TypeScript 6, Vite 8, Zod 4, SQLite/rusqlite, keyring 4, Vitest/Testing Library, WebdriverIO Tauri service, npm workspaces.
 
 ---
 
@@ -143,7 +143,7 @@ Create `package.json`:
     "eslint-plugin-react-refresh": "0.5.3",
     "globals": "17.7.0",
     "prettier": "3.9.5",
-    "typescript": "7.0.2",
+    "typescript": "6.0.3",
     "typescript-eslint": "8.64.0"
   }
 }

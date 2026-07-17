@@ -1,0 +1,37 @@
+{
+  "name": "git-ramus",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "npm@11.17.0",
+  "engines": {
+    "node": ">=24 <27",
+    "npm": ">=11"
+  },
+  "workspaces": [
+    "packages/*",
+    "plugins/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run test",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint .",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "desktop:dev": "npm run tauri:dev --workspace @git-ramus/desktop",
+    "desktop:build": "npm run tauri:build --workspace @git-ramus/desktop"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "eslint": "10.7.0",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "eslint-plugin-react-refresh": "0.5.3",
+    "globals": "17.7.0",
+    "prettier": "3.9.5",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.64.0"
+  }
+}
