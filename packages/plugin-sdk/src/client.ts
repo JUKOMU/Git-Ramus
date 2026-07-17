@@ -21,9 +21,28 @@ export interface PluginClient {
   dispose(): void;
 }
 
+export interface RandomSource {
+  getRandomValues(bytes: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer>;
+}
+
+const browserRandomSource: RandomSource = {
+  getRandomValues: (bytes) => crypto.getRandomValues(bytes)
+};
+
+export function createRequestId(randomSource: RandomSource = browserRandomSource): string {
+  const bytes = randomSource.getRandomValues(new Uint8Array(new ArrayBuffer(16)));
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(
+    16,
+    20
+  )}-${hex.slice(20)}`;
+}
+
 export function createPluginClient(
   transport: PluginTransport,
-  createId: () => string = () => crypto.randomUUID()
+  createId: () => string = () => createRequestId()
 ): PluginClient {
   let init: HostInit | null = null;
   let resolveReady: (message: HostInit) => void = () => undefined;

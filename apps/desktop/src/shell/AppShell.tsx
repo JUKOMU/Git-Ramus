@@ -1,13 +1,21 @@
+import type { Job, PluginDescriptor } from "@git-ramus/contracts";
 import type { ReactNode } from "react";
+import type { HostApi } from "../lib/hostApi";
+import { TaskCenter } from "./TaskCenter";
 
 interface AppShellProps {
   version: string | null;
+  plugins: PluginDescriptor[];
+  selectedPluginId: string | null;
+  jobs: Job[];
+  hostApi: HostApi;
+  onSelectPlugin(pluginId: string): void;
   children: ReactNode;
 }
 
 const primaryItems = ["Overview", "Projects", "Workspaces", "Plugins"];
 
-export function AppShell({ version, children }: AppShellProps) {
+export function AppShell(props: AppShellProps) {
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -18,14 +26,26 @@ export function AppShell({ version, children }: AppShellProps) {
               {item}
             </button>
           ))}
+          {props.plugins.flatMap((plugin) =>
+            plugin.manifest.contributions.navigation.map((item) => (
+              <button
+                className="nav-item"
+                aria-pressed={props.selectedPluginId === plugin.manifest.id}
+                key={`${plugin.manifest.id}:${item.id}`}
+                type="button"
+                onClick={() => props.onSelectPlugin(plugin.manifest.id)}
+              >
+                {item.label}
+              </button>
+            ))
+          )}
         </nav>
-        <div className="host-version">{version === null ? "Host loading" : `Host ${version}`}</div>
+        <div className="host-version">
+          {props.version === null ? "Host loading" : `Host ${props.version}`}
+        </div>
       </aside>
-      <main className="workspace">{children}</main>
-      <aside className="task-rail" aria-label="Task center">
-        <button type="button">Tasks</button>
-        <p>No active tasks</p>
-      </aside>
+      <main className="workspace">{props.children}</main>
+      <TaskCenter jobs={props.jobs} hostApi={props.hostApi} />
     </div>
   );
 }

@@ -49,7 +49,11 @@ export const pluginManifestSchema = z
 export const pluginDescriptorSchema = z
   .object({
     manifest: pluginManifestSchema,
-    uiHtml: z.string().min(1)
+    uiUrl: z
+      .string()
+      .regex(
+        /^(?:git-ramus-plugin:\/\/localhost|https?:\/\/git-ramus-plugin\.localhost)\/[a-z0-9.-]+\/ui\.html$/u
+      )
   })
   .strict();
 

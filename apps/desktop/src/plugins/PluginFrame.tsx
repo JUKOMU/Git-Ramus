@@ -4,10 +4,9 @@ import {
   type PluginDescriptor,
   type RpcResult
 } from "@git-ramus/contracts";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { HostApi } from "../lib/hostApi";
 import { dispatchPluginRpc } from "./rpcRouter";
-import { buildSandboxUrl } from "./sandboxDocument";
 
 interface PluginFrameProps {
   descriptor: PluginDescriptor;
@@ -17,7 +16,6 @@ interface PluginFrameProps {
 export function PluginFrame({ descriptor, hostApi }: PluginFrameProps) {
   const frameRef = useRef<HTMLIFrameElement>(null);
   const [sessionId] = useState(() => crypto.randomUUID());
-  const source = useMemo(() => buildSandboxUrl(descriptor.uiHtml), [descriptor.uiHtml]);
 
   useEffect(() => {
     const receive = (event: MessageEvent<unknown>) => {
@@ -72,7 +70,7 @@ export function PluginFrame({ descriptor, hostApi }: PluginFrameProps) {
       ref={frameRef}
       title={`${descriptor.manifest.name} plugin`}
       sandbox="allow-scripts"
-      src={source}
+      src={descriptor.uiUrl}
       onLoad={initialize}
     />
   );

@@ -4,11 +4,14 @@ use serde::Serialize;
 
 use crate::error::AppError;
 use crate::plugins::manifest::PluginManifest;
+use crate::plugins::protocol::plugin_ui_url;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginDescriptor {
     pub manifest: PluginManifest,
+    pub ui_url: String,
+    #[serde(skip_serializing)]
     pub ui_html: String,
 }
 
@@ -69,7 +72,12 @@ impl PluginRegistry {
                     ));
                 }
                 let ui_html = std::fs::read_to_string(entrypoint)?;
-                descriptors.push(PluginDescriptor { manifest, ui_html });
+                let ui_url = plugin_ui_url(&manifest.id);
+                descriptors.push(PluginDescriptor {
+                    manifest,
+                    ui_url,
+                    ui_html,
+                });
             }
         }
         descriptors.sort_by(|left, right| left.manifest.id.cmp(&right.manifest.id));

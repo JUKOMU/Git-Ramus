@@ -1,3 +1,3 @@
 fn main() {
-    git_ramus_desktop::run();
+    git_ramus_desktop_lib::run();
 }

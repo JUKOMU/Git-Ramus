@@ -4,7 +4,6 @@ import type { PluginDescriptor, RpcRequest } from "@git-ramus/contracts";
 import type { HostApi } from "../../lib/hostApi";
 import { PluginFrame } from "../PluginFrame";
 import { dispatchPluginRpc } from "../rpcRouter";
-import { buildSandboxDocument } from "../sandboxDocument";
 
 const descriptor: PluginDescriptor = {
   manifest: {
@@ -23,7 +22,7 @@ const descriptor: PluginDescriptor = {
       { capability: "tasks:create", resources: ["echo"] }
     ]
   },
-  uiHtml: "<!doctype html><html><head></head><body><h1>Plugin</h1></body></html>"
+  uiUrl: "http://git-ramus-plugin.localhost/git-ramus.welcome/ui.html"
 };
 
 const hostApi: HostApi = {
@@ -46,15 +45,11 @@ const hostApi: HostApi = {
 };
 
 describe("PluginFrame", () => {
-  it("uses an opaque-origin scripts-only sandbox and injects a network-denying CSP", () => {
+  it("loads the host-served plugin document in an opaque-origin scripts-only sandbox", () => {
     render(<PluginFrame descriptor={descriptor} hostApi={hostApi} />);
     const frame = screen.getByTitle("Welcome plugin") as HTMLIFrameElement;
     expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
-    expect(frame.src).toMatch(/^data:text\/html;charset=utf-8,/u);
-    const [, encodedDocument = ""] = frame.src.split(",", 2);
-    const sandboxDocument = decodeURIComponent(encodedDocument);
-    expect(sandboxDocument).toContain("default-src 'none'");
-    expect(sandboxDocument).toContain("connect-src 'none'");
+    expect(frame.src).toBe("http://git-ramus-plugin.localhost/git-ramus.welcome/ui.html");
   });
 
   it("authorizes a route before calling its handler", async () => {
@@ -99,13 +94,5 @@ describe("PluginFrame", () => {
       "Permission denied: app:read/info"
     );
     expect(deniedHostApi.getAppInfo).not.toHaveBeenCalled();
-  });
-
-  it("places the CSP before any untrusted plugin markup", () => {
-    const document = buildSandboxDocument(
-      '<head data-value=">"><script>window.evil = true</script>'
-    );
-    expect(document.indexOf("Content-Security-Policy")).toBeGreaterThanOrEqual(0);
-    expect(document.indexOf("Content-Security-Policy")).toBeLessThan(document.indexOf("<script>"));
   });
 });

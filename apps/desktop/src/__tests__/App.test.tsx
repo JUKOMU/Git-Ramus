@@ -28,6 +28,6 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "Git-Ramus" })).toBeInTheDocument();
     expect(await screen.findByText("Host 0.1.0")).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Primary" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Tasks" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Tasks" })).toBeInTheDocument();
   });
 });
