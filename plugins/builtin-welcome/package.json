@@ -1,0 +1,6 @@
+{
+  "name": "@git-ramus/builtin-welcome",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module"
+}

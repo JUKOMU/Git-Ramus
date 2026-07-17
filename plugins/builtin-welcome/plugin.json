@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "git-ramus.welcome",
+  "name": "Welcome",
+  "version": "0.1.0",
+  "publisher": "git-ramus",
+  "description": "Demonstrates the Git-Ramus public plugin contract.",
+  "kind": "builtin",
+  "sdkVersion": "^0.1.0",
+  "entrypoints": {
+    "ui": "ui.html"
+  },
+  "contributions": {
+    "navigation": [
+      {
+        "id": "welcome",
+        "label": "Welcome",
+        "route": "/welcome",
+        "icon": "sparkles"
+      }
+    ]
+  },
+  "permissions": [
+    {
+      "capability": "app:read",
+      "resources": ["info"]
+    },
+    {
+      "capability": "tasks:create",
+      "resources": ["echo"]
+    }
+  ]
+}
