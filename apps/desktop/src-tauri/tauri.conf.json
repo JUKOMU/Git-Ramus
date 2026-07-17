@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "io.git-ramus.desktop",
   "build": {
-    "beforeDevCommand": "npm run dev:web",
+    "beforeDevCommand": "npm run prepare:plugins && npm run dev:web",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build:web",
+    "beforeBuildCommand": "npm run prepare:desktop",
     "frontendDist": "../dist"
   },
   "app": {

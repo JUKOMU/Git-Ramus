@@ -6,6 +6,8 @@
   "scripts": {
     "dev:web": "vite --port 1420 --strictPort",
     "build:web": "tsc -p tsconfig.json && vite build",
+    "prepare:plugins": "npm run build --workspace @git-ramus/builtin-welcome && node ../../scripts/sync-builtin-plugins.mjs",
+    "prepare:desktop": "npm run prepare:plugins && npm run build:web",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build --no-bundle",
     "typecheck": "tsc -p tsconfig.json",
