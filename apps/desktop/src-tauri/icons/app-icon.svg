@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Git-Ramus">
+  <rect width="512" height="512" rx="112" fill="#0b1220" />
+  <path
+    d="M176 144v168c0 31 25 56 56 56h72c31 0 56-25 56-56v-24"
+    fill="none"
+    stroke="#38bdf8"
+    stroke-linecap="round"
+    stroke-width="40"
+  />
+  <path
+    d="M176 224h88c31 0 56-25 56-56v-24"
+    fill="none"
+    stroke="#7dd3fc"
+    stroke-linecap="round"
+    stroke-width="40"
+  />
+  <circle cx="176" cy="128" r="44" fill="#e0f2fe" />
+  <circle cx="320" cy="128" r="44" fill="#e0f2fe" />
+  <circle cx="360" cy="304" r="44" fill="#e0f2fe" />
+</svg>

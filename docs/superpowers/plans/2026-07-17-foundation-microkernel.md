@@ -791,7 +791,7 @@ tauri-build = { version = "2.6.3", features = [] }
 chrono = { version = "0.4.45", features = ["serde"] }
 keyring = "4.1.5"
 parking_lot = "0.12.5"
-rusqlite = { version = "0.40.1", features = ["bundled"] }
+rusqlite = { version = "0.39.0", features = ["bundled"] }
 semver = { version = "1.0.28", features = ["serde"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"

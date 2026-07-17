@@ -4,5 +4,6 @@ node_modules/
 dist/
 target/
 apps/desktop/src-tauri/gen/
-apps/desktop/src-tauri/resources/plugins/
+apps/desktop/src-tauri/resources/plugins/*
+!apps/desktop/src-tauri/resources/plugins/README.md
 *.log

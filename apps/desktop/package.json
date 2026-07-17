@@ -1,0 +1,33 @@
+{
+  "name": "@git-ramus/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev:web": "vite --port 1420 --strictPort",
+    "build:web": "tsc -p tsconfig.json && vite build",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build --no-bundle",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@git-ramus/contracts": "0.1.0",
+    "@tauri-apps/api": "2.11.1",
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.4",
+    "@testing-library/jest-dom": "6.9.1",
+    "@testing-library/react": "16.3.2",
+    "@testing-library/user-event": "14.6.1",
+    "@types/node": "26.1.1",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.3",
+    "jsdom": "29.1.1",
+    "vite": "8.1.5",
+    "vitest": "4.1.10"
+  }
+}
