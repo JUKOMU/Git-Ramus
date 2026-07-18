@@ -170,13 +170,18 @@ impl SigningToolLocator for PathSigningToolLocator {
                 request.format
             )));
         }
-        if request.format == "ssh"
-            && !request.signing_key.starts_with("key::")
-            && !Path::new(&request.signing_key).is_file()
-        {
-            return Err(AppError::UserActionRequired(
-                "SSH signing key is unavailable".to_owned(),
-            ));
+        if request.format == "ssh" && !request.signing_key.starts_with("key::") {
+            let configured = Path::new(&request.signing_key);
+            let resolved = if configured.is_absolute() {
+                configured.to_path_buf()
+            } else {
+                request.repository_path.join(configured)
+            };
+            if !resolved.is_file() {
+                return Err(AppError::UserActionRequired(
+                    "SSH signing key is unavailable".to_owned(),
+                ));
+            }
         }
         Ok(())
     }
@@ -673,6 +678,18 @@ impl IdentityService {
             .lock()
             .map_err(|_| AppError::Git("identity configuration lock failed".to_owned()))?;
         let target = ConfigTarget::Local(PathBuf::from(&repository.canonical_path));
+        if let Some(existing) = self.bindings.get_optional(repository_id)? {
+            let current_profile = self.profiles.get(&existing.identity_profile_id)?;
+            let actual = self.read_snapshot(&target)?;
+            if !config_drift(&profile_config(&current_profile), &actual)
+                .fields
+                .is_empty()
+            {
+                return Err(AppError::UserActionRequired(
+                    "repository identity configuration changed outside Git-Ramus".to_owned(),
+                ));
+            }
+        }
         let snapshot = self.apply_profile_to_target(&target, &profile)?;
         if let Err(error) = self.bindings.bind(repository_id, profile_id) {
             self.restore_target_or_error(&target, &snapshot)?;
@@ -734,37 +751,66 @@ impl IdentityService {
             .global_profile_id()?
             .map(|profile_id| self.profiles.get(&profile_id))
             .transpose()?;
-        let local_name = last_non_empty(local.get("user.name"));
-        let local_email = last_non_empty(local.get("user.email"));
-        if local_name.is_some() || local_email.is_some() {
-            let fallback_name = global_profile
-                .as_ref()
-                .map(|profile| profile.user_name.clone());
-            let fallback_email = global_profile
-                .as_ref()
-                .map(|profile| profile.user_email.clone());
-            let user_name = local_name.or(fallback_name).ok_or_else(|| {
-                AppError::UserActionRequired("Git user name is not configured".to_owned())
-            })?;
-            let user_email = local_email.or(fallback_email).ok_or_else(|| {
-                AppError::UserActionRequired("Git user email is not configured".to_owned())
-            })?;
-            let gpg_format = last_non_empty(local.get("gpg.format")).or_else(|| {
+        let has_local_override = MANAGED_CONFIG_KEYS
+            .iter()
+            .any(|key| config_key_is_present(&local, key));
+        if has_local_override {
+            let user_name = effective_required_text(
+                &local,
+                "user.name",
                 global_profile
                     .as_ref()
-                    .and_then(|profile| profile.gpg_format.clone())
-            });
-            let signing_key = last_non_empty(local.get("user.signingKey")).or_else(|| {
+                    .map(|profile| profile.user_name.as_str()),
+                "Git user name",
+            )?;
+            let user_email = effective_required_text(
+                &local,
+                "user.email",
                 global_profile
                     .as_ref()
-                    .and_then(|profile| profile.signing_key.clone())
-            });
-            let sign_commits = last_optional_bool(local.get("commit.gpgSign"))
-                .or_else(|| global_profile.as_ref().map(|profile| profile.sign_commits))
-                .unwrap_or(false);
-            let sign_tags = last_optional_bool(local.get("tag.gpgSign"))
-                .or_else(|| global_profile.as_ref().map(|profile| profile.sign_tags))
-                .unwrap_or(false);
+                    .map(|profile| profile.user_email.as_str()),
+                "Git user email",
+            )?;
+            let gpg_format = effective_optional_text(
+                &local,
+                "gpg.format",
+                global_profile
+                    .as_ref()
+                    .and_then(|profile| profile.gpg_format.as_deref()),
+            );
+            let signing_key = effective_optional_text(
+                &local,
+                "user.signingKey",
+                global_profile
+                    .as_ref()
+                    .and_then(|profile| profile.signing_key.as_deref()),
+            );
+            let sign_commits = effective_bool(
+                &local,
+                "commit.gpgSign",
+                global_profile
+                    .as_ref()
+                    .map(|profile| profile.sign_commits)
+                    .unwrap_or(false),
+            )?;
+            let sign_tags = effective_bool(
+                &local,
+                "tag.gpgSign",
+                global_profile
+                    .as_ref()
+                    .map(|profile| profile.sign_tags)
+                    .unwrap_or(false),
+            )?;
+            let drift = if let Some(profile) = &global_profile {
+                let global = self.read_global_snapshot()?;
+                let mut drift = global_config_drift(&profile_config(profile), &global);
+                drift
+                    .fields
+                    .retain(|field| !config_key_is_present(&local, &field.key));
+                (!drift.fields.is_empty()).then_some(drift)
+            } else {
+                None
+            };
             return Ok(EffectiveIdentity {
                 repository_id: repository_id.to_owned(),
                 profile_id: None,
@@ -777,7 +823,7 @@ impl IdentityService {
                 signing_key,
                 sign_commits,
                 sign_tags,
-                drift: None,
+                drift,
             });
         }
 
@@ -820,6 +866,11 @@ impl IdentityService {
             let format = effective.gpg_format.as_deref().ok_or_else(|| {
                 AppError::UserActionRequired("signed Commit needs a signing format".to_owned())
             })?;
+            if !matches!(format, "openpgp" | "ssh" | "x509") {
+                return Err(AppError::UserActionRequired(
+                    "signed Commit has an unsupported signing format".to_owned(),
+                ));
+            }
             let signing_key = effective.signing_key.as_deref().ok_or_else(|| {
                 AppError::UserActionRequired("signed Commit needs a signing key".to_owned())
             })?;
@@ -908,7 +959,7 @@ impl IdentityService {
         let Some(user_email) = last_non_empty(snapshot.get("user.email")) else {
             return Ok(None);
         };
-        let input = IdentityProfileInput {
+        let mut input = IdentityProfileInput {
             display_name: user_name.clone(),
             user_name,
             user_email,
@@ -917,6 +968,19 @@ impl IdentityService {
             sign_commits: last_bool(snapshot.get("commit.gpgSign")),
             sign_tags: last_bool(snapshot.get("tag.gpgSign")),
         };
+        // Git permits implicit OpenPGP format/default-key signing. The stricter Git-Ramus
+        // Profile contract cannot safely promise such a key is usable, so import identity data
+        // without enabling signing. The actual Global `true` value remains untouched and is
+        // surfaced immediately as drift/UserActionRequired.
+        let implicit_signing = (input.sign_commits || input.sign_tags)
+            && (input.gpg_format.is_none() || input.signing_key.is_none());
+        if implicit_signing || (input.gpg_format.is_none() && input.signing_key.is_some()) {
+            if input.gpg_format.is_none() && input.signing_key.is_some() {
+                input.gpg_format = Some("openpgp".to_owned());
+            }
+            input.sign_commits = false;
+            input.sign_tags = false;
+        }
         let normalized = validate_profile_input(input)?;
         let mut profile = IdentityProfile::new(
             &normalized.display_name,
@@ -1197,6 +1261,51 @@ fn empty_config_snapshot() -> ConfigSnapshot {
         .into_iter()
         .map(|key| (key.to_owned(), Vec::new()))
         .collect()
+}
+
+fn config_key_is_present(snapshot: &ConfigSnapshot, key: &str) -> bool {
+    snapshot.get(key).is_some_and(|values| !values.is_empty())
+}
+
+fn effective_required_text(
+    local: &ConfigSnapshot,
+    key: &str,
+    inherited: Option<&str>,
+    label: &str,
+) -> Result<String, AppError> {
+    let value = if config_key_is_present(local, key) {
+        local
+            .get(key)
+            .and_then(|values| values.last())
+            .map(String::as_str)
+    } else {
+        inherited
+    };
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| AppError::UserActionRequired(format!("{label} is not configured")))
+}
+
+fn effective_optional_text(
+    local: &ConfigSnapshot,
+    key: &str,
+    inherited: Option<&str>,
+) -> Option<String> {
+    if config_key_is_present(local, key) {
+        last_non_empty(local.get(key))
+    } else {
+        inherited.map(str::to_owned)
+    }
+}
+
+fn effective_bool(local: &ConfigSnapshot, key: &str, inherited: bool) -> Result<bool, AppError> {
+    if !config_key_is_present(local, key) {
+        return Ok(inherited);
+    }
+    last_optional_bool(local.get(key))
+        .ok_or_else(|| AppError::UserActionRequired(format!("Git configuration {key} is invalid")))
 }
 
 fn config_drift(expected: &ConfigSnapshot, actual: &ConfigSnapshot) -> IdentityDrift {
@@ -1692,6 +1801,54 @@ mod service_tests {
     }
 
     #[test]
+    fn import_global_with_implicit_signing_defaults_is_nonfatal_and_requires_action() {
+        for (format, key) in [
+            (None, None),
+            (Some("openpgp"), None),
+            (None, Some("implicit-key-id")),
+        ] {
+            let directory = tempfile::tempdir().expect("temporary directory creates");
+            let config = directory.path().join("global.gitconfig");
+            run_git_config(&config, &["user.name", "Imported User"]);
+            run_git_config(&config, &["user.email", "imported@example.com"]);
+            run_git_config(&config, &["commit.gpgSign", "true"]);
+            if let Some(format) = format {
+                run_git_config(&config, &["gpg.format", format]);
+            }
+            if let Some(key) = key {
+                run_git_config(&config, &["user.signingKey", key]);
+            }
+            let repository_path = directory.path().join("repo");
+            init_repository(&repository_path);
+            let (database, service) = isolated_service_with_db(directory.path());
+            let repository = register_repository(&database, &repository_path, false);
+
+            let imported = service
+                .import_global_if_empty()
+                .expect("implicit signing config must not fail startup import")
+                .expect("profile imports");
+            let effective = service
+                .effective_for_repository(&repository.id)
+                .expect("effective identity resolves");
+
+            assert!(!imported.sign_commits, "unsafe implicit signing was stored");
+            assert!(
+                effective
+                    .drift
+                    .as_ref()
+                    .expect("implicit signing is surfaced as drift")
+                    .fields
+                    .iter()
+                    .any(|field| field.key == "commit.gpgSign")
+            );
+            assert!(matches!(
+                service.resolve_commit_identity(&repository.id, None),
+                Err(AppError::UserActionRequired(_))
+            ));
+        }
+    }
+
+    #[test]
     fn profile_validation_rejects_invalid_fields_and_normalizes_none_format() {
         let directory = tempfile::tempdir().expect("temporary directory creates");
         let service = isolated_service(directory.path());
@@ -1941,6 +2098,57 @@ mod service_tests {
     }
 
     #[test]
+    fn rebind_refuses_existing_drift_but_clean_rebind_can_switch_profiles() {
+        let directory = tempfile::tempdir().expect("temporary directory creates");
+        let repository_path = directory.path().join("repo");
+        init_repository(&repository_path);
+        let (database, service) = isolated_service_with_db(directory.path());
+        let repository = register_repository(&database, &repository_path, true);
+        let first = service
+            .create(input("First", "First User", "first@example.com"))
+            .expect("first profile creates");
+        let second = service
+            .create(input("Second", "Second User", "second@example.com"))
+            .expect("second profile creates");
+        service
+            .bind_repository(&repository.id, &first.id)
+            .expect("first profile binds");
+        run_local_config(&repository_path, &["user.email", "outside@example.com"]);
+
+        assert!(matches!(
+            service.bind_repository(&repository.id, &second.id),
+            Err(AppError::UserActionRequired(_))
+        ));
+        assert_eq!(
+            run_local_config(&repository_path, &["--get", "user.email"]).as_deref(),
+            Some("outside@example.com")
+        );
+        assert_eq!(
+            IdentityBindingRepository::new(database.clone())
+                .get(&repository.id)
+                .expect("binding remains")
+                .identity_profile_id,
+            first.id
+        );
+
+        run_local_config(&repository_path, &["user.email", "first@example.com"]);
+        service
+            .bind_repository(&repository.id, &second.id)
+            .expect("clean rebind succeeds");
+        assert_eq!(
+            IdentityBindingRepository::new(database)
+                .get(&repository.id)
+                .expect("binding switches")
+                .identity_profile_id,
+            second.id
+        );
+        assert_eq!(
+            run_local_config(&repository_path, &["--get", "user.email"]).as_deref(),
+            Some("second@example.com")
+        );
+    }
+
+    #[test]
     fn follow_global_removes_only_managed_local_keys() {
         let directory = tempfile::tempdir().expect("temporary directory creates");
         let repository_path = directory.path().join("repo");
@@ -2009,6 +2217,111 @@ mod service_tests {
         assert_eq!(effective.user_name, "External User");
         assert_eq!(effective.user_email, "external@example.com");
         assert!(effective.drift.is_none());
+    }
+
+    #[test]
+    fn signing_only_local_overrides_resolve_as_external_without_unsigned_downgrade() {
+        let directory = tempfile::tempdir().expect("temporary directory creates");
+        let repository_path = directory.path().join("repo");
+        init_repository(&repository_path);
+        let (database, service) = isolated_service_with_db(directory.path());
+        let repository = register_repository(&database, &repository_path, false);
+        let global = service
+            .create(input("Global", "Global User", "global@example.com"))
+            .expect("global profile creates");
+        service.set_global(&global.id).expect("global applies");
+        let key = directory.path().join("signing-key");
+        std::fs::write(&key, "placeholder").expect("key writes");
+        run_local_config(&repository_path, &["gpg.format", "ssh"]);
+        run_local_config(
+            &repository_path,
+            &["user.signingKey", key.to_str().expect("key path is UTF-8")],
+        );
+        run_local_config(&repository_path, &["commit.gpgSign", "true"]);
+        run_local_config(
+            &repository_path,
+            &[
+                "gpg.ssh.program",
+                std::env::current_exe()
+                    .expect("current executable resolves")
+                    .to_str()
+                    .expect("current executable is UTF-8"),
+            ],
+        );
+
+        let effective = service
+            .effective_for_repository(&repository.id)
+            .expect("effective identity resolves");
+        let commit_identity = service
+            .resolve_commit_identity(&repository.id, None)
+            .expect("external signed identity resolves");
+
+        assert_eq!(effective.source, IdentitySource::ExternalLocal);
+        assert_eq!(effective.user_name, "Global User");
+        assert_eq!(effective.user_email, "global@example.com");
+        assert_eq!(effective.gpg_format.as_deref(), Some("ssh"));
+        assert!(effective.sign_commits);
+        assert!(commit_identity.sign_commits);
+        assert_eq!(commit_identity.gpg_format.as_deref(), Some("ssh"));
+    }
+
+    #[test]
+    fn partial_local_override_reports_drift_for_inherited_global_keys() {
+        let directory = tempfile::tempdir().expect("temporary directory creates");
+        let repository_path = directory.path().join("repo");
+        init_repository(&repository_path);
+        let (database, service) = isolated_service_with_db(directory.path());
+        let repository = register_repository(&database, &repository_path, false);
+        let global = service
+            .create(input("Global", "Global User", "global@example.com"))
+            .expect("global profile creates");
+        service.set_global(&global.id).expect("global applies");
+        run_git_config(
+            &directory.path().join("global.gitconfig"),
+            &["user.email", "outside@example.com"],
+        );
+        run_local_config(&repository_path, &["commit.gpgSign", "false"]);
+
+        let effective = service
+            .effective_for_repository(&repository.id)
+            .expect("effective identity resolves");
+
+        assert_eq!(effective.source, IdentitySource::ExternalLocal);
+        assert!(
+            effective
+                .drift
+                .as_ref()
+                .expect("inherited global drift is reported")
+                .fields
+                .iter()
+                .any(|field| field.key == "user.email"
+                    && field.expected == vec!["global@example.com"]
+                    && field.actual == vec!["outside@example.com"])
+        );
+        assert!(matches!(
+            service.resolve_commit_identity(&repository.id, None),
+            Err(AppError::UserActionRequired(_))
+        ));
+    }
+
+    #[test]
+    fn incomplete_effective_local_signing_configuration_requires_user_action() {
+        let directory = tempfile::tempdir().expect("temporary directory creates");
+        let repository_path = directory.path().join("repo");
+        init_repository(&repository_path);
+        let (database, service) = isolated_service_with_db(directory.path());
+        let repository = register_repository(&database, &repository_path, false);
+        let global = service
+            .create(input("Global", "Global User", "global@example.com"))
+            .expect("global profile creates");
+        service.set_global(&global.id).expect("global applies");
+        run_local_config(&repository_path, &["gpg.format", "ssh"]);
+        run_local_config(&repository_path, &["commit.gpgSign", "true"]);
+
+        assert!(matches!(
+            service.resolve_commit_identity(&repository.id, None),
+            Err(AppError::UserActionRequired(message)) if message.contains("signing key")
+        ));
     }
 
     #[test]

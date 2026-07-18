@@ -35,6 +35,11 @@ pub enum AppError {
     TrustRequired,
     #[error("user action required: {0}")]
     UserActionRequired(String),
+    #[error("signed commit failed")]
+    SigningFailed {
+        reason: String,
+        repository_id: String,
+    },
     #[error("operation completed with partial results: {0}")]
     PartialResult(String),
 }
@@ -57,6 +62,7 @@ impl fmt::Debug for AppError {
             Self::NonUtf8Path => "NonUtf8Path",
             Self::TrustRequired => "TrustRequired",
             Self::UserActionRequired(_) => "UserActionRequired",
+            Self::SigningFailed { .. } => "SigningFailed",
             Self::PartialResult(_) => "PartialResult",
         };
         formatter.write_str(label)
@@ -123,6 +129,7 @@ impl From<AppError> for ErrorEnvelope {
             AppError::NonUtf8Path => "validation.non-utf8-path",
             AppError::TrustRequired => "git.trust-required",
             AppError::UserActionRequired(_) => "user.action-required",
+            AppError::SigningFailed { .. } => "git.signing-failed",
             AppError::PartialResult(_) => "git.partial-result",
         };
         let category = match &error {
@@ -130,7 +137,8 @@ impl From<AppError> for ErrorEnvelope {
             AppError::NonUtf8Path => ErrorCategory::Validation,
             AppError::PermissionDenied
             | AppError::TrustRequired
-            | AppError::UserActionRequired(_) => ErrorCategory::UserActionRequired,
+            | AppError::UserActionRequired(_)
+            | AppError::SigningFailed { .. } => ErrorCategory::UserActionRequired,
             AppError::PartialResult(_) => ErrorCategory::PartialResult,
             AppError::Timeout => ErrorCategory::Retryable,
             AppError::Database(_)
@@ -140,14 +148,29 @@ impl From<AppError> for ErrorEnvelope {
             | AppError::Git(_)
             | AppError::OutputLimit => ErrorCategory::InternalFatal,
         };
+        let (failed_step, resource_id, details) = match &error {
+            AppError::SigningFailed {
+                reason,
+                repository_id,
+            } => {
+                let mut details = serde_json::Map::new();
+                details.insert("reason".to_owned(), Value::String(reason.clone()));
+                (
+                    Some("signCommit".to_owned()),
+                    Some(repository_id.clone()),
+                    Some(details),
+                )
+            }
+            _ => (None, None, None),
+        };
         Self {
             code: code.to_owned(),
             category,
             message: error.to_string(),
             operation_id: None,
             plugin_id: None,
-            resource_id: None,
-            failed_step: None,
+            resource_id,
+            failed_step,
             retryable: matches!(error, AppError::Timeout),
             retry_after_ms: if matches!(error, AppError::Timeout) {
                 Some(250)
@@ -155,7 +178,7 @@ impl From<AppError> for ErrorEnvelope {
                 None
             },
             recovery_actions: Vec::new(),
-            details: None,
+            details,
         }
     }
 }

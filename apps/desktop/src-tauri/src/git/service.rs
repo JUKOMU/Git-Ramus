@@ -1087,7 +1087,14 @@ impl GitService {
         let refresh = self.refresh_after_write(&repository);
         match result {
             Ok(output) => {
-                let status_result = ensure_success(&output);
+                let status_result = if identity.sign_commits && !output.status.success() {
+                    Err(AppError::SigningFailed {
+                        reason: sanitize_git_stderr(&output.stderr),
+                        repository_id: repository_id.to_owned(),
+                    })
+                } else {
+                    ensure_success(&output)
+                };
                 let snapshot_result = refresh;
                 status_result?;
                 Ok(WriteResult {
@@ -1098,7 +1105,17 @@ impl GitService {
             }
             Err(error) => {
                 let _ = refresh;
-                Err(error)
+                Err(if identity.sign_commits {
+                    match error {
+                        AppError::Git(reason) => AppError::SigningFailed {
+                            reason: sanitize_git_stderr(reason.as_bytes()),
+                            repository_id: repository_id.to_owned(),
+                        },
+                        other => other,
+                    }
+                } else {
+                    error
+                })
             }
         }
     }
