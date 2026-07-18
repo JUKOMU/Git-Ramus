@@ -23,7 +23,9 @@ pub fn run() {
             build_plugin_response(&state.plugins, &request)
         },
     );
-    #[cfg(feature = "e2e")]
+    // The WebDriver server is intentionally unavailable in release builds,
+    // even if a downstream build accidentally passes the e2e feature.
+    #[cfg(all(feature = "e2e", debug_assertions))]
     let builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
     builder
         .setup(|app| {

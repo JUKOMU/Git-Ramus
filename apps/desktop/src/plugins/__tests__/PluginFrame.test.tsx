@@ -1,9 +1,11 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PluginDescriptor, RpcRequest } from "@git-ramus/contracts";
 import type { HostApi } from "../../lib/hostApi";
 import { PluginFrame } from "../PluginFrame";
 import { dispatchPluginRpc } from "../rpcRouter";
+
+afterEach(cleanup);
 
 const descriptor: PluginDescriptor = {
   manifest: {
@@ -50,6 +52,59 @@ describe("PluginFrame", () => {
     const frame = screen.getByTitle("Welcome plugin") as HTMLIFrameElement;
     expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
     expect(frame.src).toBe("http://git-ramus-plugin.localhost/git-ramus.welcome/ui.html");
+    expect(frame).toHaveAttribute("data-plugin-status", "loading");
+  });
+
+  it("reports the SDK handshake and completed RPC through the frame boundary", async () => {
+    render(<PluginFrame descriptor={descriptor} hostApi={hostApi} />);
+    const frame = screen.getByTitle("Welcome plugin") as HTMLIFrameElement;
+    const frameWindow = frame.contentWindow;
+    if (frameWindow === null) {
+      throw new Error("expected an iframe window");
+    }
+    const postMessage = vi.fn();
+    Object.defineProperty(frameWindow, "postMessage", {
+      configurable: true,
+      value: postMessage
+    });
+
+    fireEvent.load(frame);
+    const init = postMessage.mock.calls[0]?.[0] as { sessionId: string } | undefined;
+    if (init === undefined) {
+      throw new Error("expected host:init message");
+    }
+
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        data: { type: "plugin:ready", sessionId: init.sessionId },
+        source: frameWindow
+      })
+    );
+    await waitFor(() => expect(frame).toHaveAttribute("data-plugin-status", "ready"));
+
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        data: {
+          type: "rpc:request",
+          requestId: "87a31769-8aaa-47ca-bef3-47e66f0c62fc",
+          sessionId: init.sessionId,
+          method: "app.getInfo",
+          params: {}
+        },
+        source: frameWindow
+      })
+    );
+    await waitFor(() => expect(frame).toHaveAttribute("data-plugin-status", "rpc-complete"));
+    expect(postMessage).toHaveBeenLastCalledWith(
+      {
+        type: "rpc:result",
+        requestId: "87a31769-8aaa-47ca-bef3-47e66f0c62fc",
+        sessionId: init.sessionId,
+        ok: true,
+        result: { name: "Git-Ramus", version: "0.1.0" }
+      },
+      "*"
+    );
   });
 
   it("authorizes a route before calling its handler", async () => {

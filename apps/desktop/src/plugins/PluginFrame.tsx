@@ -15,7 +15,11 @@ interface PluginFrameProps {
 
 export function PluginFrame({ descriptor, hostApi }: PluginFrameProps) {
   const frameRef = useRef<HTMLIFrameElement>(null);
+  const readyRef = useRef(false);
   const [sessionId] = useState(() => crypto.randomUUID());
+  const [bridgeStatus, setBridgeStatus] = useState<
+    "loading" | "ready" | "rpc-complete" | "rpc-failed"
+  >("loading");
 
   useEffect(() => {
     const receive = (event: MessageEvent<unknown>) => {
@@ -26,27 +30,39 @@ export function PluginFrame({ descriptor, hostApi }: PluginFrameProps) {
       if (!parsed.success || parsed.data.sessionId !== sessionId) {
         return;
       }
+      if (parsed.data.type === "plugin:ready") {
+        readyRef.current = true;
+        setBridgeStatus("ready");
+        return;
+      }
       if (parsed.data.type === "rpc:request") {
         const request = parsed.data;
+        const isHandshakeRpc = readyRef.current && request.method === "app.getInfo";
         void dispatchPluginRpc(descriptor.manifest.id, request, hostApi)
-          .then((result) =>
+          .then((result) => {
+            if (isHandshakeRpc) {
+              setBridgeStatus("rpc-complete");
+            }
             postResult(frameRef.current, {
               type: "rpc:result",
               requestId: request.requestId,
               sessionId,
               ok: true,
               result
-            })
-          )
-          .catch((error: unknown) =>
+            });
+          })
+          .catch((error: unknown) => {
+            if (isHandshakeRpc) {
+              setBridgeStatus("rpc-failed");
+            }
             postResult(frameRef.current, {
               type: "rpc:result",
               requestId: request.requestId,
               sessionId,
               ok: false,
               error: toPluginError(error, descriptor.manifest.id)
-            })
-          );
+            });
+          });
       }
     };
     window.addEventListener("message", receive);
@@ -54,6 +70,8 @@ export function PluginFrame({ descriptor, hostApi }: PluginFrameProps) {
   }, [descriptor.manifest.id, hostApi, sessionId]);
 
   const initialize = () => {
+    readyRef.current = false;
+    setBridgeStatus("loading");
     frameRef.current?.contentWindow?.postMessage(
       {
         type: "host:init",
@@ -71,6 +89,7 @@ export function PluginFrame({ descriptor, hostApi }: PluginFrameProps) {
       title={`${descriptor.manifest.name} plugin`}
       sandbox="allow-scripts"
       src={descriptor.uiUrl}
+      data-plugin-status={bridgeStatus}
       onLoad={initialize}
     />
   );

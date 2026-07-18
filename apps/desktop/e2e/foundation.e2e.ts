@@ -13,6 +13,18 @@ describe("Foundation microkernel", () => {
     const frame = await $("iframe[title='Welcome plugin']");
     await frame.waitForDisplayed();
     await expect(frame).toHaveAttribute("src", pluginUrl);
+    await expect(frame).toHaveAttribute("sandbox", "allow-scripts");
+    // The status is updated only after the real sandboxed plugin sends
+    // plugin:ready and the host completes its first app.getInfo RPC. This
+    // crosses the production postMessage boundary without weakening the
+    // opaque-origin sandbox for testability.
+    await browser.waitUntil(
+      async () => (await frame.getAttribute("data-plugin-status")) === "rpc-complete",
+      {
+        timeout: 5000,
+        timeoutMsg: "Welcome plugin did not complete its SDK handshake and first RPC"
+      }
+    );
     // Keep the production sandbox intact. The embedded driver's native script
     // wrapper cannot inspect a cross-origin sandboxed frame, so exercise the
     // same host authorization and job command that the plugin RPC route uses.
