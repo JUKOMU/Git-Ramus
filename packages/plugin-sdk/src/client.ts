@@ -6,7 +6,7 @@ import type {
   ThemeDefinition
 } from "@git-ramus/contracts";
 import { themeDefinitionSchema } from "@git-ramus/contracts";
-import { applyThemeToDocument } from "./theme";
+import { applyThemeToDocument, clearAppliedTheme } from "./theme";
 
 export interface PluginTransport {
   send(message: PluginToHostMessage): void;
@@ -74,6 +74,7 @@ export function createPluginClient(
       if (init !== null) {
         rejectPending(new Error("plugin session replaced"));
         currentTheme = null;
+        clearAppliedTheme();
       }
       init = { ...message, route: message.route ?? "/" };
       transport.send({ type: "plugin:ready", sessionId: message.sessionId });
@@ -88,7 +89,7 @@ export function createPluginClient(
       applyThemeToDocument(currentTheme);
       for (const listener of themeListeners) {
         try {
-          listener(currentTheme);
+          void Promise.resolve(listener(currentTheme)).catch(() => undefined);
         } catch {
           // One plugin listener must not prevent the remaining listeners from running.
         }
@@ -117,8 +118,10 @@ export function createPluginClient(
     },
     async request<T>(method: string, params: unknown): Promise<T> {
       if (disposed) throw new Error("plugin client disposed");
-      const session = init ?? (await ready);
+      if (init === null) await ready;
       if (disposed) throw new Error("plugin client disposed");
+      const session = init;
+      if (session === null) throw new Error("plugin client not initialized");
       const requestId = createId();
       const response = new Promise<unknown>((resolve, reject) => {
         pending.set(requestId, { resolve, reject });

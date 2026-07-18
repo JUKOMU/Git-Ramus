@@ -132,6 +132,37 @@ describe("plugin client", () => {
     client.dispose();
   });
 
+  it("re-reads the active session after a pre-init request resumes", async () => {
+    const transport = new FakeTransport();
+    const client = createPluginClient(transport, () => "87a31769-8aaa-47ca-bef3-47e66f0c62fc");
+    const request = client.request("app.getInfo", {});
+    transport.receive({
+      type: "host:init",
+      sessionId: "e3d622f1-f1f7-4f7e-8f18-3db8a1e6ffbe",
+      pluginId: "git-ramus.welcome",
+      sdkVersion: "0.1.0"
+    });
+    transport.receive({
+      type: "host:init",
+      sessionId: "87a31769-8aaa-47ca-bef3-47e66f0c62fc",
+      pluginId: "git-ramus.welcome",
+      sdkVersion: "0.1.0"
+    });
+    await Promise.resolve();
+    expect(transport.sent.at(-1)).toMatchObject({
+      sessionId: "87a31769-8aaa-47ca-bef3-47e66f0c62fc"
+    });
+    transport.receive({
+      type: "rpc:result",
+      requestId: "87a31769-8aaa-47ca-bef3-47e66f0c62fc",
+      sessionId: "87a31769-8aaa-47ca-bef3-47e66f0c62fc",
+      ok: true,
+      result: { ok: true }
+    });
+    await expect(request).resolves.toEqual({ ok: true });
+    client.dispose();
+  });
+
   it("exposes theme as a compatibility alias and isolates listener failures", async () => {
     const transport = new FakeTransport();
     const client = createPluginClient(transport);
