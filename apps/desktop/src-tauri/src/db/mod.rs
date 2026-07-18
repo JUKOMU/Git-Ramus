@@ -9,20 +9,20 @@ use rusqlite::Connection;
 use crate::error::AppError;
 
 pub(crate) fn map_constraint_error(error: AppError, context: &str) -> AppError {
-    let is_constraint = matches!(
-        error,
-        AppError::Database(rusqlite::Error::SqliteFailure(ref failure, _))
-            if failure.extended_code == 19
-                || failure.extended_code == 275
-                || failure.extended_code == 787
-                || failure.extended_code == 1555
-                || failure.extended_code == 2067
-    );
-    if is_constraint {
-        AppError::InvalidInput(format!("{context} violates a database constraint"))
+    let AppError::Database(rusqlite::Error::SqliteFailure(ref failure, _)) = error else {
+        return error;
+    };
+    let message = if failure.extended_code == 1555 || failure.extended_code == 2067 {
+        format!("{context} already exists")
+    } else if failure.extended_code == 19
+        || failure.extended_code == 275
+        || failure.extended_code == 787
+    {
+        format!("{context} violates a database constraint")
     } else {
-        error
-    }
+        return error;
+    };
+    AppError::InvalidInput(message)
 }
 
 #[derive(Clone)]
