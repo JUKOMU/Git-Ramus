@@ -45,6 +45,8 @@ pub struct SystemGitRunner {
 }
 
 const IO_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
+#[cfg(windows)]
+const CLEANUP_POLL_INTERVAL: Duration = Duration::from_millis(10);
 type StdinWriter = (Receiver<io::Result<()>>, Arc<Mutex<Option<ChildStdin>>>);
 
 enum ProcessTreeKind {
@@ -158,9 +160,10 @@ impl ProcessTree {
 
     #[cfg(windows)]
     fn fallback_terminate_pid(pid: u32) -> Result<(), AppError> {
-        let status = Self::fallback_command_for_pid(pid)?
-            .status()
+        let mut child = Self::fallback_command_for_pid(pid)?
+            .spawn()
             .map_err(|_| AppError::Git("unable to invoke process cleanup".to_owned()))?;
+        let status = wait_cleanup_process(&mut child, IO_CLEANUP_TIMEOUT, CLEANUP_POLL_INTERVAL)?;
         if status.success() || status.code() == Some(128) {
             Ok(())
         } else {
@@ -571,6 +574,48 @@ fn terminate_and_reap(child: &mut Child) -> Result<ExitStatus, AppError> {
         .map_err(|error| AppError::Git(wait_error_kind(error)))
 }
 
+#[cfg(windows)]
+fn wait_cleanup_process(
+    child: &mut Child,
+    timeout: Duration,
+    poll_interval: Duration,
+) -> Result<ExitStatus, AppError> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| AppError::Git(wait_error_kind(error)))?
+        {
+            return Ok(status);
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        thread::sleep(poll_interval.min(remaining));
+    }
+
+    // A stuck taskkill helper must not keep the Git request stuck.  Request termination, then
+    // poll for one bounded grace window so an exited process is reaped without an unbounded
+    // `wait()` call.  `try_wait` performs the reap once the process has exited.
+    let _ = child.kill();
+    let reap_deadline = Instant::now() + timeout;
+    loop {
+        if child
+            .try_wait()
+            .map_err(|error| AppError::Git(wait_error_kind(error)))?
+            .is_some()
+        {
+            return Err(AppError::Timeout);
+        }
+        let remaining = reap_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(AppError::Timeout);
+        }
+        thread::sleep(poll_interval.min(remaining));
+    }
+}
+
 fn wait_bounded(
     child: &mut Child,
     tree: &ProcessTree,
@@ -730,6 +775,35 @@ mod tests {
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
         assert_eq!(args, vec!["/PID", "1234", "/T", "/F"]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cleanup_wait_reaps_a_hanging_process_within_the_deadline() {
+        let Ok(mut child) = Command::new("git")
+            .args(["hash-object", "--stdin"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            eprintln!("git executable unavailable; skipping cleanup wait test");
+            return;
+        };
+        let started = Instant::now();
+        let result = wait_cleanup_process(
+            &mut child,
+            Duration::from_millis(20),
+            Duration::from_millis(1),
+        );
+        assert!(matches!(result, Err(AppError::Timeout)));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(
+            child
+                .try_wait()
+                .expect("cleanup child can be queried")
+                .is_some()
+        );
     }
 
     #[test]
