@@ -27,6 +27,49 @@ impl ProjectRepository {
     pub fn get(&self, id: &str) -> Result<Project, AppError> {
         self.db.with_connection(|c|c.query_row("SELECT id,root_path,name,scan_depth,exclude_patterns_json,created_at,updated_at FROM projects WHERE id=?1",[id],map_project).optional()).and_then(|x|x.ok_or_else(||AppError::NotFound(format!("project {id}"))))
     }
+
+    pub fn list(&self) -> Result<Vec<Project>, AppError> {
+        self.db.with_connection(|c| {
+            let mut statement = c.prepare(
+                "SELECT id,root_path,name,scan_depth,exclude_patterns_json,created_at,updated_at \
+                 FROM projects ORDER BY name, id",
+            )?;
+            statement
+                .query_map([], map_project)
+                .map(|rows| rows.collect())?
+        })
+    }
+
+    pub fn update(&self, project: &Project) -> Result<(), AppError> {
+        let encoded = serde_json::to_string(&project.exclude_patterns)?;
+        let changed = self.db.with_connection(|c| {
+            c.execute(
+                "UPDATE projects SET root_path=?2,name=?3,scan_depth=?4,exclude_patterns_json=?5,updated_at=?6 WHERE id=?1",
+                params![
+                    project.id,
+                    project.root_path,
+                    project.name,
+                    project.scan_depth,
+                    encoded,
+                    project.updated_at.to_rfc3339()
+                ],
+            )
+        })?;
+        if changed == 0 {
+            return Err(AppError::NotFound(format!("project {}", project.id)));
+        }
+        Ok(())
+    }
+
+    pub fn delete(&self, id: &str) -> Result<(), AppError> {
+        let changed = self
+            .db
+            .with_connection(|c| c.execute("DELETE FROM projects WHERE id=?1", [id]))?;
+        if changed == 0 {
+            return Err(AppError::NotFound(format!("project {id}")));
+        }
+        Ok(())
+    }
 }
 fn map_project(r: &Row) -> Result<Project, rusqlite::Error> {
     let ex: String = r.get(4)?;
@@ -94,6 +137,65 @@ impl WorkspaceRepository {
             s.query_map([id], |r| r.get(0))?.collect()
         })
     }
+
+    pub fn get(&self, id: &str) -> Result<Workspace, AppError> {
+        self.db
+            .with_connection(|c| {
+                c.query_row(
+                    "SELECT id,name,created_at,updated_at FROM workspaces WHERE id=?1",
+                    [id],
+                    map_workspace,
+                )
+                .optional()
+            })
+            .and_then(|value| value.ok_or_else(|| AppError::NotFound(format!("workspace {id}"))))
+    }
+
+    pub fn list(&self) -> Result<Vec<Workspace>, AppError> {
+        self.db.with_connection(|c| {
+            let mut statement =
+                c.prepare("SELECT id,name,created_at,updated_at FROM workspaces ORDER BY name,id")?;
+            statement
+                .query_map([], map_workspace)
+                .map(|rows| rows.collect())?
+        })
+    }
+
+    pub fn update(&self, workspace: &Workspace) -> Result<(), AppError> {
+        let changed = self.db.with_connection(|c| {
+            c.execute(
+                "UPDATE workspaces SET name=?2,updated_at=?3 WHERE id=?1",
+                params![
+                    workspace.id,
+                    workspace.name,
+                    workspace.updated_at.to_rfc3339()
+                ],
+            )
+        })?;
+        if changed == 0 {
+            return Err(AppError::NotFound(format!("workspace {}", workspace.id)));
+        }
+        Ok(())
+    }
+
+    pub fn delete(&self, id: &str) -> Result<(), AppError> {
+        let changed = self
+            .db
+            .with_connection(|c| c.execute("DELETE FROM workspaces WHERE id=?1", [id]))?;
+        if changed == 0 {
+            return Err(AppError::NotFound(format!("workspace {id}")));
+        }
+        Ok(())
+    }
+}
+
+fn map_workspace(r: &Row) -> Result<Workspace, rusqlite::Error> {
+    Ok(Workspace {
+        id: r.get(0)?,
+        name: r.get(1)?,
+        created_at: dt(r.get(2)?)?,
+        updated_at: dt(r.get(3)?)?,
+    })
 }
 
 #[derive(Clone)]
@@ -109,6 +211,17 @@ impl RepositoryRepository {
     }
     pub fn get(&self, id: &str) -> Result<Repository, AppError> {
         self.db.with_connection(|c|c.query_row("SELECT id,canonical_path,display_name,kind,created_at,updated_at FROM repositories WHERE id=?1",[id],map_repo).optional()).and_then(|x|x.ok_or_else(||AppError::NotFound(format!("repository {id}"))))
+    }
+
+    pub fn get_by_canonical_path(&self, path: &str) -> Result<Option<Repository>, AppError> {
+        self.db.with_connection(|c| {
+            c.query_row(
+                "SELECT id,canonical_path,display_name,kind,created_at,updated_at FROM repositories WHERE canonical_path=?1",
+                [path],
+                map_repo,
+            )
+            .optional()
+        })
     }
     pub fn add_to_project(
         &self,
@@ -145,6 +258,79 @@ impl RepositoryRepository {
     pub fn list_for_project(&self, project_id: &str) -> Result<Vec<Repository>, AppError> {
         self.db.with_connection(|c| { let mut s = c.prepare("SELECT r.id,r.canonical_path,r.display_name,r.kind,r.created_at,r.updated_at FROM repositories r INNER JOIN project_repositories pr ON pr.repository_id=r.id WHERE pr.project_id=?1 ORDER BY pr.relative_path")?; s.query_map([project_id], map_repo).map(|rows| rows.collect())? })
     }
+
+    pub fn relative_path(&self, project_id: &str, repository_id: &str) -> Result<String, AppError> {
+        self.db
+            .with_connection(|c| {
+                c.query_row(
+                    "SELECT relative_path FROM project_repositories WHERE project_id=?1 AND repository_id=?2",
+                    params![project_id, repository_id],
+                    |row| row.get(0),
+                )
+                .optional()
+            })
+            .and_then(|value| {
+                value.ok_or_else(|| {
+                    AppError::NotFound(format!(
+                        "repository {repository_id} in project {project_id}"
+                    ))
+                })
+            })
+    }
+
+    pub fn is_in_project(&self, project_id: &str, repository_id: &str) -> Result<bool, AppError> {
+        self.db.with_connection(|c| {
+            c.query_row(
+                "SELECT 1 FROM project_repositories WHERE project_id=?1 AND repository_id=?2",
+                params![project_id, repository_id],
+                |_| Ok(true),
+            )
+            .optional()
+            .map(|value| value.unwrap_or(false))
+        })
+    }
+
+    pub fn list_for_workspace(&self, workspace_id: &str) -> Result<Vec<Repository>, AppError> {
+        self.db.with_connection(|c| {
+            let mut statement = c.prepare(
+                "SELECT DISTINCT r.id,r.canonical_path,r.display_name,r.kind,r.created_at,r.updated_at
+                 FROM repositories r
+                 INNER JOIN project_repositories pr ON pr.repository_id=r.id
+                 INNER JOIN workspace_projects wp ON wp.project_id=pr.project_id
+                 WHERE wp.workspace_id=?1 ORDER BY r.display_name,r.id",
+            )?;
+            statement
+                .query_map([workspace_id], map_repo)
+                .map(|rows| rows.collect())?
+        })
+    }
+
+    pub fn is_in_workspace(
+        &self,
+        workspace_id: &str,
+        repository_id: &str,
+    ) -> Result<bool, AppError> {
+        self.db.with_connection(|c| {
+            c.query_row(
+                "SELECT 1 FROM project_repositories pr INNER JOIN workspace_projects wp ON wp.project_id=pr.project_id WHERE wp.workspace_id=?1 AND pr.repository_id=?2 LIMIT 1",
+                params![workspace_id, repository_id],
+                |_| Ok(true),
+            )
+            .optional()
+            .map(|value| value.unwrap_or(false))
+        })
+    }
+
+    pub fn list_all(&self) -> Result<Vec<Repository>, AppError> {
+        self.db.with_connection(|c| {
+            let mut statement = c.prepare(
+                "SELECT id,canonical_path,display_name,kind,created_at,updated_at FROM repositories ORDER BY display_name,id",
+            )?;
+            statement
+                .query_map([], map_repo)
+                .map(|rows| rows.collect())?
+        })
+    }
 }
 fn map_repo(r: &Row) -> Result<Repository, rusqlite::Error> {
     let k: String = r.get(3)?;
@@ -173,6 +359,36 @@ impl SnapshotRepository {
     }
     pub fn get(&self, id: &str) -> Result<RepositorySnapshot, AppError> {
         self.db.with_connection(|c|c.query_row("SELECT id,repository_id,captured_at,head_oid,branch,upstream,ahead,behind,dirty,staged_count,unstaged_count,untracked_count,conflicted_count,refresh_error_summary FROM repository_snapshots WHERE id=?1",[id],map_snapshot).optional()).and_then(|x|x.ok_or_else(||AppError::NotFound(format!("snapshot {id}"))))
+    }
+
+    pub fn latest_for_repository(
+        &self,
+        repository_id: &str,
+    ) -> Result<Option<RepositorySnapshot>, AppError> {
+        self.db.with_connection(|c| {
+            c.query_row(
+                "SELECT id,repository_id,captured_at,head_oid,branch,upstream,ahead,behind,dirty,staged_count,unstaged_count,untracked_count,conflicted_count,refresh_error_summary
+                 FROM repository_snapshots WHERE repository_id=?1 ORDER BY captured_at DESC, rowid DESC LIMIT 1",
+                [repository_id],
+                map_snapshot,
+            )
+            .optional()
+        })
+    }
+
+    pub fn list_for_repository(
+        &self,
+        repository_id: &str,
+    ) -> Result<Vec<RepositorySnapshot>, AppError> {
+        self.db.with_connection(|c| {
+            let mut statement = c.prepare(
+                "SELECT id,repository_id,captured_at,head_oid,branch,upstream,ahead,behind,dirty,staged_count,unstaged_count,untracked_count,conflicted_count,refresh_error_summary
+                 FROM repository_snapshots WHERE repository_id=?1 ORDER BY captured_at DESC, rowid DESC",
+            )?;
+            statement
+                .query_map([repository_id], map_snapshot)
+                .map(|rows| rows.collect())?
+        })
     }
 }
 fn map_snapshot(r: &Row) -> Result<RepositorySnapshot, rusqlite::Error> {

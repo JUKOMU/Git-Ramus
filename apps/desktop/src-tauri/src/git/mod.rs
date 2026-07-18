@@ -239,6 +239,7 @@ pub mod engine;
 pub mod model;
 pub mod parser;
 pub mod repository;
+pub mod service;
 
 pub use engine::{GitCommand, GitOutput, GitRunner, SystemGitRunner};
 pub use parser::{

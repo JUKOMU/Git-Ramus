@@ -6,7 +6,7 @@ fn now() -> DateTime<Utc> {
     Utc::now()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Project {
     pub id: String,
     pub root_path: String,
@@ -31,7 +31,7 @@ impl Project {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Workspace {
     pub id: String,
     pub name: String,
@@ -79,7 +79,7 @@ impl std::str::FromStr for RepositoryKind {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Repository {
     pub id: String,
     pub canonical_path: String,
@@ -102,7 +102,7 @@ impl Repository {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RepositorySnapshot {
     pub id: String,
     pub repository_id: String,
@@ -140,7 +140,7 @@ impl RepositorySnapshot {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Remote {
     pub repository_id: String,
     pub name: String,
@@ -148,14 +148,14 @@ pub struct Remote {
     pub push_url: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Trust {
     pub repository_id: String,
     pub trusted_at: DateTime<Utc>,
     pub trust_version: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IdentityBinding {
     pub repository_id: String,
     pub identity_profile_id: String,

@@ -5,6 +5,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::db::Database;
 use crate::error::AppError;
+use crate::git::service::GitService;
 use crate::jobs::JobService;
 use crate::plugins::PluginRegistry;
 use crate::plugins::manifest::PluginKind;
@@ -13,6 +14,7 @@ use crate::secrets::{KeyringSecretStore, SecretStore};
 
 pub struct AppState {
     pub database: Database,
+    pub git: GitService,
     pub secrets: Arc<dyn SecretStore>,
     pub jobs: JobService,
     pub plugins: PluginRegistry,
@@ -74,6 +76,7 @@ impl AppState {
         }
         Ok(Self {
             jobs: JobService::new(database.clone()),
+            git: GitService::new(database.clone()),
             secrets: Arc::new(KeyringSecretStore::new("io.git-ramus.desktop")),
             plugins,
             permissions,

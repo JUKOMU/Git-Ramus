@@ -41,7 +41,23 @@ pub fn run() {
             commands::list_jobs,
             commands::authorize_plugin_call,
             commands::start_echo_job,
-            commands::cancel_job
+            commands::cancel_job,
+            commands::git_project_create,
+            commands::git_project_list,
+            commands::git_project_update_scan_rules,
+            commands::git_project_scan,
+            commands::git_workspace_create,
+            commands::git_workspace_list,
+            commands::git_workspace_update_membership,
+            commands::git_workspace_delete,
+            commands::git_overview_get,
+            commands::git_repository_snapshot,
+            commands::git_repository_changes,
+            commands::git_repository_diff,
+            commands::git_repository_stage,
+            commands::git_repository_unstage,
+            commands::git_repository_commit,
+            commands::git_repository_trust
         ])
         .run(tauri::generate_context!())
         .expect("Git-Ramus failed to start");

@@ -31,6 +31,10 @@ pub enum AppError {
     OutputLimit,
     #[error("path is not valid UTF-8")]
     NonUtf8Path,
+    #[error("repository trust is required before this write")]
+    TrustRequired,
+    #[error("operation completed with partial results: {0}")]
+    PartialResult(String),
 }
 
 impl fmt::Debug for AppError {
@@ -49,6 +53,8 @@ impl fmt::Debug for AppError {
             Self::Timeout => "Timeout",
             Self::OutputLimit => "OutputLimit",
             Self::NonUtf8Path => "NonUtf8Path",
+            Self::TrustRequired => "TrustRequired",
+            Self::PartialResult(_) => "PartialResult",
         };
         formatter.write_str(label)
     }
@@ -112,11 +118,16 @@ impl From<AppError> for ErrorEnvelope {
             AppError::Timeout => "git.timeout",
             AppError::OutputLimit => "git.output-limit",
             AppError::NonUtf8Path => "validation.non-utf8-path",
+            AppError::TrustRequired => "git.trust-required",
+            AppError::PartialResult(_) => "git.partial-result",
         };
         let category = match &error {
             AppError::InvalidInput(_) | AppError::NotFound(_) => ErrorCategory::Validation,
             AppError::NonUtf8Path => ErrorCategory::Validation,
-            AppError::PermissionDenied => ErrorCategory::UserActionRequired,
+            AppError::PermissionDenied | AppError::TrustRequired => {
+                ErrorCategory::UserActionRequired
+            }
+            AppError::PartialResult(_) => ErrorCategory::PartialResult,
             AppError::Timeout => ErrorCategory::Retryable,
             AppError::Database(_)
             | AppError::Io(_)
