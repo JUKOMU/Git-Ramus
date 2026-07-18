@@ -61,7 +61,7 @@ describe("shared contracts", () => {
           shape: { radius: 4 },
           elevation: { level1: "0 1px 2px #0002" },
           motion: { durationFast: "120ms" },
-          density: { scale: 1 }
+          density: "comfortable"
         }
       }).type
     ).toBe("host:theme-changed");
@@ -91,6 +91,28 @@ describe("shared contracts", () => {
     expect(() => themeDefinitionSchema.parse({ themeId: "x", css: "body{}" })).toThrow();
     expect(() =>
       themeDefinitionSchema.parse({ themeId: "x", colors: { background: () => 1 } })
+    ).toThrow();
+  });
+
+  it.each([
+    ["colors", "url(javascript:alert(1))"],
+    ["colors", "<style>body{color:red}</style>"],
+    ["typography", "@import url(https://evil.test/x.css)"],
+    ["spacing", "1rem; color:red"],
+    ["shape", "4px}"],
+    ["elevation", "url(javascript:alert(1))"],
+    ["motion", "100ms; background:url(https://evil.test)"],
+    ["density", "url(https://evil.test)"]
+  ])("rejects unsafe %s token values", (group, value) => {
+    expect(() =>
+      themeDefinitionSchema.parse({ themeId: "git-ramus.safe", [group]: { token: value } })
+    ).toThrow();
+  });
+
+  it("rejects unknown theme groups and token keys", () => {
+    expect(() => themeDefinitionSchema.parse({ themeId: "git-ramus.safe", shadows: {} })).toThrow();
+    expect(() =>
+      themeDefinitionSchema.parse({ themeId: "git-ramus.safe", colors: { arbitrary: "#fff" } })
     ).toThrow();
   });
 

@@ -8,6 +8,10 @@ export function applyThemeToDocument(theme: ThemeDefinition, documentRoot?: HTML
   if (!parsed.success) return;
   for (const [group, values] of Object.entries(parsed.data)) {
     if (group === "themeId" || group === "name" || values === undefined) continue;
+    if (group === "density") {
+      root.style.setProperty("--gr-density", String(values));
+      continue;
+    }
     for (const [key, value] of Object.entries(values)) {
       root.style.setProperty(`--gr-${group}-${key}`, String(value));
     }
