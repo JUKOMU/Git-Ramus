@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import manifest from "../../../../plugins/builtin-welcome/plugin.json";
-import { errorEnvelopeSchema, jobSchema, pluginManifestSchema, rpcRequestSchema } from "../index";
+import {
+  errorEnvelopeSchema,
+  hostInitSchema,
+  hostToPluginMessageSchema,
+  jobSchema,
+  pluginManifestSchema,
+  rpcRequestSchema,
+  themeDefinitionSchema,
+  projectSchema
+} from "../index";
 
 describe("shared contracts", () => {
   it("accepts the built-in welcome manifest", () => {
@@ -28,6 +37,72 @@ describe("shared contracts", () => {
       params: {}
     });
     expect(request.method).toBe("app.getInfo");
+  });
+
+  it("accepts a route-aware init and validated theme updates", () => {
+    expect(
+      hostInitSchema.parse({
+        type: "host:init",
+        sessionId: "e3d622f1-f1f7-4f7e-8f18-3db8a1e6ffbe",
+        pluginId: "git-ramus.welcome",
+        sdkVersion: "0.1.0",
+        route: "/projects"
+      }).route
+    ).toBe("/projects");
+    expect(
+      hostToPluginMessageSchema.parse({
+        type: "host:theme-changed",
+        sessionId: "e3d622f1-f1f7-4f7e-8f18-3db8a1e6ffbe",
+        theme: {
+          themeId: "git-ramus.default",
+          colors: { background: "#fff" },
+          typography: { fontFamily: "system-ui" },
+          spacing: { unit: 4 },
+          shape: { radius: 4 },
+          elevation: { level1: "0 1px 2px #0002" },
+          motion: { durationFast: "120ms" },
+          density: { scale: 1 }
+        }
+      }).type
+    ).toBe("host:theme-changed");
+  });
+
+  it("accepts a theme contribution with a safe relative definition", () => {
+    const parsed = pluginManifestSchema.parse({
+      ...manifest,
+      contributions: {
+        ...manifest.contributions,
+        theme: { themeId: "git-ramus.default", definition: "theme.json" }
+      }
+    });
+    expect(parsed.contributions.theme?.themeId).toBe("git-ramus.default");
+    expect(() =>
+      pluginManifestSchema.parse({
+        ...manifest,
+        contributions: {
+          ...manifest.contributions,
+          theme: { themeId: "x", definition: "../theme.json" }
+        }
+      })
+    ).toThrow();
+  });
+
+  it("rejects executable or arbitrary theme payloads", () => {
+    expect(() => themeDefinitionSchema.parse({ themeId: "x", css: "body{}" })).toThrow();
+    expect(() =>
+      themeDefinitionSchema.parse({ themeId: "x", colors: { background: () => 1 } })
+    ).toThrow();
+  });
+
+  it("parses Git project DTOs with opaque UUID ids", () => {
+    const project = projectSchema.parse({
+      id: "87a31769-8aaa-47ca-bef3-47e66f0c62fc",
+      name: "Demo",
+      path: "C:/demo",
+      createdAt: "2026-07-17T00:00:00Z",
+      updatedAt: "2026-07-17T00:00:00Z"
+    });
+    expect(project.id).toBe("87a31769-8aaa-47ca-bef3-47e66f0c62fc");
   });
 
   it("requires stable job and error codes", () => {

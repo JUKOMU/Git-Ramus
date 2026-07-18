@@ -59,4 +59,27 @@ describe("plugin client", () => {
     await expect(result).resolves.toEqual({ name: "Git-Ramus" });
     client.dispose();
   });
+
+  it("exposes route and applies validated theme updates", async () => {
+    const transport = new FakeTransport();
+    const client = createPluginClient(transport, () => "87a31769-8aaa-47ca-bef3-47e66f0c62fc");
+    const themes: string[] = [];
+    client.onThemeChanged((theme) => themes.push(theme.themeId));
+    transport.receive({
+      type: "host:init",
+      sessionId: "e3d622f1-f1f7-4f7e-8f18-3db8a1e6ffbe",
+      pluginId: "git-ramus.welcome",
+      sdkVersion: "0.1.0",
+      route: "/projects"
+    });
+    await expect(client.ready).resolves.toMatchObject({ route: "/projects" });
+    transport.receive({
+      type: "host:theme-changed",
+      sessionId: "e3d622f1-f1f7-4f7e-8f18-3db8a1e6ffbe",
+      theme: { themeId: "git-ramus.dark", colors: { background: "#000" } }
+    });
+    expect(client.currentTheme?.themeId).toBe("git-ramus.dark");
+    expect(themes).toEqual(["git-ramus.dark"]);
+    client.dispose();
+  });
 });

@@ -2,8 +2,11 @@ import type {
   HostInit,
   HostToPluginMessage,
   PluginToHostMessage,
-  RpcResult
+  RpcResult,
+  ThemeDefinition
 } from "@git-ramus/contracts";
+import { themeDefinitionSchema } from "@git-ramus/contracts";
+import { applyThemeToDocument } from "./theme";
 
 export interface PluginTransport {
   send(message: PluginToHostMessage): void;
@@ -17,6 +20,8 @@ interface PendingRequest {
 
 export interface PluginClient {
   ready: Promise<HostInit>;
+  readonly currentTheme: ThemeDefinition | null;
+  onThemeChanged(listener: (theme: ThemeDefinition) => void): () => void;
   request<T>(method: string, params: unknown): Promise<T>;
   dispose(): void;
 }
@@ -45,6 +50,8 @@ export function createPluginClient(
   createId: () => string = () => createRequestId()
 ): PluginClient {
   let init: HostInit | null = null;
+  let currentTheme: ThemeDefinition | null = null;
+  const themeListeners = new Set<(theme: ThemeDefinition) => void>();
   let resolveReady: (message: HostInit) => void = () => undefined;
   const ready = new Promise<HostInit>((resolve) => {
     resolveReady = resolve;
@@ -53,9 +60,18 @@ export function createPluginClient(
 
   const unsubscribe = transport.subscribe((message) => {
     if (message.type === "host:init") {
-      init = message;
+      init = { ...message, route: message.route ?? "/" };
       transport.send({ type: "plugin:ready", sessionId: message.sessionId });
-      resolveReady(message);
+      resolveReady(init);
+      return;
+    }
+    if (message.type === "host:theme-changed") {
+      if (init === null || message.sessionId !== init.sessionId) return;
+      const parsed = themeDefinitionSchema.safeParse(message.theme);
+      if (!parsed.success) return;
+      currentTheme = parsed.data;
+      applyThemeToDocument(currentTheme);
+      for (const listener of themeListeners) listener(currentTheme);
       return;
     }
     const request = pending.get(message.requestId);
@@ -68,6 +84,13 @@ export function createPluginClient(
 
   return {
     ready,
+    get currentTheme() {
+      return currentTheme;
+    },
+    onThemeChanged(listener) {
+      themeListeners.add(listener);
+      return () => themeListeners.delete(listener);
+    },
     async request<T>(method: string, params: unknown): Promise<T> {
       const session = init ?? (await ready);
       const requestId = createId();
@@ -89,6 +112,7 @@ export function createPluginClient(
         request.reject(new Error("plugin client disposed"));
       }
       pending.clear();
+      themeListeners.clear();
     }
   };
 }

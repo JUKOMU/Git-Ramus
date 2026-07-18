@@ -22,6 +22,18 @@ export const navigationContributionSchema = z
   })
   .strict();
 
+const themeIdSchema = z.string().regex(/^[a-z0-9]+(?:[.-][a-z0-9]+)+$/u);
+const themeContributionSchema = z
+  .object({
+    themeId: themeIdSchema,
+    definition: safeRelativePath.optional(),
+    definitionPath: safeRelativePath.optional()
+  })
+  .strict()
+  .refine((value) => value.definition !== undefined || value.definitionPath !== undefined, {
+    message: "theme definition path is required"
+  });
+
 export const pluginManifestSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -39,7 +51,8 @@ export const pluginManifestSchema = z
       .strict(),
     contributions: z
       .object({
-        navigation: z.array(navigationContributionSchema)
+        navigation: z.array(navigationContributionSchema),
+        theme: themeContributionSchema.optional()
       })
       .strict(),
     permissions: z.array(permissionRequestSchema)
