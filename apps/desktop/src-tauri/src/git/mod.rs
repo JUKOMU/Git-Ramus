@@ -208,6 +208,31 @@ mod tests {
         trusts.set(&trust).unwrap();
         assert!(trusts.is_trusted(&repo.id).unwrap());
     }
+
+    #[test]
+    fn workspace_membership_add_remove_api_preserves_rows_and_maps_fk_errors() {
+        let db = Database::open_in_memory().unwrap();
+        let projects = super::repository::ProjectRepository::new(db.clone());
+        let workspaces = super::repository::WorkspaceRepository::new(db);
+        let p1 = super::model::Project::new("/tmp/w1", "W1");
+        let p2 = super::model::Project::new("/tmp/w2", "W2");
+        projects.create(&p1).unwrap();
+        projects.create(&p2).unwrap();
+        let workspace = super::model::Workspace::new("Workspace");
+        workspaces.create(&workspace).unwrap();
+        workspaces.add_project(&workspace.id, &p1.id).unwrap();
+        workspaces.add_project(&workspace.id, &p2.id).unwrap();
+        assert_eq!(workspaces.projects(&workspace.id).unwrap().len(), 2);
+        workspaces.remove_project(&workspace.id, &p1.id).unwrap();
+        assert_eq!(
+            workspaces.projects(&workspace.id).unwrap(),
+            vec![p2.id.clone()]
+        );
+        assert_eq!(projects.get(&p1.id).unwrap().id, p1.id);
+        assert!(
+            matches!(workspaces.add_project(&workspace.id, "missing"), Err(crate::error::AppError::InvalidInput(message)) if message.contains("workspace membership"))
+        );
+    }
 }
 
 pub mod model;

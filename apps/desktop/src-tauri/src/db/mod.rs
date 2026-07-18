@@ -17,6 +17,7 @@ pub(crate) fn map_constraint_error(error: AppError, context: &str) -> AppError {
     } else if failure.extended_code == 19
         || failure.extended_code == 275
         || failure.extended_code == 787
+        || failure.extended_code == 1299
     {
         format!("{context} violates a database constraint")
     } else {
@@ -79,6 +80,7 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::Database;
+    use crate::error::AppError;
 
     #[test]
     fn migration_creates_core_tables_and_version() {
@@ -193,6 +195,21 @@ mod tests {
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
             2
+        );
+    }
+
+    #[test]
+    fn not_null_constraint_maps_to_validation_error() {
+        let raw = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: rusqlite::ffi::ErrorCode::ConstraintViolation,
+                extended_code: 1299,
+            },
+            None,
+        );
+        let mapped = super::map_constraint_error(AppError::Database(raw), "project");
+        assert!(
+            matches!(mapped, AppError::InvalidInput(message) if message.contains("constraint"))
         );
     }
 }

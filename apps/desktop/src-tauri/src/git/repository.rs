@@ -69,6 +69,23 @@ impl WorkspaceRepository {
     pub fn set_projects(&self, id: &str, projects: &[String]) -> Result<(), AppError> {
         self.db.with_transaction(|tx|{tx.execute("DELETE FROM workspace_projects WHERE workspace_id=?1",[id])?; for (i,p) in projects.iter().enumerate(){tx.execute("INSERT INTO workspace_projects(workspace_id,project_id,position) VALUES(?1,?2,?3)",params![id,p,i as i64])?;} Ok(())}).map_err(|e| map_constraint_error(e, "workspace membership"))
     }
+    pub fn add_project(&self, workspace_id: &str, project_id: &str) -> Result<(), AppError> {
+        self.db.with_transaction(|tx| {
+            let position: i64 = tx.query_row("SELECT COALESCE(MAX(position), -1) + 1 FROM workspace_projects WHERE workspace_id=?1", [workspace_id], |r| r.get(0))?;
+            tx.execute("INSERT INTO workspace_projects(workspace_id,project_id,position) VALUES(?1,?2,?3)", params![workspace_id, project_id, position]).map(|_| ())
+        }).map_err(|e| map_constraint_error(e, "workspace membership"))
+    }
+    pub fn remove_project(&self, workspace_id: &str, project_id: &str) -> Result<(), AppError> {
+        self.db
+            .with_transaction(|tx| {
+                tx.execute(
+                    "DELETE FROM workspace_projects WHERE workspace_id=?1 AND project_id=?2",
+                    params![workspace_id, project_id],
+                )
+                .map(|_| ())
+            })
+            .map_err(|e| map_constraint_error(e, "workspace membership removal"))
+    }
     pub fn projects(&self, id: &str) -> Result<Vec<String>, AppError> {
         self.db.with_connection(|c| {
             let mut s = c.prepare(
