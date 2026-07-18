@@ -112,6 +112,16 @@ fn diff_summary_parses_unified_patch_paths_and_numstat() {
 }
 
 #[test]
+fn diff_summary_parses_nul_numstat_binary_records() {
+    let diff = b"1\t2\t--renamed file.txt\0-\t-\t--binary file.bin\0";
+    let summary = parse_diff_summary(diff).expect("NUL numstat parses");
+    assert_eq!(summary.files.len(), 2);
+    assert_eq!(summary.files[0].path, "--renamed file.txt");
+    assert_eq!(summary.files[1].path, "--binary file.bin");
+    assert!(summary.files[1].binary);
+}
+
+#[test]
 fn git_config_parser_returns_key_value_pairs() {
     let config = b"user.name\nAda Lovelace\0user.email\nada@example.test\0";
     let parsed = parse_git_config(config).expect("config parses");

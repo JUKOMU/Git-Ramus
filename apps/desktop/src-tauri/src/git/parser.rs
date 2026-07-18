@@ -440,6 +440,12 @@ fn invalid_status(message: &str) -> AppError {
 /// Parse a bounded diff summary. No full patch text is retained in the returned value.
 pub fn parse_diff_summary(input: impl AsRef<[u8]>) -> Result<DiffSummary, AppError> {
     let bytes = input.as_ref();
+    if bytes.contains(&0) {
+        let nul_summary = parse_nul_diff_summary(bytes)?;
+        if !nul_summary.files.is_empty() {
+            return Ok(nul_summary);
+        }
+    }
     let mut files = Vec::<DiffFile>::new();
     let mut current: Option<usize> = None;
     for line in bytes.split(|byte| *byte == b'\n') {
@@ -508,17 +514,93 @@ pub fn parse_diff_summary(input: impl AsRef<[u8]>) -> Result<DiffSummary, AppErr
         }
     }
 
+    Ok(diff_summary_from_files(files))
+}
+
+fn parse_nul_diff_summary(bytes: &[u8]) -> Result<DiffSummary, AppError> {
+    let records = bytes
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+        .collect::<Vec<_>>();
+    let mut files = Vec::new();
+    let mut index = 0;
+    while index < records.len() {
+        let record = records[index];
+        index += 1;
+        if let Some((additions, deletions, path)) = parse_numstat(record)? {
+            let mut file = new_diff_file(path, None);
+            file.additions = additions;
+            file.deletions = deletions;
+            file.binary = additions.is_none() && deletions.is_none();
+            files.push(file);
+            continue;
+        }
+        if record.first() == Some(&b':') {
+            if let Some(tab) = record.iter().position(|byte| *byte == b'\t') {
+                let metadata = record[..tab]
+                    .split(|byte| *byte == b' ')
+                    .collect::<Vec<_>>();
+                let path = decode_path(&record[tab + 1..])?;
+                let binary = metadata.last().is_some_and(|status| *status == b"B");
+                files.push(DiffFile {
+                    path: path.clone(),
+                    old_path: None,
+                    new_path: Some(path.clone()),
+                    binary,
+                    additions: None,
+                    deletions: None,
+                    old: None,
+                    new: Some(path),
+                });
+            }
+            continue;
+        }
+        // `--name-status -z` uses a status token followed by a path token. Preserve the path,
+        // including names that begin with `--`; a rename has one additional NUL path.
+        if let Some(tab) = record.iter().position(|byte| *byte == b'\t') {
+            let status = &record[..tab];
+            if status
+                .first()
+                .is_some_and(|byte| matches!(*byte, b'A' | b'M' | b'D' | b'R' | b'C' | b'T'))
+            {
+                let path = decode_path(&record[tab + 1..])?;
+                let kind = match status[0] {
+                    b'A' => ChangeKind::Added,
+                    b'M' => ChangeKind::Modified,
+                    b'D' => ChangeKind::Deleted,
+                    b'R' => ChangeKind::Renamed,
+                    b'C' => ChangeKind::Copied,
+                    _ => ChangeKind::TypeChanged,
+                };
+                let mut file = new_diff_file(path, None);
+                file.binary = false;
+                if matches!(kind, ChangeKind::Renamed | ChangeKind::Copied) {
+                    if let Some(original) = records.get(index) {
+                        let original = decode_path(original)?;
+                        file.old_path = Some(original.clone());
+                        file.old = Some(original);
+                        index += 1;
+                    }
+                }
+                files.push(file);
+            }
+        }
+    }
+    Ok(diff_summary_from_files(files))
+}
+
+fn diff_summary_from_files(files: Vec<DiffFile>) -> DiffSummary {
     let binary = files.iter().any(|file| file.binary);
     let additions = files.iter().filter_map(|file| file.additions).sum();
     let deletions = files.iter().filter_map(|file| file.deletions).sum();
-    Ok(DiffSummary {
+    DiffSummary {
         changes: files.clone(),
         entries: files.clone(),
         files,
         binary,
         additions,
         deletions,
-    })
+    }
 }
 
 fn new_diff_file(path: String, old_path: Option<String>) -> DiffFile {
