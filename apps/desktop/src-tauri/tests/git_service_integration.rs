@@ -435,13 +435,69 @@ fn read_commands_include_lock_and_textconv_safety_flags() {
         .find(|args| args.iter().any(|arg| arg == "status"))
         .expect("status call");
     assert!(status.iter().any(|arg| arg == "--no-optional-locks"));
+    assert!(has_disabled_fsmonitor_config(status));
     let diff = calls
         .iter()
         .find(|args| args.iter().any(|arg| arg == "diff"))
         .expect("diff call");
     assert!(diff.iter().any(|arg| arg == "--no-optional-locks"));
+    assert!(has_disabled_fsmonitor_config(diff));
     assert!(diff.iter().any(|arg| arg == "--no-ext-diff"));
     assert!(diff.iter().any(|arg| arg == "--no-textconv"));
+}
+
+#[test]
+fn untrusted_status_does_not_execute_repository_fsmonitor_hook() {
+    if !git_available() {
+        return;
+    }
+    let root = tempdir().unwrap();
+    run_git(root.path(), &["init", "--quiet"]);
+    run_git(root.path(), &["config", "user.name", "Fixture"]);
+    run_git(
+        root.path(),
+        &["config", "user.email", "fixture@example.test"],
+    );
+    fs::write(root.path().join("tracked.txt"), "seed\n").unwrap();
+    run_git(root.path(), &["add", "--", "tracked.txt"]);
+    run_git(root.path(), &["commit", "--quiet", "-m", "seed"]);
+
+    let hook = root.path().join(".git").join("fsmonitor-test");
+    fs::write(
+        &hook,
+        "#!/bin/sh\nprintf invoked > fsmonitor-marker\nprintf 'test-token\\n'\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(&hook).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&hook, permissions).unwrap();
+    }
+    run_git(
+        root.path(),
+        &["config", "core.fsmonitor", ".git/fsmonitor-test"],
+    );
+    let marker = root.path().join("fsmonitor-marker");
+    run_git(root.path(), &["status", "--porcelain=v2"]);
+    assert!(marker.exists(), "fsmonitor fixture did not execute");
+    fs::remove_file(&marker).unwrap();
+
+    let service = GitService::new(Database::open_in_memory().unwrap());
+    let project = service
+        .create_project(ProjectCreateInput {
+            root_path: root.path().to_string_lossy().into_owned(),
+            name: "untrusted fsmonitor".to_owned(),
+            scan_depth: Some(0),
+            exclude_patterns: Vec::new(),
+        })
+        .unwrap();
+    service.scan_project(&project.id).unwrap();
+    assert!(
+        !marker.exists(),
+        "untrusted status executed repository core.fsmonitor"
+    );
 }
 
 #[test]
@@ -647,6 +703,11 @@ impl GitRunner for RecordingRunner {
 
 fn git_available() -> bool {
     Command::new("git").arg("--version").output().is_ok()
+}
+
+fn has_disabled_fsmonitor_config(args: &[String]) -> bool {
+    args.windows(2)
+        .any(|pair| pair == ["-c", "core.fsmonitor=false"])
 }
 
 fn run_git(repo: &Path, args: &[&str]) {

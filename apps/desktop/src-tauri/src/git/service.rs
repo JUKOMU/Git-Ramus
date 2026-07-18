@@ -829,6 +829,8 @@ impl GitService {
         let validated = validate_change_paths(paths, &parsed.changes)?;
         let mut args = vec![
             OsString::from("--no-optional-locks"),
+            OsString::from("-c"),
+            OsString::from("core.fsmonitor=false"),
             OsString::from("diff"),
         ];
         if staged {
@@ -1142,6 +1144,8 @@ impl GitService {
             repository,
             vec![
                 OsString::from("--no-optional-locks"),
+                OsString::from("-c"),
+                OsString::from("core.fsmonitor=false"),
                 OsString::from("status"),
                 OsString::from("--porcelain=v2"),
                 OsString::from("-z"),
