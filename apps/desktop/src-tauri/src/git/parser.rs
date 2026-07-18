@@ -488,6 +488,14 @@ pub fn parse_diff_summary(input: impl AsRef<[u8]>) -> Result<DiffSummary, AppErr
                 new: None,
             });
             current = Some(files.len() - 1);
+        } else if line.starts_with(b":") {
+            let file = parse_plain_raw_line(line)?;
+            files.push(file);
+            current = Some(files.len() - 1);
+        } else if is_plain_name_status_line(line) {
+            let file = parse_plain_name_status_line(line)?;
+            files.push(file);
+            current = Some(files.len() - 1);
         } else if line.starts_with(b"--- ") {
             let path = parse_patch_path(&line[4..])?;
             if let Some(index) = current {
@@ -533,7 +541,120 @@ pub fn parse_diff_summary(input: impl AsRef<[u8]>) -> Result<DiffSummary, AppErr
         }
     }
 
+    if files.is_empty() && !bytes.iter().all(u8::is_ascii_whitespace) {
+        return Err(AppError::InvalidInput("unknown diff format".to_owned()));
+    }
     Ok(diff_summary_from_files(files))
+}
+
+fn parse_plain_raw_line(line: &[u8]) -> Result<DiffFile, AppError> {
+    let tab = line
+        .iter()
+        .position(|byte| *byte == b'\t')
+        .ok_or_else(|| AppError::InvalidInput("malformed raw diff record".to_owned()))?;
+    let metadata = &line[1..tab];
+    let fields = metadata.split(|byte| *byte == b' ').collect::<Vec<_>>();
+    let status = fields
+        .last()
+        .copied()
+        .ok_or_else(|| AppError::InvalidInput("malformed raw diff status".to_owned()))?;
+    let paths = line[tab + 1..]
+        .split(|byte| *byte == b'\t')
+        .collect::<Vec<_>>();
+    if paths.is_empty() || paths.iter().any(|path| path.is_empty()) {
+        return Err(AppError::InvalidInput(
+            "raw diff record is missing a path".to_owned(),
+        ));
+    }
+    let kind = status.first().copied();
+    let binary = status == b"B";
+    if matches!(kind, Some(b'R' | b'C')) {
+        let (old, new) = if paths.len() >= 2 {
+            (decode_path(paths[0])?, decode_path(paths[1])?)
+        } else {
+            split_rename_paths(paths[0])?
+        };
+        return Ok(diff_file_with_paths(old, new, kind == Some(b'C'), binary));
+    }
+    Ok(raw_diff_file(decode_path(paths[0])?, binary))
+}
+
+fn is_plain_name_status_line(line: &[u8]) -> bool {
+    let Some(separator) = line.iter().position(|byte| *byte == b'\t' || *byte == b' ') else {
+        return false;
+    };
+    !line[..separator].is_empty()
+        && matches!(
+            line[..separator][0],
+            b'A' | b'M' | b'D' | b'R' | b'C' | b'T'
+        )
+}
+
+fn parse_plain_name_status_line(line: &[u8]) -> Result<DiffFile, AppError> {
+    let separator = line
+        .iter()
+        .position(|byte| *byte == b'\t' || *byte == b' ')
+        .ok_or_else(|| AppError::InvalidInput("malformed name-status record".to_owned()))?;
+    let status = &line[..separator];
+    let rest = line[separator..]
+        .iter()
+        .skip_while(|byte| **byte == b' ' || **byte == b'\t')
+        .copied()
+        .collect::<Vec<_>>();
+    if rest.is_empty() {
+        return Err(AppError::InvalidInput(
+            "name-status record is missing a path".to_owned(),
+        ));
+    }
+    let kind = status.first().copied();
+    if matches!(kind, Some(b'R' | b'C')) {
+        let (old, new) = if rest.contains(&b'\t') {
+            let paths = rest.split(|byte| *byte == b'\t').collect::<Vec<_>>();
+            if paths.len() < 2 {
+                return Err(AppError::InvalidInput(
+                    "rename record is missing a path".to_owned(),
+                ));
+            }
+            (decode_path(paths[0])?, decode_path(paths[1])?)
+        } else {
+            split_rename_paths(&rest)?
+        };
+        return Ok(diff_file_with_paths(old, new, kind == Some(b'C'), false));
+    }
+    Ok(raw_diff_file(decode_path(&rest)?, false))
+}
+
+fn split_rename_paths(path: &[u8]) -> Result<(String, String), AppError> {
+    if let Some(separator) = path.windows(4).position(|window| window == b" => ") {
+        let old = decode_path(&path[..separator])?;
+        let new = decode_path(&path[separator + 4..])?;
+        return Ok((old, new));
+    }
+    let separator = path
+        .iter()
+        .enumerate()
+        .filter(|(_, byte)| **byte == b' ')
+        .find_map(|(index, _)| {
+            (path[..index].contains(&b'.') && path[index + 1..].contains(&b'.')).then_some(index)
+        })
+        .or_else(|| path.iter().rposition(|byte| *byte == b' '))
+        .ok_or_else(|| AppError::InvalidInput("rename record is missing a separator".to_owned()))?;
+    let old = decode_path(&path[..separator])?;
+    let new = decode_path(&path[separator + 1..])?;
+    Ok((old, new))
+}
+
+fn diff_file_with_paths(old: String, new: String, _copied: bool, binary: bool) -> DiffFile {
+    DiffFile {
+        path: new.clone(),
+        old_path: Some(old.clone()),
+        new_path: Some(new.clone()),
+        binary,
+        additions: None,
+        deletions: None,
+        old: Some(old),
+        new: Some(new),
+    }
 }
 
 fn parse_nul_diff_summary(bytes: &[u8]) -> Result<DiffSummary, AppError> {
@@ -562,30 +683,51 @@ fn parse_nul_diff_summary(bytes: &[u8]) -> Result<DiffSummary, AppError> {
                 let metadata = record[..tab]
                     .split(|byte| *byte == b' ')
                     .collect::<Vec<_>>();
-                let path = decode_path(&record[tab + 1..])?;
-                let binary = metadata.last().is_some_and(|status| *status == b"B");
-                files.push(DiffFile {
-                    path: path.clone(),
-                    old_path: None,
-                    new_path: Some(path.clone()),
-                    binary,
-                    additions: None,
-                    deletions: None,
-                    old: None,
-                    new: Some(path),
-                });
+                let status = metadata.last().copied().ok_or_else(|| {
+                    AppError::InvalidInput("malformed raw diff status".to_owned())
+                })?;
+                let paths = record[tab + 1..]
+                    .split(|byte| *byte == b'\t')
+                    .collect::<Vec<_>>();
+                if matches!(status.first(), Some(b'R' | b'C')) && paths.len() >= 2 {
+                    files.push(diff_file_with_paths(
+                        decode_path(paths[0])?,
+                        decode_path(paths[1])?,
+                        status.first() == Some(&b'C'),
+                        false,
+                    ));
+                } else {
+                    let path = decode_path(paths[0])?;
+                    files.push(raw_diff_file(path, status == b"B"));
+                }
             } else {
                 // `git diff --raw -z` emits metadata and path as separate NUL records.
                 let metadata = record.split(|byte| *byte == b' ').collect::<Vec<_>>();
-                let path = records.get(index).ok_or_else(|| {
+                let status = metadata.last().copied().ok_or_else(|| {
+                    AppError::InvalidInput("malformed raw diff status".to_owned())
+                })?;
+                let first_path = records.get(index).ok_or_else(|| {
                     AppError::InvalidInput("raw diff record is missing its path".to_owned())
                 })?;
                 index += 1;
-                let path = decode_path(path)?;
-                files.push(raw_diff_file(
-                    path,
-                    metadata.last().is_some_and(|status| *status == b"B"),
-                ));
+                let first_path = decode_path(first_path)?;
+                if matches!(status.first(), Some(b'R' | b'C')) {
+                    let second_path = records.get(index).ok_or_else(|| {
+                        AppError::InvalidInput(
+                            "raw rename record is missing its new path".to_owned(),
+                        )
+                    })?;
+                    index += 1;
+                    let second_path = decode_path(second_path)?;
+                    files.push(diff_file_with_paths(
+                        first_path,
+                        second_path,
+                        status.first() == Some(&b'C'),
+                        false,
+                    ));
+                } else {
+                    files.push(raw_diff_file(first_path, status == b"B"));
+                }
             }
             continue;
         }

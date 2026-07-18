@@ -112,6 +112,70 @@ fn diff_summary_parses_unified_patch_paths_and_numstat() {
 }
 
 #[test]
+fn diff_summary_parses_plain_raw_and_name_status_records() {
+    let raw = b":100644 100644 aaaaaaa bbbbbbb R100\told name.txt\tnew name.txt\n";
+    let raw_summary = parse_diff_summary(raw).expect("plain raw rename parses");
+    assert_eq!(raw_summary.files.len(), 1);
+    assert_eq!(raw_summary.files[0].path, "new name.txt");
+    assert_eq!(
+        raw_summary.files[0].old_path.as_deref(),
+        Some("old name.txt")
+    );
+    assert_eq!(
+        raw_summary.files[0].new_path.as_deref(),
+        Some("new name.txt")
+    );
+
+    let name_status = b"R100\told name.txt\tnew name.txt\n";
+    let name_summary = parse_diff_summary(name_status).expect("plain name-status rename parses");
+    assert_eq!(name_summary.files.len(), 1);
+    assert_eq!(name_summary.files[0].path, "new name.txt");
+    assert_eq!(
+        name_summary.files[0].old_path.as_deref(),
+        Some("old name.txt")
+    );
+    assert_eq!(
+        name_summary.files[0].new_path.as_deref(),
+        Some("new name.txt")
+    );
+
+    let name_status_spaces = b"R100 old name.txt new name.txt\n";
+    let spaces_summary =
+        parse_diff_summary(name_status_spaces).expect("space-delimited name-status parses");
+    assert_eq!(spaces_summary.files.len(), 1);
+    assert_eq!(spaces_summary.files[0].path, "new name.txt");
+}
+
+#[test]
+fn diff_summary_parses_nul_raw_and_name_status_renames() {
+    let raw = b":100644 100644 aaaaaaa bbbbbbb R100\0old name.txt\0new name.txt\0";
+    let raw_summary = parse_diff_summary(raw).expect("NUL raw rename parses");
+    assert_eq!(raw_summary.files.len(), 1);
+    assert_eq!(raw_summary.files[0].path, "new name.txt");
+    assert_eq!(
+        raw_summary.files[0].old_path.as_deref(),
+        Some("old name.txt")
+    );
+    assert_eq!(
+        raw_summary.files[0].new_path.as_deref(),
+        Some("new name.txt")
+    );
+
+    let name_status = b"R100\0old name.txt\0new name.txt\0";
+    let name_summary = parse_diff_summary(name_status).expect("NUL name-status rename parses");
+    assert_eq!(name_summary.files.len(), 1);
+    assert_eq!(name_summary.files[0].path, "new name.txt");
+    assert_eq!(
+        name_summary.files[0].old_path.as_deref(),
+        Some("old name.txt")
+    );
+    assert_eq!(
+        name_summary.files[0].new_path.as_deref(),
+        Some("new name.txt")
+    );
+}
+
+#[test]
 fn diff_summary_parses_nul_numstat_binary_records() {
     let diff = b"1\t2\t--renamed file.txt\0-\t-\t--binary file.bin\0";
     let summary = parse_diff_summary(diff).expect("NUL numstat parses");
@@ -352,6 +416,48 @@ fn real_repository_status_and_diff_round_trip_through_runner() {
     let name_summary = parse_diff_summary(name_status.stdout).expect("name-status parses");
     assert_eq!(name_summary.files.len(), 1);
     assert_eq!(name_summary.files[0].path, tracked);
+}
+
+#[test]
+fn real_repository_rename_round_trips_through_raw_and_name_status_parsers() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git executable unavailable; skipping rename integration test");
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    run_git(temp.path(), &["init", "--quiet"]);
+    run_git(temp.path(), &["config", "user.name", "Fixture User"]);
+    run_git(
+        temp.path(),
+        &["config", "user.email", "fixture@example.test"],
+    );
+    fs::write(temp.path().join("old name.txt"), "rename me\n").unwrap();
+    run_git(temp.path(), &["add", "--", "old name.txt"]);
+    run_git(temp.path(), &["commit", "--quiet", "-m", "seed"]);
+    run_git(temp.path(), &["mv", "--", "old name.txt", "new name.txt"]);
+
+    let runner = SystemGitRunner::default();
+    for args in [
+        vec!["diff", "--cached", "--raw", "--"],
+        vec!["diff", "--cached", "--raw", "-z", "--"],
+        vec!["diff", "--cached", "--name-status", "--"],
+        vec!["diff", "--cached", "--name-status", "-z", "--"],
+    ] {
+        let output = runner
+            .run(GitCommand {
+                repo: temp.path().to_path_buf(),
+                args: args.into_iter().map(OsString::from).collect(),
+                stdin: None,
+                timeout: Duration::from_secs(2),
+            })
+            .expect("rename diff command runs");
+        assert!(output.status.success());
+        let summary = parse_diff_summary(output.stdout).expect("rename diff parses");
+        assert_eq!(summary.files.len(), 1);
+        assert_eq!(summary.files[0].path, "new name.txt");
+        assert_eq!(summary.files[0].old_path.as_deref(), Some("old name.txt"));
+        assert_eq!(summary.files[0].new_path.as_deref(), Some("new name.txt"));
+    }
 }
 
 #[test]
