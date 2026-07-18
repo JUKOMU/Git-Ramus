@@ -438,6 +438,12 @@ fn decode_path(path: &[u8]) -> Result<String, AppError> {
         .map_err(|_| invalid_path())
 }
 
+fn decode_path_allow_empty(path: &[u8]) -> Result<String, AppError> {
+    std::str::from_utf8(path)
+        .map(str::to_owned)
+        .map_err(|_| invalid_path())
+}
+
 fn invalid_status(message: &str) -> AppError {
     AppError::InvalidInput(message.to_owned())
 }
@@ -671,11 +677,31 @@ fn parse_nul_diff_summary(bytes: &[u8]) -> Result<DiffSummary, AppError> {
             return Err(AppError::InvalidInput("empty NUL diff record".to_owned()));
         }
         if let Some((additions, deletions, path)) = parse_numstat(record)? {
-            let mut file = new_diff_file(path, None);
-            file.additions = additions;
-            file.deletions = deletions;
-            file.binary = additions.is_none() && deletions.is_none();
-            files.push(file);
+            let binary = additions.is_none() && deletions.is_none();
+            if path.is_empty() {
+                // Rename/copy numstat records encode an empty path followed by old and new
+                // paths as separate NUL records.
+                let old = records.get(index).ok_or_else(|| {
+                    AppError::InvalidInput("numstat rename is missing its old path".to_owned())
+                })?;
+                index += 1;
+                let new = records.get(index).ok_or_else(|| {
+                    AppError::InvalidInput("numstat rename is missing its new path".to_owned())
+                })?;
+                index += 1;
+                let old = decode_path(old)?;
+                let new = decode_path(new)?;
+                let mut file = diff_file_with_paths(old, new, false, binary);
+                file.additions = additions;
+                file.deletions = deletions;
+                files.push(file);
+            } else {
+                let mut file = new_diff_file(path, None);
+                file.additions = additions;
+                file.deletions = deletions;
+                file.binary = binary;
+                files.push(file);
+            }
             continue;
         }
         if record.first() == Some(&b':') {
@@ -902,7 +928,7 @@ fn parse_numstat(line: &[u8]) -> Result<Option<Numstat>, AppError> {
     }
     let additions = parse_count(additions_field)?;
     let deletions = parse_count(&rest[..second_tab])?;
-    let path = decode_path(&rest[second_tab + 1..])?;
+    let path = decode_path_allow_empty(&rest[second_tab + 1..])?;
     Ok(Some((additions, deletions, path)))
 }
 

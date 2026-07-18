@@ -176,6 +176,52 @@ fn diff_summary_parses_nul_raw_and_name_status_renames() {
 }
 
 #[test]
+fn diff_summary_parses_nul_numstat_rename_and_copy_empty_paths() {
+    let rename = b"0\t0\t\0old name.txt\0new name.txt\0";
+    let rename_summary = parse_diff_summary(rename).expect("NUL numstat rename parses");
+    assert_eq!(rename_summary.files.len(), 1);
+    assert_eq!(rename_summary.files[0].path, "new name.txt");
+    assert_eq!(
+        rename_summary.files[0].old_path.as_deref(),
+        Some("old name.txt")
+    );
+    assert_eq!(
+        rename_summary.files[0].new_path.as_deref(),
+        Some("new name.txt")
+    );
+    assert_eq!(
+        (
+            rename_summary.files[0].additions,
+            rename_summary.files[0].deletions
+        ),
+        (Some(0), Some(0))
+    );
+    assert!(!rename_summary.files[0].binary);
+
+    let copy = b"-\t-\t\0old image.bin\0new image.bin\0";
+    let copy_summary = parse_diff_summary(copy).expect("NUL numstat copy parses");
+    assert_eq!(copy_summary.files.len(), 1);
+    assert_eq!(copy_summary.files[0].path, "new image.bin");
+    assert_eq!(
+        copy_summary.files[0].old_path.as_deref(),
+        Some("old image.bin")
+    );
+    assert_eq!(
+        copy_summary.files[0].new_path.as_deref(),
+        Some("new image.bin")
+    );
+    assert!(copy_summary.files[0].binary);
+}
+
+#[test]
+fn diff_summary_rejects_numstat_rename_with_missing_paths() {
+    assert!(matches!(
+        parse_diff_summary(b"0\t0\t\0only-old.txt\0"),
+        Err(AppError::InvalidInput(_))
+    ));
+}
+
+#[test]
 fn diff_summary_parses_nul_numstat_binary_records() {
     let diff = b"1\t2\t--renamed file.txt\0-\t-\t--binary file.bin\0";
     let summary = parse_diff_summary(diff).expect("NUL numstat parses");
@@ -458,6 +504,52 @@ fn real_repository_rename_round_trips_through_raw_and_name_status_parsers() {
         assert_eq!(summary.files[0].old_path.as_deref(), Some("old name.txt"));
         assert_eq!(summary.files[0].new_path.as_deref(), Some("new name.txt"));
     }
+}
+
+#[test]
+fn real_repository_numstat_rename_round_trips_through_nul_parser() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git executable unavailable; skipping numstat rename integration test");
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    run_git(temp.path(), &["init", "--quiet"]);
+    run_git(temp.path(), &["config", "user.name", "Fixture User"]);
+    run_git(
+        temp.path(),
+        &["config", "user.email", "fixture@example.test"],
+    );
+    fs::write(temp.path().join("old numstat.txt"), "rename me\n").unwrap();
+    run_git(temp.path(), &["add", "--", "old numstat.txt"]);
+    run_git(temp.path(), &["commit", "--quiet", "-m", "seed"]);
+    run_git(
+        temp.path(),
+        &["mv", "--", "old numstat.txt", "new numstat.txt"],
+    );
+
+    let output = SystemGitRunner::default()
+        .run(GitCommand {
+            repo: temp.path().to_path_buf(),
+            args: ["diff", "--cached", "--numstat", "-z", "-M", "--"]
+                .into_iter()
+                .map(OsString::from)
+                .collect(),
+            stdin: None,
+            timeout: Duration::from_secs(2),
+        })
+        .expect("numstat rename command runs");
+    assert!(output.status.success());
+    let summary = parse_diff_summary(output.stdout).expect("numstat rename parses");
+    assert_eq!(summary.files.len(), 1);
+    assert_eq!(summary.files[0].path, "new numstat.txt");
+    assert_eq!(
+        summary.files[0].old_path.as_deref(),
+        Some("old numstat.txt")
+    );
+    assert_eq!(
+        summary.files[0].new_path.as_deref(),
+        Some("new numstat.txt")
+    );
 }
 
 #[test]
