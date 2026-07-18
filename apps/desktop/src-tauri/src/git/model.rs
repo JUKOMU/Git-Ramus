@@ -7,6 +7,7 @@ fn now() -> DateTime<Utc> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct Project {
     pub id: String,
     pub root_path: String,
@@ -32,6 +33,7 @@ impl Project {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct Workspace {
     pub id: String,
     pub name: String,
@@ -80,6 +82,7 @@ impl std::str::FromStr for RepositoryKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct Repository {
     pub id: String,
     pub canonical_path: String,
@@ -103,6 +106,7 @@ impl Repository {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct RepositorySnapshot {
     pub id: String,
     pub repository_id: String,
@@ -141,6 +145,7 @@ impl RepositorySnapshot {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct Remote {
     pub repository_id: String,
     pub name: String,
@@ -149,6 +154,7 @@ pub struct Remote {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct Trust {
     pub repository_id: String,
     pub trusted_at: DateTime<Utc>,
@@ -156,6 +162,7 @@ pub struct Trust {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct IdentityBinding {
     pub repository_id: String,
     pub identity_profile_id: String,

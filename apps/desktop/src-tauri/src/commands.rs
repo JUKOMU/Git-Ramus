@@ -60,6 +60,22 @@ pub struct GitProjectUpdateScanRulesRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitProjectUpdateRequest {
+    pub project_id: String,
+    pub root_path: Option<String>,
+    pub name: Option<String>,
+    pub scan_depth: Option<i64>,
+    pub exclude_patterns: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitProjectDeleteRequest {
+    pub project_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GitProjectScanRequest {
     pub project_id: String,
 }
@@ -67,6 +83,13 @@ pub struct GitProjectScanRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GitWorkspaceCreateRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitWorkspaceUpdateRequest {
+    pub workspace_id: String,
     pub name: String,
 }
 
@@ -148,19 +171,19 @@ pub struct GitRepositoryTrustRequest {
     pub repository_id: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GitProjectListResponse {
     pub projects: Vec<Project>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GitWorkspaceListResponse {
     pub workspaces: Vec<Workspace>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GitTrustResponse {
     pub trust: Trust,
@@ -292,13 +315,45 @@ pub fn git_project_update_scan_rules(
 }
 
 #[tauri::command]
+pub fn git_project_update(
+    state: State<'_, AppState>,
+    request: GitProjectUpdateRequest,
+) -> CommandResult<Project> {
+    state
+        .git
+        .update_project(crate::git::service::ProjectUpdateInput {
+            project_id: request.project_id,
+            root_path: request.root_path,
+            name: request.name,
+            scan_depth: request.scan_depth,
+            exclude_patterns: request.exclude_patterns,
+        })
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn git_project_delete(
+    state: State<'_, AppState>,
+    request: GitProjectDeleteRequest,
+) -> CommandResult<()> {
+    state
+        .git
+        .delete_project_by_id(&request.project_id)
+        .map_err(command_error)
+}
+
+#[tauri::command]
 pub fn git_project_scan(
+    app: AppHandle,
     state: State<'_, AppState>,
     request: GitProjectScanRequest,
 ) -> CommandResult<ScanProjectResult> {
+    let progress_app = app.clone();
     state
         .git
-        .scan_project(&request.project_id)
+        .scan_project_with_progress(&request.project_id, move |record| {
+            let _ = progress_app.emit("git://scan-progress", record);
+        })
         .map_err(command_error)
 }
 
@@ -319,6 +374,17 @@ pub fn git_workspace_list(state: State<'_, AppState>) -> CommandResult<GitWorksp
         .git
         .list_workspaces()
         .map(|workspaces| GitWorkspaceListResponse { workspaces })
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn git_workspace_update(
+    state: State<'_, AppState>,
+    request: GitWorkspaceUpdateRequest,
+) -> CommandResult<Workspace> {
+    state
+        .git
+        .update_workspace(&request.workspace_id, &request.name)
         .map_err(command_error)
 }
 
@@ -493,11 +559,40 @@ fn command_error(error: AppError) -> Box<ErrorEnvelope> {
 #[cfg(test)]
 mod tests {
     use super::app_info;
+    use super::{GitProjectCreateRequest, GitProjectDeleteRequest, GitWorkspaceUpdateRequest};
+    use serde_json::json;
 
     #[test]
     fn app_info_uses_compile_time_package_metadata() {
         let info = app_info();
         assert_eq!(info.name, "Git-Ramus");
         assert_eq!(info.version, "0.1.0");
+    }
+
+    #[test]
+    fn git_request_dtos_reject_unknown_fields() {
+        assert!(
+            serde_json::from_value::<GitProjectCreateRequest>(json!({
+                "rootPath": ".",
+                "name": "fixture",
+                "unexpected": true
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<GitProjectDeleteRequest>(json!({
+                "projectId": "p",
+                "unexpected": true
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<GitWorkspaceUpdateRequest>(json!({
+                "workspaceId": "w",
+                "name": "fixture",
+                "unexpected": true
+            }))
+            .is_err()
+        );
     }
 }

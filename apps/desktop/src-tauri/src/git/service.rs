@@ -4,11 +4,12 @@
 //! provide database identifiers and (for writes) a set of paths that must already be present in
 //! the latest status snapshot; no generic command execution API is exposed.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
+use std::thread;
 use std::time::Duration;
 
 use chrono::Utc;
@@ -116,7 +117,7 @@ impl QueryContext {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RepositoryScanRecord {
     pub repository: Repository,
     pub snapshot: Option<RepositorySnapshot>,
@@ -125,31 +126,43 @@ pub struct RepositoryScanRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RepositoryScanFailure {
     pub path: String,
     pub error: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ScanProgressRecord {
+    pub index: usize,
+    pub total: usize,
+    pub repository_id: String,
+    pub completed: bool,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScanProjectResult {
     pub project_id: String,
     pub repositories: Vec<RepositoryScanRecord>,
     pub failures: Vec<RepositoryScanFailure>,
+    pub total: usize,
     pub completed: usize,
     pub failed: usize,
+    pub progress: Vec<ScanProgressRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OverviewRepository {
     pub repository: Repository,
     pub snapshot: Option<RepositorySnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Overview {
     pub context: QueryContext,
     pub repositories: Vec<OverviewRepository>,
@@ -163,7 +176,7 @@ pub struct Overview {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ChangesResult {
     pub repository_id: String,
     pub snapshot: RepositorySnapshot,
@@ -171,7 +184,7 @@ pub struct ChangesResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DiffResult {
     pub repository_id: String,
     pub staged: bool,
@@ -179,7 +192,7 @@ pub struct DiffResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WriteResult {
     pub repository_id: String,
     pub snapshot: Option<RepositorySnapshot>,
@@ -222,6 +235,10 @@ impl ReadGate {
         }
         *active += 1;
         ReadPermit { gate: self }
+    }
+
+    fn limit(&self) -> usize {
+        self.limit
     }
 }
 
@@ -334,6 +351,10 @@ impl GitService {
         })
     }
 
+    pub fn delete_project_by_id(&self, project_id: &str) -> Result<(), AppError> {
+        self.projects.delete(project_id)
+    }
+
     pub fn list_projects(&self) -> Result<Vec<Project>, AppError> {
         self.projects.list()
     }
@@ -350,6 +371,14 @@ impl GitService {
         let name = validate_name(&input.name, "workspace name")?;
         let workspace = Workspace::new(&name);
         self.workspaces.create(&workspace)?;
+        Ok(workspace)
+    }
+
+    pub fn update_workspace(&self, workspace_id: &str, name: &str) -> Result<Workspace, AppError> {
+        let mut workspace = self.workspaces.get(workspace_id)?;
+        workspace.name = validate_name(name, "workspace name")?;
+        workspace.updated_at = Utc::now();
+        self.workspaces.update(&workspace)?;
         Ok(workspace)
     }
 
@@ -410,6 +439,20 @@ impl GitService {
     /// best-effort: malformed/unreadable candidate directories are recorded in `failures` while
     /// other repositories continue to refresh.
     pub fn scan_project(&self, project_id: &str) -> Result<ScanProjectResult, AppError> {
+        self.scan_project_with_progress(project_id, |_| {})
+    }
+
+    /// Scan with a completion callback. The callback runs as each bounded worker completes a
+    /// repository, allowing a Tauri adapter to emit progressive records while retaining the
+    /// synchronous `scan_project` API for callers that only need the final aggregate.
+    pub fn scan_project_with_progress<F>(
+        &self,
+        project_id: &str,
+        progress: F,
+    ) -> Result<ScanProjectResult, AppError>
+    where
+        F: Fn(&RepositoryScanRecord) + Send + Sync + 'static,
+    {
         let project = self.projects.get(project_id)?;
         let mut candidates = Vec::<(DetectedRepository, String)>::new();
         let mut failures = Vec::new();
@@ -520,7 +563,7 @@ impl GitService {
             }
         }
 
-        let mut records = Vec::with_capacity(candidates.len());
+        let mut prepared = Vec::with_capacity(candidates.len());
         for (detected, relative) in candidates {
             let repository = match self.ensure_repository(&detected) {
                 Ok(repository) => repository,
@@ -542,45 +585,125 @@ impl GitService {
                 });
                 continue;
             }
-            match self.refresh_repository_inner(&repository) {
-                Ok((snapshot, parsed)) => records.push(RepositoryScanRecord {
-                    repository,
-                    snapshot: Some(snapshot),
-                    changes: Some(parsed),
-                    error: None,
-                }),
-                Err(error) => {
-                    let snapshot = self.record_refresh_failure(&repository, &error)?;
-                    let summary = stable_error(&error);
-                    records.push(RepositoryScanRecord {
-                        repository: repository.clone(),
-                        snapshot,
-                        changes: self.cached_status(&repository.id),
-                        error: Some(summary.clone()),
-                    });
-                    failures.push(RepositoryScanFailure {
-                        path: detected.canonical_path.to_string_lossy().into_owned(),
-                        error: summary,
-                    });
-                }
-            }
+            prepared.push((detected.canonical_path, repository));
         }
+        let total = prepared.len();
+
+        // Relationship writes happen on this thread. Snapshot writes are serialized by the
+        // Database connection mutex inside each worker; ReadGate bounds the actual Git processes.
+        let queue = Arc::new(Mutex::new(
+            prepared.into_iter().enumerate().collect::<VecDeque<_>>(),
+        ));
+        let records = Arc::new(Mutex::new(Vec::<(usize, RepositoryScanRecord)>::new()));
+        let refresh_failures = Arc::new(Mutex::new(Vec::<RepositoryScanFailure>::new()));
+        let callback: Arc<dyn Fn(&RepositoryScanRecord) + Send + Sync> = Arc::new(progress);
+        let worker_count = self.read_gate.limit().min(total.max(1));
+        thread::scope(|scope| {
+            for _ in 0..worker_count {
+                let queue = Arc::clone(&queue);
+                let records = Arc::clone(&records);
+                let refresh_failures = Arc::clone(&refresh_failures);
+                let callback = Arc::clone(&callback);
+                let service = self.clone();
+                scope.spawn(move || {
+                    loop {
+                        let item = queue
+                            .lock()
+                            .expect("scan queue mutex is not poisoned")
+                            .pop_front();
+                        let Some((index, (path, repository))) = item else {
+                            break;
+                        };
+                        let (record, failure) = match service.refresh_repository_inner(&repository)
+                        {
+                            Ok((snapshot, parsed)) => (
+                                RepositoryScanRecord {
+                                    repository: repository.clone(),
+                                    snapshot: Some(snapshot),
+                                    changes: Some(parsed),
+                                    error: None,
+                                },
+                                None,
+                            ),
+                            Err(error) => {
+                                let summary = stable_error(&error);
+                                let snapshot = service
+                                    .record_refresh_failure(&repository, &error)
+                                    .ok()
+                                    .flatten();
+                                (
+                                    RepositoryScanRecord {
+                                        repository: repository.clone(),
+                                        snapshot,
+                                        changes: service.cached_status(&repository.id),
+                                        error: Some(summary.clone()),
+                                    },
+                                    Some(RepositoryScanFailure {
+                                        path: path.to_string_lossy().into_owned(),
+                                        error: summary,
+                                    }),
+                                )
+                            }
+                        };
+                        callback(&record);
+                        records
+                            .lock()
+                            .expect("scan records mutex is not poisoned")
+                            .push((index, record));
+                        if let Some(failure) = failure {
+                            refresh_failures
+                                .lock()
+                                .expect("scan failure mutex is not poisoned")
+                                .push(failure);
+                        }
+                    }
+                });
+            }
+        });
+
+        let mut indexed_records = Arc::try_unwrap(records)
+            .unwrap_or_else(|_| panic!("scan records still referenced"))
+            .into_inner()
+            .expect("scan records mutex is not poisoned");
+        indexed_records.sort_by_key(|(index, _)| *index);
+        let records = indexed_records
+            .into_iter()
+            .map(|(_, record)| record)
+            .collect::<Vec<_>>();
+        failures.extend(
+            Arc::try_unwrap(refresh_failures)
+                .unwrap_or_else(|_| panic!("scan failures still referenced"))
+                .into_inner()
+                .expect("scan failure mutex is not poisoned"),
+        );
+        failures.sort_by(|left, right| left.path.cmp(&right.path));
 
         let completed = records
             .iter()
             .filter(|record| record.error.is_none())
             .count();
-        let failed = records
+        // Refresh failures are present in both a record and the failure list; count each only
+        // once in the aggregate.
+        let failed = failures.len();
+        let progress = records
             .iter()
-            .filter(|record| record.error.is_some())
-            .count()
-            + failures.len();
+            .enumerate()
+            .map(|(index, record)| ScanProgressRecord {
+                index,
+                total,
+                repository_id: record.repository.id.clone(),
+                completed: record.error.is_none(),
+                error: record.error.clone(),
+            })
+            .collect();
         Ok(ScanProjectResult {
             project_id: project_id.to_owned(),
             repositories: records,
             failures,
+            total,
             completed,
             failed,
+            progress,
         })
     }
 
@@ -693,7 +816,11 @@ impl GitService {
         if staged {
             args.push(OsString::from("--cached"));
         }
-        args.extend([OsString::from("--no-ext-diff"), OsString::from("--binary")]);
+        args.extend([
+            OsString::from("--no-ext-diff"),
+            OsString::from("--no-textconv"),
+            OsString::from("--binary"),
+        ]);
         args.push(OsString::from("--"));
         args.extend(validated.iter().map(OsString::from));
         let output = self.run_git(&repository, args, None)?;
@@ -967,15 +1094,21 @@ impl GitService {
         repository: &Repository,
         error: &AppError,
     ) -> Result<Option<RepositorySnapshot>, AppError> {
-        let Some(previous) = self.snapshots.latest_for_repository(&repository.id)? else {
-            return Ok(None);
-        };
-        // Preserve every successful field and only replace the redacted refresh error.  A new
-        // row keeps the snapshot history monotonic while allowing callers to see the failure.
-        let snapshot = RepositorySnapshot {
-            id: Uuid::new_v4().to_string(),
-            refresh_error_summary: Some(stable_error(error)),
-            ..previous
+        // Preserve every successful field when one exists. For a first refresh, persist an
+        // explicit error-only snapshot so callers never have to infer failure from a missing row.
+        let snapshot = if let Some(previous) = self
+            .snapshots
+            .latest_successful_for_repository(&repository.id)?
+        {
+            RepositorySnapshot {
+                id: Uuid::new_v4().to_string(),
+                refresh_error_summary: Some(stable_error(error)),
+                ..previous
+            }
+        } else {
+            let mut initial = RepositorySnapshot::new(&repository.id);
+            initial.refresh_error_summary = Some(stable_error(error));
+            initial
         };
         self.snapshots.upsert(&snapshot)?;
         Ok(Some(snapshot))
@@ -986,6 +1119,7 @@ impl GitService {
         let output = self.run_git(
             repository,
             vec![
+                OsString::from("--no-optional-locks"),
                 OsString::from("status"),
                 OsString::from("--porcelain=v2"),
                 OsString::from("-z"),
@@ -1002,9 +1136,6 @@ impl GitService {
         &self,
         repository: &Repository,
     ) -> Result<ParsedSnapshot, AppError> {
-        if let Some(cached) = self.cached_status(&repository.id) {
-            return Ok(cached);
-        }
         let (_, parsed) = self.refresh_repository_inner(repository)?;
         Ok(parsed)
     }
@@ -1265,32 +1396,37 @@ pub fn validate_relative_path(input: &str) -> Result<String, AppError> {
     if input.is_empty() || input.len() > 4 * 1024 || input.contains('\0') {
         return Err(AppError::InvalidInput("path is invalid".to_owned()));
     }
-    let path = Path::new(input);
-    if path.is_absolute() {
+    // Validate separators lexically instead of relying only on the host platform's `Path`
+    // parser. A Unix host must reject Windows drive/UNC paths and `..\\` escapes just as a
+    // Windows host would.
+    let normalized = input.replace('\\', "/");
+    let bytes = input.as_bytes();
+    let drive_prefix = bytes.len() >= 2
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes.get(2).is_none()
+            || bytes
+                .get(2)
+                .is_some_and(|byte| *byte == b'/' || *byte == b'\\'));
+    if input.starts_with('/')
+        || input.starts_with('\\')
+        || drive_prefix
+        || normalized.starts_with("//")
+    {
         return Err(AppError::InvalidInput("path must be relative".to_owned()));
     }
     let mut result = String::new();
-    for component in path.components() {
-        match component {
-            Component::Normal(part) => {
-                let part = part.to_str().ok_or(AppError::NonUtf8Path)?;
-                if part.is_empty() || part == "." || part == ".." {
-                    return Err(AppError::InvalidInput(
-                        "path must not contain dot segments".to_owned(),
-                    ));
-                }
-                if !result.is_empty() {
-                    result.push('/');
-                }
-                result.push_str(part);
-            }
-            Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err(AppError::InvalidInput(
-                    "path must be relative and confined".to_owned(),
-                ));
-            }
+    for component in normalized.split('/') {
+        if component.is_empty() || component == "." || component == ".." || component.contains(':')
+        {
+            return Err(AppError::InvalidInput(
+                "path must be relative and confined".to_owned(),
+            ));
         }
+        if !result.is_empty() {
+            result.push('/');
+        }
+        result.push_str(component);
     }
     if result.is_empty() {
         return Err(AppError::InvalidInput("path is empty".to_owned()));

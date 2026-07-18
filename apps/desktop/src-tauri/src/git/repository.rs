@@ -376,6 +376,21 @@ impl SnapshotRepository {
         })
     }
 
+    pub fn latest_successful_for_repository(
+        &self,
+        repository_id: &str,
+    ) -> Result<Option<RepositorySnapshot>, AppError> {
+        self.db.with_connection(|c| {
+            c.query_row(
+                "SELECT id,repository_id,captured_at,head_oid,branch,upstream,ahead,behind,dirty,staged_count,unstaged_count,untracked_count,conflicted_count,refresh_error_summary
+                 FROM repository_snapshots WHERE repository_id=?1 AND refresh_error_summary IS NULL ORDER BY captured_at DESC, rowid DESC LIMIT 1",
+                [repository_id],
+                map_snapshot,
+            )
+            .optional()
+        })
+    }
+
     pub fn list_for_repository(
         &self,
         repository_id: &str,
