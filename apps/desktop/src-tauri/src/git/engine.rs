@@ -319,41 +319,48 @@ fn wait_bounded(
 }
 
 fn clean_environment(command: &mut Command) {
+    clean_environment_from(command, std::env::vars_os());
+}
+
+fn clean_environment_from<I>(command: &mut Command, parent: I)
+where
+    I: IntoIterator<Item = (OsString, OsString)>,
+{
     command.env_clear();
-    // These values are path/transport settings, not arbitrary user variables. Keeping the
-    // allowlist small prevents plugin-provided secrets from being inherited by Git helpers.
-    const ALLOWED: &[&str] = &[
-        "PATH",
-        "HOME",
-        "USERPROFILE",
-        "HOMEDRIVE",
-        "HOMEPATH",
-        "SYSTEMROOT",
-        "SystemRoot",
-        "TEMP",
-        "TMP",
-        "LANG",
-        "LC_ALL",
-        "LC_CTYPE",
-        "GIT_CONFIG_GLOBAL",
-        "GIT_CONFIG_SYSTEM",
-        "GIT_CONFIG_NOSYSTEM",
-        "GIT_SSH",
-        "GIT_SSH_VARIANT",
-        "GIT_ASKPASS",
-        "SSH_AUTH_SOCK",
-        "SSH_AGENT_PID",
-        "DISPLAY",
-        "GCM_INTERACTIVE",
-        "GCM_CREDENTIAL_STORE",
-    ];
-    for key in ALLOWED {
-        if let Some(value) = std::env::var_os(key) {
-            command.env(OsStr::new(key), value);
+    // Keep only path/locale and non-executable SSH-agent transport settings. In particular,
+    // never inherit GIT_SSH/GIT_ASKPASS/GIT_CONFIG_* or credential-store overrides from a
+    // plugin/parent process.
+    for (key, value) in parent {
+        if is_safe_inherited_env(&key) {
+            command.env(key, value);
         }
     }
     command.env("GIT_TERMINAL_PROMPT", "0");
     command.env("GCM_INTERACTIVE", "Never");
+}
+
+fn is_safe_inherited_env(key: &OsStr) -> bool {
+    let Some(key) = key.to_str() else {
+        return false;
+    };
+    let normalized = key.to_ascii_uppercase();
+    matches!(
+        normalized.as_str(),
+        "PATH"
+            | "HOME"
+            | "USERPROFILE"
+            | "HOMEDRIVE"
+            | "HOMEPATH"
+            | "SYSTEMROOT"
+            | "TEMP"
+            | "TMP"
+            | "PATHEXT"
+            | "SSH_AUTH_SOCK"
+            | "SSH_AGENT_PID"
+            | "DISPLAY"
+            | "XDG_RUNTIME_DIR"
+    ) || normalized == "LANG"
+        || normalized.starts_with("LC_")
 }
 
 fn spawn_error_kind(error: io::Error) -> String {
@@ -377,6 +384,53 @@ fn wait_error_kind(error: io::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clean_environment_drops_parent_git_and_credential_overrides() {
+        let mut command = Command::new("git");
+        let parent = [
+            (OsString::from("GIT_SSH"), OsString::from("evil-ssh")),
+            (
+                OsString::from("GIT_ASKPASS"),
+                OsString::from("evil-askpass"),
+            ),
+            (
+                OsString::from("GIT_CONFIG_GLOBAL"),
+                OsString::from("evil-global"),
+            ),
+            (
+                OsString::from("GIT_CONFIG_SYSTEM"),
+                OsString::from("evil-system"),
+            ),
+            (OsString::from("GIT_CONFIG_NOSYSTEM"), OsString::from("0")),
+            (
+                OsString::from("GCM_CREDENTIAL_STORE"),
+                OsString::from("evil-store"),
+            ),
+            (
+                OsString::from("SSH_AUTH_SOCK"),
+                OsString::from("agent.sock"),
+            ),
+        ];
+        clean_environment_from(&mut command, parent);
+        let names = command
+            .get_envs()
+            .filter_map(|(key, _)| key.to_str())
+            .collect::<Vec<_>>();
+        for forbidden in [
+            "GIT_SSH",
+            "GIT_ASKPASS",
+            "GIT_CONFIG_GLOBAL",
+            "GIT_CONFIG_SYSTEM",
+            "GIT_CONFIG_NOSYSTEM",
+            "GCM_CREDENTIAL_STORE",
+        ] {
+            assert!(!names.contains(&forbidden), "forwarded {forbidden}");
+        }
+        assert!(names.contains(&"SSH_AUTH_SOCK"));
+        assert!(names.contains(&"GIT_TERMINAL_PROMPT"));
+        assert!(names.contains(&"GCM_INTERACTIVE"));
+    }
 
     #[test]
     fn terminate_and_reap_always_reaps_child() {
