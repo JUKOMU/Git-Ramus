@@ -23,7 +23,7 @@ impl Project {
             id: Uuid::new_v4().to_string(),
             root_path: root_path.into(),
             name: name.into(),
-            scan_depth: 2,
+            scan_depth: 3,
             exclude_patterns: Vec::new(),
             created_at: t,
             updated_at: t,

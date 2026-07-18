@@ -7,15 +7,31 @@ mod roundtrip_tests {
         let db = Database::open_in_memory().unwrap();
         let identities = super::IdentityProfileRepository::new(db.clone());
         let themes = super::ThemeRepository::new(db);
-        let profile = super::IdentityProfile::new("Alice", "alice", "alice@example.com");
+        let mut profile = super::IdentityProfile::new("Alice", "alice", "alice@example.com");
+        profile.gpg_format = Some("ssh".into());
+        profile.signing_key = Some("key".into());
+        profile.sign_commits = true;
+        profile.sign_tags = true;
         identities.create(&profile).unwrap();
-        assert_eq!(identities.get(&profile.id).unwrap().display_name, "Alice");
-        let theme = super::Theme::new("dark", "builtin", "1.0", "{}");
+        let loaded_profile = identities.get(&profile.id).unwrap();
+        assert_eq!(loaded_profile.display_name, "Alice");
+        assert_eq!(loaded_profile.gpg_format.as_deref(), Some("ssh"));
+        assert!(loaded_profile.sign_commits && loaded_profile.sign_tags);
+        assert_eq!(loaded_profile.created_at, profile.created_at);
+        let mut theme = super::Theme::new("dark", "builtin", "1.0", "{}");
+        theme.is_valid = false;
         themes.create(&theme).unwrap();
-        assert_eq!(themes.get(&theme.theme_id).unwrap().theme_id, "dark");
+        let loaded_theme = themes.get(&theme.theme_id).unwrap();
+        assert_eq!(loaded_theme.theme_id, "dark");
+        assert_eq!(loaded_theme.definition_json, "{}");
+        assert!(!loaded_theme.is_valid);
+        assert_eq!(loaded_theme.updated_at, theme.updated_at);
     }
 }
-use crate::{db::Database, error::AppError};
+use crate::{
+    db::{Database, map_constraint_error},
+    error::AppError,
+};
 use chrono::{DateTime, Utc};
 use rusqlite::{OptionalExtension, Row, params};
 use uuid::Uuid;
@@ -110,7 +126,7 @@ impl IdentityProfileRepository {
         Self { db }
     }
     pub fn create(&self, p: &IdentityProfile) -> Result<(), AppError> {
-        self.db.with_connection(|c|c.execute("INSERT INTO identity_profiles(id,display_name,user_name,user_email,gpg_format,signing_key,sign_commits,sign_tags,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![p.id,p.display_name,p.user_name,p.user_email,p.gpg_format,p.signing_key,p.sign_commits,p.sign_tags,p.created_at.to_rfc3339(),p.updated_at.to_rfc3339()]).map(|_|()))
+        self.db.with_connection(|c|c.execute("INSERT INTO identity_profiles(id,display_name,user_name,user_email,gpg_format,signing_key,sign_commits,sign_tags,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![p.id,p.display_name,p.user_name,p.user_email,p.gpg_format,p.signing_key,p.sign_commits,p.sign_tags,p.created_at.to_rfc3339(),p.updated_at.to_rfc3339()]).map(|_|())).map_err(|e| map_constraint_error(e, "identity profile"))
     }
     pub fn get(&self, id: &str) -> Result<IdentityProfile, AppError> {
         self.db.with_connection(|c|c.query_row("SELECT id,display_name,user_name,user_email,gpg_format,signing_key,sign_commits,sign_tags,created_at,updated_at FROM identity_profiles WHERE id=?1",[id],map_identity).optional()).and_then(|x|x.ok_or_else(||AppError::NotFound(format!("identity profile {id}"))))
@@ -136,7 +152,7 @@ impl ThemeRepository {
         Self { db }
     }
     pub fn create(&self, t: &Theme) -> Result<(), AppError> {
-        self.db.with_connection(|c|c.execute("INSERT INTO themes(theme_id,plugin_id,version,definition_json,is_valid,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![t.theme_id,t.plugin_id,t.version,t.definition_json,t.is_valid,t.created_at.to_rfc3339(),t.updated_at.to_rfc3339()]).map(|_|()))
+        self.db.with_connection(|c|c.execute("INSERT INTO themes(theme_id,plugin_id,version,definition_json,is_valid,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![t.theme_id,t.plugin_id,t.version,t.definition_json,t.is_valid,t.created_at.to_rfc3339(),t.updated_at.to_rfc3339()]).map(|_|())).map_err(|e| map_constraint_error(e, "theme"))
     }
     pub fn get(&self, id: &str) -> Result<Theme, AppError> {
         self.db.with_connection(|c|c.query_row("SELECT theme_id,plugin_id,version,definition_json,is_valid,created_at,updated_at FROM themes WHERE theme_id=?1",[id],map_theme).optional()).and_then(|x|x.ok_or_else(||AppError::NotFound(format!("theme {id}"))))
@@ -168,7 +184,7 @@ impl GlobalSettingsRepository {
         })
     }
     pub fn set(&self, settings: &GlobalSettings) -> Result<(), AppError> {
-        self.db.with_transaction(|tx| tx.execute("UPDATE global_settings SET global_identity_profile_id=?1,active_theme_id=?2,updated_at=?3 WHERE id=1", params![settings.global_identity_profile_id, settings.active_theme_id, settings.updated_at.to_rfc3339()]).map(|_| ()))
+        self.db.with_transaction(|tx| tx.execute("UPDATE global_settings SET global_identity_profile_id=?1,active_theme_id=?2,updated_at=?3 WHERE id=1", params![settings.global_identity_profile_id, settings.active_theme_id, settings.updated_at.to_rfc3339()]).map(|_| ())).map_err(|e| map_constraint_error(e, "global settings"))
     }
 }
 

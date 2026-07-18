@@ -8,6 +8,23 @@ use rusqlite::Connection;
 
 use crate::error::AppError;
 
+pub(crate) fn map_constraint_error(error: AppError, context: &str) -> AppError {
+    let is_constraint = matches!(
+        error,
+        AppError::Database(rusqlite::Error::SqliteFailure(ref failure, _))
+            if failure.extended_code == 19
+                || failure.extended_code == 275
+                || failure.extended_code == 787
+                || failure.extended_code == 1555
+                || failure.extended_code == 2067
+    );
+    if is_constraint {
+        AppError::InvalidInput(format!("{context} violates a database constraint"))
+    } else {
+        error
+    }
+}
+
 #[derive(Clone)]
 pub struct Database {
     connection: Arc<Mutex<Connection>>,
@@ -157,5 +174,25 @@ mod tests {
                 "missing {name}"
             );
         }
+    }
+
+    #[test]
+    fn upgrading_v1_preserves_existing_rows() {
+        let mut connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(super::migrations::MIGRATION_1)
+            .unwrap();
+        connection.execute("INSERT INTO jobs (id,kind,title,status,created_at,updated_at) VALUES ('legacy','test','Legacy','queued','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')", []).unwrap();
+        super::migrations::run(&mut connection).unwrap();
+        let title: String = connection
+            .query_row("SELECT title FROM jobs WHERE id='legacy'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(title, "Legacy");
+        assert_eq!(
+            connection
+                .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
     }
 }

@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY NOT NULL,
     root_path TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL,
-    scan_depth INTEGER NOT NULL DEFAULT 2 CHECK (scan_depth >= 0),
+    scan_depth INTEGER NOT NULL DEFAULT 3 CHECK (scan_depth >= 0),
     exclude_patterns_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
