@@ -150,14 +150,9 @@ mod tests {
         repos.add_to_project(&p2.id, &r1.id, "shared").unwrap();
         assert_eq!(repos.list_for_project(&p1.id).unwrap().len(), 2);
         assert_eq!(repos.list_for_project(&p2.id).unwrap().len(), 1);
-        db.with_connection(|c| {
-            c.execute(
-                "DELETE FROM project_repositories WHERE project_id=?1 AND repository_id=?2",
-                rusqlite::params![p1.id, r1.id],
-            )
-        })
-        .unwrap();
+        repos.remove_from_project(&p1.id, &r1.id).unwrap();
         assert_eq!(repos.get(&r1.id).unwrap().id, r1.id);
+        assert_eq!(repos.list_for_project(&p1.id).unwrap().len(), 1);
     }
 
     #[test]

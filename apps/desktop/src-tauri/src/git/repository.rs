@@ -99,7 +99,22 @@ impl RepositoryRepository {
         repository_id: &str,
         relative_path: &str,
     ) -> Result<(), AppError> {
-        self.db.with_connection(|c| c.execute("INSERT INTO project_repositories(project_id,repository_id,relative_path) VALUES(?1,?2,?3) ON CONFLICT(project_id,repository_id) DO UPDATE SET relative_path=excluded.relative_path", params![project_id, repository_id, relative_path]).map(|_|())).map_err(|e| map_constraint_error(e, "project repository relationship"))
+        self.db.with_transaction(|tx| tx.execute("INSERT INTO project_repositories(project_id,repository_id,relative_path) VALUES(?1,?2,?3) ON CONFLICT(project_id,repository_id) DO UPDATE SET relative_path=excluded.relative_path", params![project_id, repository_id, relative_path]).map(|_|())).map_err(|e| map_constraint_error(e, "project repository relationship"))
+    }
+    pub fn remove_from_project(
+        &self,
+        project_id: &str,
+        repository_id: &str,
+    ) -> Result<(), AppError> {
+        self.db
+            .with_transaction(|tx| {
+                tx.execute(
+                    "DELETE FROM project_repositories WHERE project_id=?1 AND repository_id=?2",
+                    params![project_id, repository_id],
+                )
+                .map(|_| ())
+            })
+            .map_err(|e| map_constraint_error(e, "project repository relationship removal"))
     }
     pub fn add_remote(&self, remote: &Remote) -> Result<(), AppError> {
         self.db.with_connection(|c| c.execute("INSERT INTO repository_remotes(repository_id,name,fetch_url,push_url) VALUES(?1,?2,?3,?4) ON CONFLICT(repository_id,name) DO UPDATE SET fetch_url=excluded.fetch_url,push_url=excluded.push_url", params![remote.repository_id, remote.name, remote.fetch_url, remote.push_url]).map(|_|())).map_err(|e| map_constraint_error(e, "repository remote"))
