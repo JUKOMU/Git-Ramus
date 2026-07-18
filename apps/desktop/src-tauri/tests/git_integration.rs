@@ -245,6 +245,15 @@ fn git_config_parser_returns_key_value_pairs() {
     );
     let empty = parse_git_config(b"core.editor\0\0").expect("empty config value parses");
     assert_eq!(empty.get("core.editor").map(String::as_str), Some(""));
+    assert!(parse_git_config(b"").unwrap().is_empty());
+    assert!(matches!(
+        parse_git_config(b"core.editor\0vim"),
+        Err(AppError::InvalidInput(_))
+    ));
+    assert!(matches!(
+        parse_git_config(b"core.editor\nvim"),
+        Err(AppError::InvalidInput(_))
+    ));
 }
 
 #[test]

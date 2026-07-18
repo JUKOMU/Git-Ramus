@@ -1041,7 +1041,13 @@ fn parse_patch_path(path: &[u8]) -> Result<Option<String>, AppError> {
 /// Parse NUL-terminated Git config output. Both `key\nvalue\0` (get-regexp) and
 /// `key\0value\0` (list) forms are accepted.
 pub fn parse_git_config(input: impl AsRef<[u8]>) -> Result<GitConfig, AppError> {
-    let mut records = input.as_ref().split(|byte| *byte == 0).collect::<Vec<_>>();
+    let input = input.as_ref();
+    if !input.is_empty() && !input.ends_with(&[0]) {
+        return Err(AppError::InvalidInput(
+            "Git config stream is not NUL terminated".to_owned(),
+        ));
+    }
+    let mut records = input.split(|byte| *byte == 0).collect::<Vec<_>>();
     // A trailing NUL contributes an empty sentinel; interior empty records are meaningful (for
     // example, a config key with an explicitly empty value) and must be retained.
     if records.last().is_some_and(|record| record.is_empty()) {

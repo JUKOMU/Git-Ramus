@@ -3,12 +3,13 @@
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, Ordering},
+    mpsc::{self, Receiver, RecvTimeoutError},
 };
-use std::thread::{self, JoinHandle};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::error::AppError;
@@ -43,15 +44,153 @@ pub struct SystemGitRunner {
     poll_interval: Duration,
 }
 
+const IO_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
+type StdinWriter = (Receiver<io::Result<()>>, Arc<Mutex<Option<ChildStdin>>>);
+
+enum ProcessTree {
+    #[cfg(windows)]
+    Windows(WindowsJob),
+    #[cfg(unix)]
+    Unix { pgid: libc::pid_t },
+    #[cfg(not(any(unix, windows)))]
+    Other,
+}
+
+impl ProcessTree {
+    fn configure(command: &mut Command) -> Result<(), AppError> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        #[cfg(any(windows, not(any(unix, windows))))]
+        {
+            let _ = command;
+        }
+        Ok(())
+    }
+
+    fn attach(child: &Child) -> Result<Self, AppError> {
+        #[cfg(windows)]
+        {
+            WindowsJob::attach(child).map(Self::Windows)
+        }
+        #[cfg(unix)]
+        {
+            Ok(Self::Unix {
+                pgid: child.id() as libc::pid_t,
+            })
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = child;
+            Ok(Self::Other)
+        }
+    }
+
+    fn terminate(&self) -> Result<(), AppError> {
+        match self {
+            #[cfg(windows)]
+            Self::Windows(job) => job.terminate(),
+            #[cfg(unix)]
+            Self::Unix { pgid } => {
+                let result = unsafe { libc::kill(-*pgid, libc::SIGKILL) };
+                if result == -1 {
+                    let error = io::Error::last_os_error();
+                    if error.raw_os_error() != Some(libc::ESRCH) {
+                        return Err(AppError::Git(
+                            "unable to terminate Git process group".to_owned(),
+                        ));
+                    }
+                }
+                Ok(())
+            }
+            #[cfg(not(any(unix, windows)))]
+            Self::Other => Ok(()),
+        }
+    }
+}
+
+#[cfg(windows)]
+struct WindowsJob {
+    handle: windows_sys::Win32::Foundation::HANDLE,
+}
+
+#[cfg(windows)]
+impl WindowsJob {
+    fn attach(child: &Child) -> Result<Self, AppError> {
+        use std::mem::size_of;
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+            SetInformationJobObject,
+        };
+
+        let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if handle.is_null() {
+            return Err(AppError::Git("unable to create Git job".to_owned()));
+        }
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let configured = unsafe {
+            SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        };
+        if configured == 0 {
+            unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+            return Err(AppError::Git("unable to configure Git job".to_owned()));
+        }
+        let assigned = unsafe {
+            AssignProcessToJobObject(
+                handle,
+                child.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE,
+            )
+        };
+        if assigned == 0 {
+            unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+            return Err(AppError::Git(
+                "unable to assign Git process to job".to_owned(),
+            ));
+        }
+        Ok(Self { handle })
+    }
+
+    fn terminate(&self) -> Result<(), AppError> {
+        use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+        let terminated = unsafe { TerminateJobObject(self.handle, 1) };
+        if terminated == 0 {
+            return Err(AppError::Git("unable to terminate Git job".to_owned()));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WindowsJob {
+    fn drop(&mut self) {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        unsafe {
+            let _ = CloseHandle(self.handle);
+        }
+    }
+}
+
 struct ChildGuard {
     child: Option<Child>,
+    tree: ProcessTree,
     reaped: bool,
 }
 
 impl ChildGuard {
-    fn new(child: Child) -> Self {
+    fn new(child: Child, tree: ProcessTree) -> Self {
         Self {
             child: Some(child),
+            tree,
             reaped: false,
         }
     }
@@ -60,17 +199,26 @@ impl ChildGuard {
         self.child.as_mut().expect("child guard must own a process")
     }
 
-    fn mark_reaped(&mut self) {
-        self.reaped = true;
+    fn mark_reaped(&mut self) -> Result<(), AppError> {
+        let result = self.tree.terminate();
+        if result.is_ok() {
+            self.reaped = true;
+        }
+        result
     }
 
     fn terminate(&mut self) {
         if !self.reaped {
-            self.reaped = if let Some(child) = self.child.as_mut() {
+            let mut tree_ok = self.tree.terminate().is_ok();
+            let child_ok = if let Some(child) = self.child.as_mut() {
                 terminate_and_reap(child).is_ok()
             } else {
                 true
             };
+            if !tree_ok {
+                tree_ok = self.tree.terminate().is_ok();
+            }
+            self.reaped = tree_ok && child_ok;
         }
     }
 
@@ -150,11 +298,19 @@ impl GitRunner for SystemGitRunner {
             ));
         }
 
-        let child = self
-            .command(&request)
+        let mut command = self.command(&request);
+        ProcessTree::configure(&mut command)?;
+        let mut child = command
             .spawn()
             .map_err(|error| AppError::Git(spawn_error_kind(error)))?;
-        let mut guard = ChildGuard::new(child);
+        let tree = match ProcessTree::attach(&child) {
+            Ok(tree) => tree,
+            Err(error) => {
+                let _ = terminate_and_reap(&mut child);
+                return Err(error);
+            }
+        };
+        let mut guard = ChildGuard::new(child, tree);
 
         let stdout = match guard.child_mut().stdout.take() {
             Some(stdout) => stdout,
@@ -175,16 +331,9 @@ impl GitRunner for SystemGitRunner {
         let stdout_thread = spawn_reader(stdout, self.max_stdout_bytes, stdout_limited.clone());
         let stderr_thread = spawn_reader(stderr, self.max_stderr_bytes, stderr_limited.clone());
 
-        let stdin_thread = request.stdin.map(|input| {
-            let mut stdin = guard.child_mut().stdin.take();
-            thread::spawn(move || {
-                if let Some(mut stdin) = stdin.take() {
-                    // A short-lived Git process can close stdin before all bytes are written; a
-                    // broken pipe is not itself a security or process failure.
-                    let _ = stdin.write_all(&input);
-                    let _ = stdin.flush();
-                }
-            })
+        let stdin_writer = request.stdin.map(|input| {
+            let stdin = guard.child_mut().stdin.take();
+            spawn_stdin_writer(stdin, input)
         });
         drop(guard.child_mut().stdin.take());
 
@@ -197,19 +346,26 @@ impl GitRunner for SystemGitRunner {
         );
         let (status, timed_out) = match wait_result {
             Ok(result) => {
-                guard.mark_reaped();
+                if let Err(error) = guard.mark_reaped() {
+                    guard.terminate();
+                    let _ =
+                        collect_output_bounded(stdout_thread, stderr_thread, IO_CLEANUP_TIMEOUT);
+                    let _ = finish_stdin_writer(stdin_writer, IO_CLEANUP_TIMEOUT);
+                    return Err(error);
+                }
                 result
             }
             Err(error) => {
                 // Ensure all process and pipe resources are closed before returning an error.
                 guard.terminate();
-                let _ = join_output_threads(stdout_thread, stderr_thread);
-                join_stdin_thread(stdin_thread);
+                let _ = collect_output_bounded(stdout_thread, stderr_thread, IO_CLEANUP_TIMEOUT);
+                let _ = finish_stdin_writer(stdin_writer, IO_CLEANUP_TIMEOUT);
                 return Err(error);
             }
         };
-        let output_result = join_output_threads(stdout_thread, stderr_thread);
-        join_stdin_thread(stdin_thread);
+        let output_result =
+            collect_output_bounded(stdout_thread, stderr_thread, IO_CLEANUP_TIMEOUT);
+        let stdin_result = finish_stdin_writer(stdin_writer, IO_CLEANUP_TIMEOUT);
 
         if timed_out {
             return Err(AppError::Timeout);
@@ -218,6 +374,7 @@ impl GitRunner for SystemGitRunner {
             return Err(AppError::OutputLimit);
         }
         let (stdout, stderr) = output_result?;
+        stdin_result?;
         guard.disarm();
         Ok(GitOutput {
             status,
@@ -231,53 +388,104 @@ fn spawn_reader<R>(
     mut reader: R,
     limit: usize,
     exceeded: Arc<AtomicBool>,
-) -> JoinHandle<io::Result<Vec<u8>>>
+) -> Receiver<io::Result<Vec<u8>>>
 where
     R: Read + Send + 'static,
 {
+    let (sender, receiver) = mpsc::sync_channel(1);
     thread::spawn(move || {
         let mut output = Vec::new();
         let mut buffer = [0_u8; 16 * 1024];
-        loop {
-            let read = reader.read(&mut buffer)?;
-            if read == 0 {
-                break;
+        let result = (|| {
+            loop {
+                let read = reader.read(&mut buffer)?;
+                if read == 0 {
+                    break;
+                }
+                if output.len().saturating_add(read) > limit {
+                    exceeded.store(true, Ordering::Release);
+                    // Stop retaining bytes immediately. The parent will terminate the child on its
+                    // next poll; draining a bounded chunk keeps the pipe from deadlocking meanwhile.
+                    continue;
+                }
+                output.extend_from_slice(&buffer[..read]);
             }
-            if output.len().saturating_add(read) > limit {
-                exceeded.store(true, Ordering::Release);
-                // Stop retaining bytes immediately. The parent will terminate the child on its
-                // next poll; draining a bounded chunk keeps the pipe from deadlocking meanwhile.
-                continue;
-            }
-            output.extend_from_slice(&buffer[..read]);
-        }
-        Ok(output)
-    })
+            Ok(output)
+        })();
+        let _ = sender.send(result);
+    });
+    receiver
 }
 
-fn join_reader(handle: JoinHandle<io::Result<Vec<u8>>>) -> Result<Vec<u8>, AppError> {
-    match handle.join() {
+fn receive_reader_bounded(
+    receiver: Receiver<io::Result<Vec<u8>>>,
+    timeout: Duration,
+) -> Result<Vec<u8>, AppError> {
+    match receiver.recv_timeout(timeout) {
         Ok(Ok(bytes)) => Ok(bytes),
         Ok(Err(error)) => Err(AppError::Git(reader_error_kind(error))),
-        Err(_) => Err(AppError::Git("Git output reader failed".to_owned())),
+        Err(RecvTimeoutError::Timeout) => Err(AppError::Timeout),
+        Err(RecvTimeoutError::Disconnected) => {
+            Err(AppError::Git("Git output reader failed".to_owned()))
+        }
     }
 }
 
-fn join_output_threads(
-    stdout: JoinHandle<io::Result<Vec<u8>>>,
-    stderr: JoinHandle<io::Result<Vec<u8>>>,
+fn collect_output_bounded(
+    stdout: Receiver<io::Result<Vec<u8>>>,
+    stderr: Receiver<io::Result<Vec<u8>>>,
+    timeout: Duration,
 ) -> Result<(Vec<u8>, Vec<u8>), AppError> {
-    let stdout = join_reader(stdout);
-    let stderr = join_reader(stderr);
+    let deadline = Instant::now() + timeout;
+    let stdout = receive_reader_until(stdout, deadline);
+    let stderr = receive_reader_until(stderr, deadline);
     match (stdout, stderr) {
         (Ok(stdout), Ok(stderr)) => Ok((stdout, stderr)),
         (Err(error), _) | (_, Err(error)) => Err(error),
     }
 }
 
-fn join_stdin_thread(stdin: Option<JoinHandle<()>>) {
-    if let Some(thread) = stdin {
-        let _ = thread.join();
+fn receive_reader_until(
+    receiver: Receiver<io::Result<Vec<u8>>>,
+    deadline: Instant,
+) -> Result<Vec<u8>, AppError> {
+    receive_reader_bounded(receiver, deadline.saturating_duration_since(Instant::now()))
+}
+
+fn spawn_stdin_writer(stdin: Option<ChildStdin>, input: Vec<u8>) -> StdinWriter {
+    let control = Arc::new(Mutex::new(stdin));
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let writer_control = control.clone();
+    thread::spawn(move || {
+        let stdin = match writer_control.lock() {
+            Ok(mut guard) => Ok(guard.take()),
+            Err(_) => Err(io::Error::other("stdin lock poisoned")),
+        };
+        let result = match stdin {
+            Ok(Some(mut stdin)) => stdin.write_all(&input).and_then(|_| stdin.flush()),
+            Ok(None) => Ok(()),
+            Err(error) => Err(error),
+        };
+        let _ = sender.send(result);
+    });
+    (receiver, control)
+}
+
+fn finish_stdin_writer(writer: Option<StdinWriter>, timeout: Duration) -> Result<(), AppError> {
+    let Some((receiver, control)) = writer else {
+        return Ok(());
+    };
+    let deadline = Instant::now() + timeout;
+    match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Ok(()),
+        Err(RecvTimeoutError::Timeout) => {
+            if let Ok(mut guard) = control.lock() {
+                let _ = guard.take();
+            }
+            Err(AppError::Timeout)
+        }
+        Err(RecvTimeoutError::Disconnected) => Ok(()),
     }
 }
 
@@ -384,6 +592,36 @@ fn wait_error_kind(error: io::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_reader_cleanup_times_out_instead_of_joining_forever() {
+        let (_sender, receiver) = std::sync::mpsc::channel::<io::Result<Vec<u8>>>();
+        let started = Instant::now();
+        assert!(matches!(
+            receive_reader_bounded(receiver, Duration::from_millis(20)),
+            Err(AppError::Timeout)
+        ));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn process_tree_terminates_a_configured_git_process() {
+        let mut command = Command::new("git");
+        command
+            .args(["hash-object", "--stdin"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        ProcessTree::configure(&mut command).expect("process tree configures");
+        let Ok(mut child) = command.spawn() else {
+            eprintln!("git executable unavailable; skipping process tree test");
+            return;
+        };
+        let tree = ProcessTree::attach(&child).expect("process joins tree");
+        tree.terminate().expect("tree terminates");
+        let _ = child.wait().expect("direct child is reaped");
+        assert!(child.try_wait().expect("try_wait succeeds").is_some());
+    }
 
     #[test]
     fn clean_environment_drops_parent_git_and_credential_overrides() {
