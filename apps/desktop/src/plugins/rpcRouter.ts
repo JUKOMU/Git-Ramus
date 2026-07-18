@@ -14,6 +14,7 @@ import {
   repositoryUnstageRequestSchema,
   workspaceCreateRequestSchema,
   workspaceDeleteRequestSchema,
+  workspaceRequestSchema,
   workspaceUpdateMembershipRequestSchema
 } from "@git-ramus/contracts";
 import type { ErrorEnvelope, RpcRequest } from "@git-ramus/contracts";
@@ -116,6 +117,12 @@ const routes: Readonly<Record<string, Route>> = {
     RPC_RESOURCES.workspaces,
     workspaceCreateRequestSchema,
     (params, hostApi) => hostApi.createWorkspace(params)
+  ),
+  "workspaces.getMembership": defineRoute(
+    "workspaces:manage",
+    RPC_RESOURCES.workspaces,
+    workspaceRequestSchema,
+    (params, hostApi) => hostApi.getWorkspaceMembership(params)
   ),
   "workspaces.updateMembership": defineRoute(
     "workspaces:manage",

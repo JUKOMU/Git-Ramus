@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import manifest from "../../../../plugins/builtin-welcome/plugin.json";
+import gitClientManifest from "../../../../plugins/git-client/plugin.json";
 import type { PersistedRepositorySnapshot, RepositorySnapshot } from "../index";
 import {
   errorEnvelopeSchema,
@@ -20,6 +21,8 @@ import {
   gitContextRequestSchema,
   projectListResponseSchema,
   projectUpdateScanRulesRequestSchema,
+  workspaceRequestSchema,
+  workspaceMembershipResponseSchema,
   repositoryStageRequestSchema,
   scanProjectResultSchema,
   overviewSchema,
@@ -78,6 +81,24 @@ const persistedSnapshot = {
 describe("shared contracts", () => {
   it("accepts the built-in welcome manifest", () => {
     expect(pluginManifestSchema.parse(manifest).id).toBe("git-ramus.welcome");
+  });
+
+  it("accepts the built-in Git Client routes and scoped permissions", () => {
+    const parsed = pluginManifestSchema.parse(gitClientManifest);
+    expect(parsed.id).toBe("git-ramus.git-client");
+    expect(parsed.contributions.navigation.map(({ route }) => route)).toEqual([
+      "/overview",
+      "/projects",
+      "/workspaces"
+    ]);
+    expect(parsed.permissions).toEqual([
+      { capability: "projects:manage", resources: ["projects"] },
+      { capability: "workspaces:manage", resources: ["workspaces"] },
+      { capability: "repositories:read", resources: ["repositories"] },
+      { capability: "repositories:write", resources: ["repositories"] },
+      { capability: "identities:read", resources: ["identities"] },
+      { capability: "identities:write", resources: ["identities"] }
+    ]);
   });
 
   it.each(["../secret.html", "..\\secret.html", "C:\\secret.html", "C:secret.html"])(
@@ -236,6 +257,14 @@ describe("shared contracts", () => {
     expect(() => repositorySchema.parse({ ...repository, workspaceIds: [workspaceId] })).toThrow();
     expect(() =>
       persistedRepositorySnapshotSchema.parse({ ...persistedSnapshot, headSha: "abc123" })
+    ).toThrow();
+  });
+
+  it("accepts only a registered workspace ID when reading membership", () => {
+    expect(workspaceRequestSchema.parse({ workspaceId })).toEqual({ workspaceId });
+    expect(workspaceMembershipResponseSchema.parse([projectId])).toEqual([projectId]);
+    expect(() =>
+      workspaceRequestSchema.parse({ workspaceId, rootPath: "C:/must-not-cross-boundary" })
     ).toThrow();
   });
 

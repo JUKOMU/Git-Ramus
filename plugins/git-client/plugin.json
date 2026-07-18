@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "id": "git-ramus.git-client",
+  "name": "Git Client",
+  "version": "0.1.0",
+  "publisher": "git-ramus",
+  "description": "Local projects, workspaces, repositories, identities, and commits.",
+  "kind": "builtin",
+  "sdkVersion": "^0.1.0",
+  "entrypoints": {
+    "ui": "ui.html"
+  },
+  "contributions": {
+    "navigation": [
+      {
+        "id": "overview",
+        "label": "Overview",
+        "route": "/overview",
+        "icon": "layout-dashboard"
+      },
+      {
+        "id": "projects",
+        "label": "Projects",
+        "route": "/projects",
+        "icon": "folder"
+      },
+      {
+        "id": "workspaces",
+        "label": "Workspaces",
+        "route": "/workspaces",
+        "icon": "boxes"
+      }
+    ]
+  },
+  "permissions": [
+    {
+      "capability": "projects:manage",
+      "resources": ["projects"]
+    },
+    {
+      "capability": "workspaces:manage",
+      "resources": ["workspaces"]
+    },
+    {
+      "capability": "repositories:read",
+      "resources": ["repositories"]
+    },
+    {
+      "capability": "repositories:write",
+      "resources": ["repositories"]
+    },
+    {
+      "capability": "identities:read",
+      "resources": ["identities"]
+    },
+    {
+      "capability": "identities:write",
+      "resources": ["identities"]
+    }
+  ]
+}

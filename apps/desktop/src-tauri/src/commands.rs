@@ -89,6 +89,12 @@ pub struct GitWorkspaceCreateRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitWorkspaceRequest {
+    pub workspace_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GitWorkspaceUpdateRequest {
     pub workspace_id: String,
     pub name: String,
@@ -439,6 +445,17 @@ pub fn git_workspace_list(state: State<'_, AppState>) -> CommandResult<GitWorksp
 }
 
 #[tauri::command]
+pub fn git_workspace_get_membership(
+    state: State<'_, AppState>,
+    request: GitWorkspaceRequest,
+) -> CommandResult<Vec<String>> {
+    state
+        .git
+        .workspace_projects(&request.workspace_id)
+        .map_err(command_error)
+}
+
+#[tauri::command]
 pub fn git_workspace_update(
     state: State<'_, AppState>,
     request: GitWorkspaceUpdateRequest,
@@ -761,7 +778,8 @@ mod tests {
     use super::app_info;
     use super::{
         GitIdentityCreateRequest, GitProjectCreateRequest, GitProjectDeleteRequest,
-        GitRepositoryCommitRequest, GitRepositoryIdentityBindRequest, GitWorkspaceUpdateRequest,
+        GitRepositoryCommitRequest, GitRepositoryIdentityBindRequest, GitWorkspaceRequest,
+        GitWorkspaceUpdateRequest,
     };
     use serde_json::json;
 
@@ -794,6 +812,18 @@ mod tests {
                 "workspaceId": "w",
                 "name": "fixture",
                 "unexpected": true
+            }))
+            .is_err()
+        );
+        let membership: GitWorkspaceRequest = serde_json::from_value(json!({
+            "workspaceId": "workspace"
+        }))
+        .expect("workspace membership request parses");
+        assert_eq!(membership.workspace_id, "workspace");
+        assert!(
+            serde_json::from_value::<GitWorkspaceRequest>(json!({
+                "workspaceId": "workspace",
+                "rootPath": "C:/must-not-cross-boundary"
             }))
             .is_err()
         );

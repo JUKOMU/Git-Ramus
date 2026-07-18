@@ -22,6 +22,7 @@ function createHostApi(): HostApi {
     scanProject: vi.fn(),
     listWorkspaces: vi.fn(),
     createWorkspace: vi.fn(),
+    getWorkspaceMembership: vi.fn(),
     updateWorkspaceMembership: vi.fn(),
     deleteWorkspace: vi.fn(),
     getOverview: vi.fn(),
@@ -215,6 +216,14 @@ describe("Git client RPC routes", () => {
       resource: "workspaces",
       hostMethod: "createWorkspace",
       argument: { name: "Workspace" }
+    },
+    {
+      method: "workspaces.getMembership",
+      params: { workspaceId },
+      capability: "workspaces:manage",
+      resource: "workspaces",
+      hostMethod: "getWorkspaceMembership",
+      argument: { workspaceId }
     },
     {
       method: "workspaces.updateMembership",

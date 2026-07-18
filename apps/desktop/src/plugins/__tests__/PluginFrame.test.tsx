@@ -57,6 +57,7 @@ const hostApi: HostApi = {
   scanProject: vi.fn(),
   listWorkspaces: vi.fn(),
   createWorkspace: vi.fn(),
+  getWorkspaceMembership: vi.fn(),
   updateWorkspaceMembership: vi.fn(),
   deleteWorkspace: vi.fn(),
   getOverview: vi.fn(),

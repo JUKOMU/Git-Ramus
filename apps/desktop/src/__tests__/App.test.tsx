@@ -1,5 +1,5 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
 import { App } from "../App";
 import type { HostApi } from "../lib/hostApi";
 
@@ -25,6 +25,7 @@ const hostApi: HostApi = {
   scanProject: async () => Promise.reject(new Error("not used")),
   listWorkspaces: async () => ({ workspaces: [] }),
   createWorkspace: async () => Promise.reject(new Error("not used")),
+  getWorkspaceMembership: async () => [],
   updateWorkspaceMembership: async () => [],
   deleteWorkspace: async () => undefined,
   getOverview: async () => Promise.reject(new Error("not used")),
@@ -45,6 +46,8 @@ const hostApi: HostApi = {
   getEffectiveRepositoryIdentity: async () => Promise.reject(new Error("not used"))
 };
 
+afterEach(cleanup);
+
 describe("App", () => {
   it("renders the trusted shell and host version", async () => {
     render(<App hostApi={hostApi} />);
@@ -52,5 +55,14 @@ describe("App", () => {
     expect(await screen.findByText("Host 0.1.0")).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Primary" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Tasks" })).toBeInTheDocument();
+  });
+
+  it("does not render hardcoded no-op navigation entries", async () => {
+    render(<App hostApi={hostApi} />);
+    expect(await screen.findByText("Host 0.1.0")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Overview" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Projects" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Workspaces" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Plugins" })).not.toBeInTheDocument();
   });
 });

@@ -103,6 +103,7 @@ describe("tauriHostApi Git client commands", () => {
     await tauriHostApi.scanProject(scan);
     await tauriHostApi.listWorkspaces();
     await tauriHostApi.createWorkspace(createWorkspace);
+    await tauriHostApi.getWorkspaceMembership({ workspaceId });
     await tauriHostApi.updateWorkspaceMembership(updateMembership);
     await tauriHostApi.deleteWorkspace(deleteWorkspace);
     await tauriHostApi.getOverview(context);
@@ -128,6 +129,7 @@ describe("tauriHostApi Git client commands", () => {
       ["git_project_scan", { request: scan }],
       ["git_workspace_list"],
       ["git_workspace_create", { request: createWorkspace }],
+      ["git_workspace_get_membership", { request: { workspaceId } }],
       ["git_workspace_update_membership", { request: updateMembership }],
       ["git_workspace_delete", { request: deleteWorkspace }],
       ["git_overview_get", { request: context }],
@@ -175,6 +177,7 @@ const responses: Record<string, unknown> = {
   },
   git_workspace_list: { workspaces: [workspace] },
   git_workspace_create: workspace,
+  git_workspace_get_membership: [projectId],
   git_workspace_update_membership: [projectId],
   git_workspace_delete: null,
   git_overview_get: {

@@ -329,6 +329,8 @@ export const workspaceListResponseSchema = z
 
 export const workspaceCreateRequestSchema = z.object({ name: z.string().min(1).max(256) }).strict();
 
+export const workspaceRequestSchema = z.object({ workspaceId: uuid }).strict();
+
 export const workspaceUpdateMembershipRequestSchema = z
   .object({ workspaceId: uuid, projectIds: z.array(uuid) })
   .strict();
@@ -533,6 +535,7 @@ export type ProjectUpdateScanRulesRequest = z.infer<typeof projectUpdateScanRule
 export type ProjectScanRequest = z.infer<typeof projectScanRequestSchema>;
 export type WorkspaceListResponse = z.infer<typeof workspaceListResponseSchema>;
 export type WorkspaceCreateRequest = z.infer<typeof workspaceCreateRequestSchema>;
+export type WorkspaceRequest = z.infer<typeof workspaceRequestSchema>;
 export type WorkspaceUpdateMembershipRequest = z.infer<
   typeof workspaceUpdateMembershipRequestSchema
 >;

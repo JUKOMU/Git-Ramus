@@ -50,6 +50,7 @@ pub fn run() {
             commands::git_project_scan,
             commands::git_workspace_create,
             commands::git_workspace_list,
+            commands::git_workspace_get_membership,
             commands::git_workspace_update,
             commands::git_workspace_update_membership,
             commands::git_workspace_delete,

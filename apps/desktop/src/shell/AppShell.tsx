@@ -14,19 +14,12 @@ interface AppShellProps {
   children: ReactNode;
 }
 
-const primaryItems = ["Overview", "Projects", "Workspaces", "Plugins"];
-
 export function AppShell(props: AppShellProps) {
   return (
     <div className="app-shell">
       <aside className="sidebar">
         <h1>Git-Ramus</h1>
         <nav aria-label="Primary">
-          {primaryItems.map((item) => (
-            <button className="nav-item" key={item} type="button">
-              {item}
-            </button>
-          ))}
           {props.plugins.flatMap((plugin) =>
             plugin.manifest.contributions.navigation.map((item) => (
               <button

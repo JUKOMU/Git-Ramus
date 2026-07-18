@@ -1,0 +1,458 @@
+import "@testing-library/jest-dom/vitest";
+import { act, cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type {
+  DiffFile,
+  EffectiveIdentity,
+  IdentityProfile,
+  ParsedChangeEntry
+} from "@git-ramus/contracts";
+import { IdentityPicker } from "../components/IdentityPicker";
+import { RepositoryView, type RepositoryApi } from "../views/RepositoryView";
+
+const projectId = "87a31769-8aaa-47ca-bef3-47e66f0c62fc";
+const repositoryId = "a032bc9c-8759-45ac-856f-b76f9addb9d1";
+const profileId = "d23957ac-5c0f-4857-9124-7f1599a41f33";
+const secondProfileId = "c8f98df3-e949-48e0-a9ad-407fe371a94a";
+
+const repository = {
+  id: repositoryId,
+  canonicalPath: "C:/work/demo",
+  displayName: "Demo repository",
+  kind: "normal" as const,
+  createdAt: "2026-07-17T00:00:00Z",
+  updatedAt: "2026-07-17T00:00:00Z"
+};
+
+const persistedSnapshot = {
+  id: "5d497627-6613-4273-99e3-2f59c20d121f",
+  repositoryId,
+  capturedAt: "2026-07-17T00:00:00Z",
+  headOid: "abc123",
+  branch: "main",
+  upstream: "origin/main",
+  ahead: 0,
+  behind: 0,
+  dirty: true,
+  stagedCount: 1,
+  unstagedCount: 2,
+  untrackedCount: 1,
+  conflictedCount: 1,
+  refreshErrorSummary: null
+};
+
+const identity: IdentityProfile = {
+  id: profileId,
+  displayName: "Work profile",
+  userName: "Alice",
+  userEmail: "alice@example.com",
+  gpgFormat: "ssh",
+  signingKey: "ssh-ed25519 AAAA",
+  signCommits: true,
+  signTags: false,
+  createdAt: "2026-07-17T00:00:00Z",
+  updatedAt: "2026-07-17T00:00:00Z"
+};
+
+const secondIdentity: IdentityProfile = {
+  ...identity,
+  id: secondProfileId,
+  displayName: "Personal profile",
+  userEmail: "alice@personal.test",
+  signCommits: false,
+  gpgFormat: null,
+  signingKey: null
+};
+
+const effectiveIdentity: EffectiveIdentity = {
+  repositoryId,
+  profileId,
+  profile: identity,
+  source: "repositoryProfile",
+  displayName: identity.displayName,
+  userName: identity.userName,
+  userEmail: identity.userEmail,
+  gpgFormat: "ssh",
+  signingKey: identity.signingKey,
+  signCommits: true,
+  signTags: false,
+  drift: null
+};
+
+const staged = change("src/staged.ts", { staged: true, unstaged: false, status: "M." });
+const unstaged = change("src/unstaged.ts", { staged: false, unstaged: true, status: ".M" });
+const untracked = change("src/new.ts", {
+  kind: "untracked",
+  staged: false,
+  unstaged: true,
+  status: "??",
+  indexStatus: "?",
+  worktreeStatus: "?"
+});
+const conflicted = change("src/conflict.ts", {
+  kind: "conflicted",
+  staged: false,
+  unstaged: true,
+  conflicted: true,
+  status: "UU",
+  indexStatus: "U",
+  worktreeStatus: "U"
+});
+
+afterEach(cleanup);
+
+describe("RepositoryView", () => {
+  it("separates all change groups and renders the selected diff", async () => {
+    const user = userEvent.setup();
+    const api = createApi({ changes: [staged, unstaged, untracked, conflicted] });
+    render(<RepositoryView api={api} context={{ projectId }} repository={repository} />);
+
+    expect(await screen.findByRole("heading", { name: "Staged" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Unstaged" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Untracked" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Conflicts" })).toBeInTheDocument();
+    expect(screen.getByText("src/staged.ts")).toBeInTheDocument();
+    expect(screen.getByText("src/unstaged.ts")).toBeInTheDocument();
+    expect(screen.getByText("src/new.ts")).toBeInTheDocument();
+    expect(screen.getByText("src/conflict.ts")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "View diff for src/unstaged.ts" }));
+    expect(api.getRepositoryDiff).toHaveBeenCalledWith({
+      projectId,
+      repositoryId,
+      paths: ["src/unstaged.ts"],
+      staged: false
+    });
+    expect(await screen.findByText(diffTextMatcher)).toBeInTheDocument();
+  });
+
+  it("requires explicit Trust and commits the complete staged index without path parameters", async () => {
+    const user = userEvent.setup();
+    const api = createApi({ changes: [staged] });
+    render(<RepositoryView api={api} context={{ projectId }} repository={repository} />);
+    const message = await screen.findByLabelText("Commit message");
+    await user.type(message, "Ship the staged change");
+
+    const commit = screen.getByRole("button", { name: "Commit staged changes" });
+    expect(commit).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Trust repository" }));
+    expect(api.trustRepository).not.toHaveBeenCalled();
+    expect(screen.getByText(/Trust allows write operations/u)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Confirm trust" }));
+    expect(api.trustRepository).toHaveBeenCalledWith({ projectId, repositoryId });
+    expect(await screen.findByText("Trusted for this session")).toBeInTheDocument();
+    expect(commit).toBeEnabled();
+
+    await user.click(commit);
+    expect(api.commitRepository).toHaveBeenCalledWith({
+      projectId,
+      repositoryId,
+      message: "Ship the staged change",
+      identityProfileId: profileId
+    });
+    expect(vi.mocked(api.commitRepository).mock.calls[0]?.[0]).not.toHaveProperty("paths");
+    expect(api.stageRepository).not.toHaveBeenCalled();
+    expect(api.getRepositoryChanges).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps Commit disabled for blank messages and repositories with no staged changes", async () => {
+    const user = userEvent.setup();
+    const api = createApi({ changes: [unstaged] });
+    render(<RepositoryView api={api} context={{ projectId }} repository={repository} />);
+    await screen.findByRole("heading", { name: "Unstaged" });
+
+    await user.click(screen.getByRole("button", { name: "Trust repository" }));
+    await user.click(screen.getByRole("button", { name: "Confirm trust" }));
+    const commit = screen.getByRole("button", { name: "Commit staged changes" });
+    expect(commit).toBeDisabled();
+    await user.type(screen.getByLabelText("Commit message"), "There is still nothing staged");
+    expect(commit).toBeDisabled();
+  });
+
+  it("provides explicit Stage all, refreshes after writes, and exposes retryable RPC recovery", async () => {
+    const user = userEvent.setup();
+    const retryError = errorEnvelope();
+    const api = createApi({ changes: [unstaged] });
+    vi.mocked(api.getRepositoryDiff)
+      .mockRejectedValueOnce(retryError)
+      .mockResolvedValueOnce(diffResult("src/unstaged.ts", false));
+    render(<RepositoryView api={api} context={{ projectId }} repository={repository} />);
+    await screen.findByRole("heading", { name: "Unstaged" });
+
+    await user.click(screen.getByRole("button", { name: "View diff for src/unstaged.ts" }));
+    expect(await screen.findByText("Diff temporarily unavailable.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Retry diff" }));
+    expect(await screen.findByText(diffTextMatcher)).toBeInTheDocument();
+    expect(api.getRepositoryDiff).toHaveBeenCalledTimes(2);
+
+    await user.click(screen.getByRole("button", { name: "Trust repository" }));
+    await user.click(screen.getByRole("button", { name: "Confirm trust" }));
+    await user.click(screen.getByRole("button", { name: "Stage all" }));
+    expect(api.stageRepository).toHaveBeenCalledWith({
+      projectId,
+      repositoryId,
+      paths: [],
+      all: true
+    });
+    expect(api.getRepositoryChanges).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a write ErrorEnvelope visible after refreshing repository status", async () => {
+    const user = userEvent.setup();
+    const api = createApi({ changes: [staged] });
+    vi.mocked(api.commitRepository).mockRejectedValueOnce({
+      ...errorEnvelope(),
+      code: "repository.commit-unavailable",
+      message: "Commit temporarily unavailable.",
+      failedStep: "repositories.commit",
+      recoveryActions: [{ id: "retry", label: "Refresh status", kind: "retry" as const }]
+    });
+    render(<RepositoryView api={api} context={{ projectId }} repository={repository} />);
+    await screen.findByRole("heading", { name: "Staged" });
+    await user.click(screen.getByRole("button", { name: "Trust repository" }));
+    await user.click(screen.getByRole("button", { name: "Confirm trust" }));
+    await user.type(screen.getByLabelText("Commit message"), "Keep the failure visible");
+    await user.click(screen.getByRole("button", { name: "Commit staged changes" }));
+
+    expect(await screen.findByText("Commit temporarily unavailable.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Refresh status" })).toBeInTheDocument();
+    expect(api.getRepositoryChanges).toHaveBeenCalledTimes(2);
+  });
+
+  it("unstages selected paths, refreshes, and keeps selections that still exist", async () => {
+    const user = userEvent.setup();
+    const api = createApi({ changes: [staged] });
+    render(<RepositoryView api={api} context={{ projectId }} repository={repository} />);
+    const selectedPath = await screen.findByRole("checkbox", { name: "Select src/staged.ts" });
+    await user.click(selectedPath);
+    await user.click(screen.getByRole("button", { name: "Trust repository" }));
+    await user.click(screen.getByRole("button", { name: "Confirm trust" }));
+    await user.click(screen.getByRole("button", { name: "Unstage selected" }));
+
+    expect(api.unstageRepository).toHaveBeenCalledWith({
+      projectId,
+      repositoryId,
+      paths: ["src/staged.ts"]
+    });
+    expect(api.getRepositoryChanges).toHaveBeenCalledTimes(2);
+    expect(selectedPath).toBeChecked();
+  });
+
+  it("requires a fresh explicit Trust confirmation when the host invalidates Trust", async () => {
+    const user = userEvent.setup();
+    const api = createApi({ changes: [unstaged] });
+    vi.mocked(api.stageRepository).mockRejectedValueOnce({
+      ...errorEnvelope(),
+      code: "git.trust-required",
+      category: "userActionRequired",
+      message: "Repository Trust is required.",
+      failedStep: "repositories.stage",
+      retryable: false,
+      recoveryActions: []
+    });
+    render(<RepositoryView api={api} context={{ projectId }} repository={repository} />);
+    await screen.findByRole("heading", { name: "Unstaged" });
+    await user.click(screen.getByRole("button", { name: "Trust repository" }));
+    await user.click(screen.getByRole("button", { name: "Confirm trust" }));
+    await user.click(screen.getByRole("button", { name: "Stage all" }));
+
+    expect(await screen.findByText("Repository Trust is required.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Trust repository" })).toBeInTheDocument();
+    expect(screen.queryByText("Trusted for this session")).not.toBeInTheDocument();
+  });
+
+  it("ignores an older diff response after a newer path is selected", async () => {
+    const user = userEvent.setup();
+    const other = change("src/other.ts", { staged: false, unstaged: true, status: ".M" });
+    const older = deferred<Awaited<ReturnType<RepositoryApi["getRepositoryDiff"]>>>();
+    const newer = deferred<Awaited<ReturnType<RepositoryApi["getRepositoryDiff"]>>>();
+    const api = createApi({ changes: [unstaged, other] });
+    vi.mocked(api.getRepositoryDiff).mockImplementation((request) =>
+      request.paths[0] === unstaged.path ? older.promise : newer.promise
+    );
+    render(<RepositoryView api={api} context={{ projectId }} repository={repository} />);
+    await screen.findByRole("heading", { name: "Unstaged" });
+
+    await user.click(screen.getByRole("button", { name: "View diff for src/unstaged.ts" }));
+    await user.click(screen.getByRole("button", { name: "View diff for src/other.ts" }));
+    newer.resolve(diffResult(other.path, false, "newer-before", "newer-after"));
+    expect(await screen.findByText(diffMatcher("newer-before\nnewer-after"))).toBeInTheDocument();
+
+    await act(async () => {
+      older.resolve(diffResult(unstaged.path, false, "older-before", "older-after"));
+      await older.promise;
+    });
+    expect(screen.getByText(diffMatcher("newer-before\nnewer-after"))).toBeInTheDocument();
+    expect(screen.queryByText(diffMatcher("older-before\nolder-after"))).not.toBeInTheDocument();
+  });
+
+  it("shows unsupported recovery actions without executing them as retry", async () => {
+    const user = userEvent.setup();
+    const api = createApi({ changes: [unstaged] });
+    vi.mocked(api.getRepositoryDiff).mockRejectedValueOnce({
+      ...errorEnvelope(),
+      recoveryActions: [
+        { id: "open-settings", label: "Open identity settings", kind: "openSettings" as const }
+      ]
+    });
+    render(<RepositoryView api={api} context={{ projectId }} repository={repository} />);
+    await screen.findByRole("heading", { name: "Unstaged" });
+    await user.click(screen.getByRole("button", { name: "View diff for src/unstaged.ts" }));
+
+    const unsupportedAction = await screen.findByRole("button", { name: "Open identity settings" });
+    expect(unsupportedAction).toBeDisabled();
+    expect(unsupportedAction).toHaveAttribute(
+      "title",
+      "Complete this action in the Git-Ramus host"
+    );
+    expect(api.getRepositoryDiff).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("IdentityPicker", () => {
+  it("shows the effective source, global profile badge, and signing state", () => {
+    render(
+      <IdentityPicker
+        identities={[identity, secondIdentity]}
+        globalIdentityProfileId={profileId}
+        effectiveIdentity={effectiveIdentity}
+        selectedIdentityProfileId={profileId}
+        onChange={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("Effective source: Repository profile")).toBeInTheDocument();
+    expect(screen.getByText("Global")).toBeInTheDocument();
+    expect(screen.getByText("Signing enabled · SSH")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Commit identity" })).toHaveValue(profileId);
+  });
+});
+
+function createApi({ changes }: { changes: ParsedChangeEntry[] }): RepositoryApi {
+  return {
+    getRepositorySnapshot: vi.fn(async () => ({
+      repository,
+      snapshot: persistedSnapshot,
+      changes: null,
+      error: null
+    })),
+    getRepositoryChanges: vi.fn(async () => ({
+      repositoryId,
+      snapshot: persistedSnapshot,
+      changes
+    })),
+    getRepositoryDiff: vi.fn(async (request) =>
+      diffResult(request.paths[0] ?? "all", request.staged)
+    ),
+    stageRepository: vi.fn(async () => ({
+      repositoryId,
+      snapshot: persistedSnapshot,
+      output: null
+    })),
+    unstageRepository: vi.fn(async () => ({
+      repositoryId,
+      snapshot: persistedSnapshot,
+      output: null
+    })),
+    commitRepository: vi.fn(async () => ({
+      repositoryId,
+      snapshot: persistedSnapshot,
+      output: "def456"
+    })),
+    trustRepository: vi.fn(async () => ({
+      trust: {
+        repositoryId,
+        trustedAt: "2026-07-17T00:00:00Z",
+        trustVersion: 1
+      }
+    })),
+    listIdentities: vi.fn(async () => ({
+      identities: [identity, secondIdentity],
+      globalIdentityProfileId: profileId
+    })),
+    getEffectiveRepositoryIdentity: vi.fn(async () => effectiveIdentity)
+  };
+}
+
+function change(path: string, overrides: Partial<ParsedChangeEntry>): ParsedChangeEntry {
+  return {
+    path,
+    originalPath: null,
+    kind: "modified",
+    staged: false,
+    unstaged: true,
+    conflicted: false,
+    binary: false,
+    old: null,
+    new: null,
+    oldPath: null,
+    newPath: null,
+    status: ".M",
+    indexStatus: ".",
+    worktreeStatus: "M",
+    additions: 1,
+    deletions: 1,
+    ...overrides
+  };
+}
+
+function diffResult(path: string, stagedDiff: boolean, old = "before", next = "after") {
+  const file: DiffFile = {
+    path,
+    oldPath: null,
+    newPath: path,
+    binary: false,
+    additions: 1,
+    deletions: 1,
+    old,
+    new: next
+  };
+  return {
+    repositoryId,
+    staged: stagedDiff,
+    summary: {
+      files: [file],
+      changes: [file],
+      entries: [file],
+      binary: false,
+      additions: 1,
+      deletions: 1
+    }
+  };
+}
+
+function errorEnvelope() {
+  return {
+    code: "repository.diff-unavailable",
+    category: "retryable" as const,
+    message: "Diff temporarily unavailable.",
+    operationId: null,
+    pluginId: "git-ramus.git-client",
+    resourceId: repositoryId,
+    failedStep: "repositories.getDiff",
+    retryable: true,
+    retryAfterMs: null,
+    recoveryActions: [{ id: "retry", label: "Retry diff", kind: "retry" as const }],
+    details: null
+  };
+}
+
+function diffTextMatcher(_content: string, element: Element | null) {
+  return element?.tagName === "PRE" && element.textContent === "before\nafter";
+}
+
+function diffMatcher(expected: string) {
+  return (_content: string, element: Element | null) =>
+    element?.tagName === "PRE" && element.textContent === expected;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}

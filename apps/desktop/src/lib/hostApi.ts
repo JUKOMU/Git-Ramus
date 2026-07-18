@@ -28,6 +28,7 @@ import {
   workspaceDeleteRequestSchema,
   workspaceListResponseSchema,
   workspaceMembershipResponseSchema,
+  workspaceRequestSchema,
   workspaceSchema,
   workspaceUpdateMembershipRequestSchema,
   writeResultSchema
@@ -64,6 +65,7 @@ import type {
   WorkspaceCreateRequest,
   WorkspaceDeleteRequest,
   WorkspaceListResponse,
+  WorkspaceRequest,
   WorkspaceUpdateMembershipRequest,
   WriteResult
 } from "@git-ramus/contracts";
@@ -96,6 +98,7 @@ export interface HostApi {
   scanProject(request: ProjectScanRequest): Promise<ScanProjectResult>;
   listWorkspaces(): Promise<WorkspaceListResponse>;
   createWorkspace(request: WorkspaceCreateRequest): Promise<Workspace>;
+  getWorkspaceMembership(request: WorkspaceRequest): Promise<string[]>;
   updateWorkspaceMembership(request: WorkspaceUpdateMembershipRequest): Promise<string[]>;
   deleteWorkspace(request: WorkspaceDeleteRequest): Promise<void>;
   getOverview(request: GitContextRequest): Promise<Overview>;
@@ -138,6 +141,13 @@ export const tauriHostApi: HostApi = {
   listWorkspaces: () => invokeParsed("git_workspace_list", workspaceListResponseSchema),
   createWorkspace: (request) =>
     invokeRequest("git_workspace_create", workspaceCreateRequestSchema, workspaceSchema, request),
+  getWorkspaceMembership: (request) =>
+    invokeRequest(
+      "git_workspace_get_membership",
+      workspaceRequestSchema,
+      workspaceMembershipResponseSchema,
+      request
+    ),
   updateWorkspaceMembership: (request) =>
     invokeRequest(
       "git_workspace_update_membership",

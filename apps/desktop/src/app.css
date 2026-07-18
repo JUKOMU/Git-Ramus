@@ -72,6 +72,11 @@ button {
   background: #1e293b;
 }
 
+.nav-item[aria-pressed="true"] {
+  color: #bae6fd;
+  background: #0c4a6e;
+}
+
 .host-version {
   position: absolute;
   bottom: 18px;
