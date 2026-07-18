@@ -1087,7 +1087,10 @@ impl GitService {
         let refresh = self.refresh_after_write(&repository);
         match result {
             Ok(output) => {
-                let status_result = if identity.sign_commits && !output.status.success() {
+                let status_result = if identity.sign_commits
+                    && !output.status.success()
+                    && is_signing_failure(&output.stderr)
+                {
                     Err(AppError::SigningFailed {
                         reason: sanitize_git_stderr(&output.stderr),
                         repository_id: repository_id.to_owned(),
@@ -1105,17 +1108,7 @@ impl GitService {
             }
             Err(error) => {
                 let _ = refresh;
-                Err(if identity.sign_commits {
-                    match error {
-                        AppError::Git(reason) => AppError::SigningFailed {
-                            reason: sanitize_git_stderr(reason.as_bytes()),
-                            repository_id: repository_id.to_owned(),
-                        },
-                        other => other,
-                    }
-                } else {
-                    error
-                })
+                Err(error)
             }
         }
     }
@@ -1875,6 +1868,23 @@ fn ensure_success(output: &GitOutput) -> Result<(), AppError> {
     Err(AppError::Git(sanitize_git_stderr(&output.stderr)))
 }
 
+fn is_signing_failure(stderr: &[u8]) -> bool {
+    let stderr = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+    stderr.contains("error: gpg failed to sign the data")
+        || stderr.contains("gpg: signing failed:")
+        || stderr.contains("gpgsm: signing failed:")
+        || stderr.contains("error: couldn't load public key")
+        || stderr.contains("error: could not load public key")
+        || (stderr.contains("error: load key \"")
+            && [
+                "invalid format",
+                "error in libcrypto",
+                "no such file or directory",
+            ]
+            .iter()
+            .any(|failure| stderr.contains(failure)))
+}
+
 fn sanitize_git_stderr(stderr: &[u8]) -> String {
     let text = String::from_utf8_lossy(stderr);
     let first = text
@@ -1961,6 +1971,23 @@ mod tests {
         assert!(validate_relative_path("src/main.rs").is_ok());
         assert!(validate_relative_path("../secret").is_err());
         assert!(validate_relative_path("C:\\secret").is_err());
+    }
+
+    #[test]
+    fn signing_failure_classifier_requires_signer_specific_evidence() {
+        assert!(is_signing_failure(
+            b"error: gpg failed to sign the data\nfatal: failed to write commit object\n"
+        ));
+        assert!(is_signing_failure(
+            b"error: Load key \"fixture\": invalid format\nfatal: failed to write commit object\n"
+        ));
+        assert!(!is_signing_failure(b"policy hook rejected commit\n"));
+        assert!(!is_signing_failure(
+            b"fatal: Unable to create 'index.lock'\n"
+        ));
+        assert!(!is_signing_failure(
+            b"nothing to commit, working tree clean\n"
+        ));
     }
 
     #[test]

@@ -553,7 +553,8 @@ fn signed_commit_never_downgrades_when_configured_tool_is_unavailable() {
 
 #[test]
 fn signed_git_failure_is_a_user_action_error_with_sanitized_context_and_no_commit() {
-    if !git_available() {
+    if !git_available() || Command::new("ssh-keygen").arg("-V").output().is_err() {
+        eprintln!("git or ssh-keygen unavailable; skipping SSH signing failure test");
         return;
     }
     let root = tempdir().unwrap();
@@ -569,9 +570,9 @@ fn signed_git_failure_is_a_user_action_error_with_sanitized_context_and_no_commi
     fs::write(root.path().join("tracked.txt"), "two\n").unwrap();
     let key = root.path().join("invalid-but-existing-key");
     fs::write(&key, "not a private key").unwrap();
-    // Preflight accepts the existing `git` executable and key file. Git then invokes `git` as
-    // the SSH signing program, producing a real non-zero signed-commit failure.
-    run_git(root.path(), &["config", "gpg.ssh.program", "git"]);
+    // Preflight accepts the real SSH signer and existing key path. The signer then rejects the
+    // malformed private key, producing identifiable signer stderr.
+    run_git(root.path(), &["config", "gpg.ssh.program", "ssh-keygen"]);
 
     let database = Database::open_in_memory().unwrap();
     let runner = Arc::new(SystemGitRunner::default());
@@ -645,6 +646,108 @@ fn signed_git_failure_is_a_user_action_error_with_sanitized_context_and_no_commi
         .expect("sanitized signing reason is retained");
     assert!(!reason.trim().is_empty());
     assert!(!reason.contains("not a private key"));
+    assert_eq!(
+        String::from_utf8_lossy(
+            &run_git_output(root.path(), &["rev-list", "--count", "HEAD"]).unwrap()
+        ),
+        "1\n"
+    );
+}
+
+#[test]
+fn rejecting_hook_on_a_signed_profile_remains_a_generic_git_failure() {
+    if !git_available() || Command::new("ssh-keygen").arg("-V").output().is_err() {
+        eprintln!("git or ssh-keygen unavailable; skipping signed hook failure test");
+        return;
+    }
+    let root = tempdir().unwrap();
+    run_git(root.path(), &["init", "--quiet"]);
+    run_git(root.path(), &["config", "user.name", "Fixture"]);
+    run_git(
+        root.path(),
+        &["config", "user.email", "fixture@example.test"],
+    );
+    run_git(root.path(), &["config", "gpg.ssh.program", "ssh-keygen"]);
+    fs::write(root.path().join("tracked.txt"), "one\n").unwrap();
+    run_git(root.path(), &["add", "--", "tracked.txt"]);
+    run_git(root.path(), &["commit", "--quiet", "-m", "seed"]);
+    fs::write(root.path().join("tracked.txt"), "two\n").unwrap();
+    let key = root.path().join("invalid-but-existing-key");
+    fs::write(&key, "not a private key").unwrap();
+    let hook = root.path().join(".git").join("hooks").join("commit-msg");
+    fs::write(
+        &hook,
+        "#!/bin/sh\necho 'policy hook rejected commit' >&2\nexit 1\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut permissions = fs::metadata(&hook).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&hook, permissions).unwrap();
+    }
+
+    let database = Database::open_in_memory().unwrap();
+    let runner = Arc::new(SystemGitRunner::default());
+    let write_locks = RepositoryWriteLocks::default();
+    let git = GitService::with_runner_concurrency_and_write_locks(
+        database.clone(),
+        runner.clone(),
+        4,
+        write_locks.clone(),
+    );
+    let identities = IdentityService::with_runner_global_file_and_write_locks(
+        database,
+        runner,
+        root.path().join("isolated-global.gitconfig"),
+        write_locks,
+    )
+    .unwrap();
+    let project = git
+        .create_project(ProjectCreateInput {
+            root_path: root.path().to_string_lossy().into_owned(),
+            name: "Fixture".to_owned(),
+            scan_depth: Some(0),
+            exclude_patterns: Vec::new(),
+        })
+        .unwrap();
+    let repository_id = git.scan_project(&project.id).unwrap().repositories[0]
+        .repository
+        .id
+        .clone();
+    let context = QueryContext::project(&project.id);
+    git.trust_repository_in_context(&context, &repository_id)
+        .unwrap();
+    git.stage(&context, &repository_id, &["tracked.txt".to_owned()], false)
+        .unwrap();
+    let profile = identities
+        .create(IdentityProfileInput {
+            display_name: "Signed".to_owned(),
+            user_name: "Signed User".to_owned(),
+            user_email: "signed@example.com".to_owned(),
+            gpg_format: Some("ssh".to_owned()),
+            signing_key: Some(key.to_string_lossy().into_owned()),
+            sign_commits: true,
+            sign_tags: false,
+        })
+        .unwrap();
+
+    let error = git
+        .commit_with_identity(
+            &context,
+            &repository_id,
+            "hook must reject",
+            &identities,
+            Some(&profile.id),
+        )
+        .expect_err("rejecting hook must fail the Commit");
+    let envelope = ErrorEnvelope::from(error);
+
+    assert_eq!(envelope.code, "git.failed");
+    assert_eq!(envelope.category, ErrorCategory::InternalFatal);
+    assert!(envelope.failed_step.is_none());
+    assert!(envelope.resource_id.is_none());
     assert_eq!(
         String::from_utf8_lossy(
             &run_git_output(root.path(), &["rev-list", "--count", "HEAD"]).unwrap()

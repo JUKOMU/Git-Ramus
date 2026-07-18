@@ -83,6 +83,7 @@ pub enum IdentitySource {
     GlobalProfile,
     RepositoryProfile,
     SelectedProfile,
+    ExternalGlobal,
     ExternalLocal,
 }
 
@@ -634,7 +635,7 @@ impl IdentityService {
         profile.sign_tags = normalized.sign_tags;
         profile.updated_at = Utc::now();
 
-        if self.global_profile_id()?.as_deref() == Some(profile_id) {
+        if managed_fields_changed && self.global_profile_id()?.as_deref() == Some(profile_id) {
             let snapshot = self.apply_global_profile(&profile)?;
             if let Err(error) = self.profiles.update(&profile) {
                 self.restore_global_or_error(&snapshot)?;
@@ -748,7 +749,8 @@ impl IdentityService {
         repository_id: &str,
     ) -> Result<EffectiveIdentity, AppError> {
         let repository = self.repositories.get(repository_id)?;
-        let local_target = ConfigTarget::Local(PathBuf::from(&repository.canonical_path));
+        let repository_path = PathBuf::from(&repository.canonical_path);
+        let local_target = ConfigTarget::Local(repository_path.clone());
         let local = self.read_snapshot(&local_target)?;
         if let Some(binding) = self.bindings.get_optional(repository_id)? {
             let profile = self.profiles.get(&binding.identity_profile_id)?;
@@ -765,58 +767,55 @@ impl IdentityService {
             .global_profile_id()?
             .map(|profile_id| self.profiles.get(&profile_id))
             .transpose()?;
+        let global = self.read_effective_global_snapshot(Some(&repository_path))?;
         let has_local_override = MANAGED_CONFIG_KEYS
             .iter()
             .any(|key| config_key_is_present(&local, key));
         if has_local_override {
-            let user_name = effective_required_text(
-                &local,
-                "user.name",
-                global_profile
-                    .as_ref()
-                    .map(|profile| profile.user_name.as_str()),
-                "Git user name",
-            )?;
+            let external_user_name = last_non_empty(global.get("user.name"));
+            let external_user_email = last_non_empty(global.get("user.email"));
+            let inherited_user_name = global_profile
+                .as_ref()
+                .map(|profile| profile.user_name.as_str())
+                .or(external_user_name.as_deref());
+            let inherited_user_email = global_profile
+                .as_ref()
+                .map(|profile| profile.user_email.as_str())
+                .or(external_user_email.as_deref());
+            let external_gpg_format = last_non_empty(global.get("gpg.format"));
+            let external_signing_key = last_non_empty(global.get("user.signingKey"));
+            let inherited_gpg_format = match &global_profile {
+                Some(profile) => profile.gpg_format.as_deref(),
+                None => external_gpg_format.as_deref(),
+            };
+            let inherited_signing_key = match &global_profile {
+                Some(profile) => profile.signing_key.as_deref(),
+                None => external_signing_key.as_deref(),
+            };
+            let user_name =
+                effective_required_text(&local, "user.name", inherited_user_name, "Git user name")?;
             let user_email = effective_required_text(
                 &local,
                 "user.email",
-                global_profile
-                    .as_ref()
-                    .map(|profile| profile.user_email.as_str()),
+                inherited_user_email,
                 "Git user email",
             )?;
-            let gpg_format = effective_optional_text(
-                &local,
-                "gpg.format",
-                global_profile
-                    .as_ref()
-                    .and_then(|profile| profile.gpg_format.as_deref()),
-            );
-            let signing_key = effective_optional_text(
-                &local,
-                "user.signingKey",
-                global_profile
-                    .as_ref()
-                    .and_then(|profile| profile.signing_key.as_deref()),
-            );
-            let sign_commits = effective_bool(
+            let gpg_format = effective_optional_text(&local, "gpg.format", inherited_gpg_format);
+            let signing_key =
+                effective_optional_text(&local, "user.signingKey", inherited_signing_key);
+            let sign_commits = effective_bool_with_global(
                 &local,
                 "commit.gpgSign",
-                global_profile
-                    .as_ref()
-                    .map(|profile| profile.sign_commits)
-                    .unwrap_or(false),
+                global_profile.as_ref().map(|profile| profile.sign_commits),
+                &global,
             )?;
-            let sign_tags = effective_bool(
+            let sign_tags = effective_bool_with_global(
                 &local,
                 "tag.gpgSign",
-                global_profile
-                    .as_ref()
-                    .map(|profile| profile.sign_tags)
-                    .unwrap_or(false),
+                global_profile.as_ref().map(|profile| profile.sign_tags),
+                &global,
             )?;
             let drift = if let Some(profile) = &global_profile {
-                let global = self.read_global_snapshot()?;
                 let mut drift = global_config_drift(&profile_config(profile), &global);
                 drift
                     .fields
@@ -841,17 +840,17 @@ impl IdentityService {
             });
         }
 
-        let profile = global_profile.ok_or_else(|| {
-            AppError::UserActionRequired("configure a Git identity profile".to_owned())
-        })?;
-        let global = self.read_global_snapshot()?;
-        let drift = global_config_drift(&profile_config(&profile), &global);
-        Ok(effective_from_profile(
-            repository_id,
-            profile,
-            IdentitySource::GlobalProfile,
-            (!drift.fields.is_empty()).then_some(drift),
-        ))
+        if let Some(profile) = global_profile {
+            let drift = global_config_drift(&profile_config(&profile), &global);
+            Ok(effective_from_profile(
+                repository_id,
+                profile,
+                IdentitySource::GlobalProfile,
+                (!drift.fields.is_empty()).then_some(drift),
+            ))
+        } else {
+            effective_from_external_global(repository_id, &global)
+        }
     }
 
     pub fn resolve_commit_identity(
@@ -966,7 +965,7 @@ impl IdentityService {
         if !self.profiles.list()?.is_empty() {
             return Ok(None);
         }
-        let snapshot = self.read_global_snapshot()?;
+        let snapshot = self.read_effective_global_snapshot(None)?;
         let Some(user_name) = last_non_empty(snapshot.get("user.name")) else {
             return Ok(None);
         };
@@ -1037,15 +1036,64 @@ impl IdentityService {
     }
 
     fn apply_global_profile(&self, profile: &IdentityProfile) -> Result<ConfigSnapshot, AppError> {
-        self.apply_profile_to_target(&ConfigTarget::Global(self.global_target.clone()), profile)
+        let target = ConfigTarget::Global(self.global_target.clone());
+        let snapshot = self.read_writable_global_snapshot()?;
+        if let Err(error) = self.write_snapshot(&target, &profile_config(profile)) {
+            self.restore_target_or_error(&target, &snapshot)?;
+            return Err(error);
+        }
+        Ok(snapshot)
     }
 
     fn restore_global_or_error(&self, snapshot: &ConfigSnapshot) -> Result<(), AppError> {
         self.restore_target_or_error(&ConfigTarget::Global(self.global_target.clone()), snapshot)
     }
 
-    fn read_global_snapshot(&self) -> Result<ConfigSnapshot, AppError> {
+    fn read_writable_global_snapshot(&self) -> Result<ConfigSnapshot, AppError> {
         self.read_snapshot(&ConfigTarget::Global(self.global_target.clone()))
+    }
+
+    fn read_effective_global_snapshot(
+        &self,
+        repository: Option<&Path>,
+    ) -> Result<ConfigSnapshot, AppError> {
+        let working_directory = repository
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| self.global_target.working_directory());
+        let mut snapshot = BTreeMap::new();
+        for key in MANAGED_CONFIG_KEYS {
+            let values = self.read_effective_global_values(&working_directory, key)?;
+            snapshot.insert(key.to_owned(), values.last().cloned().into_iter().collect());
+        }
+        Ok(snapshot)
+    }
+
+    fn read_effective_global_values(
+        &self,
+        working_directory: &Path,
+        key: &str,
+    ) -> Result<Vec<String>, AppError> {
+        let mut args = vec![OsString::from("--no-pager"), OsString::from("config")];
+        self.global_target.append_scope_args(&mut args);
+        args.extend([
+            OsString::from("--includes"),
+            OsString::from("--null"),
+            OsString::from("--get-all"),
+            OsString::from(key),
+        ]);
+        let output = self.runner.run(GitCommand {
+            repo: working_directory.to_path_buf(),
+            args,
+            stdin: None,
+            timeout: IDENTITY_GIT_TIMEOUT,
+        })?;
+        if !output.status.success() {
+            if output.status.code() == Some(1) && output.stdout.is_empty() {
+                return Ok(Vec::new());
+            }
+            return Err(config_command_error(&output));
+        }
+        parse_config_values(&output.stdout)
     }
 
     fn apply_profile_to_target(
@@ -1314,9 +1362,19 @@ fn effective_optional_text(
     }
 }
 
-fn effective_bool(local: &ConfigSnapshot, key: &str, inherited: bool) -> Result<bool, AppError> {
+fn effective_bool_with_global(
+    local: &ConfigSnapshot,
+    key: &str,
+    profile_value: Option<bool>,
+    global: &ConfigSnapshot,
+) -> Result<bool, AppError> {
     if !config_key_is_present(local, key) {
-        return Ok(inherited);
+        if let Some(value) = profile_value {
+            return Ok(value);
+        }
+        return semantic_bool(global.get(key)).map_err(|()| {
+            AppError::UserActionRequired(format!("Git configuration {key} is invalid"))
+        });
     }
     last_optional_bool(local.get(key))
         .ok_or_else(|| AppError::UserActionRequired(format!("Git configuration {key} is invalid")))
@@ -1344,20 +1402,40 @@ fn global_config_drift(expected: &ConfigSnapshot, actual: &ConfigSnapshot) -> Id
         .filter_map(|key| {
             let expected_values = expected.get(key).cloned().unwrap_or_default();
             let actual_values = actual.get(key).cloned().unwrap_or_default();
+            let expected_semantic = expected_values
+                .last()
+                .cloned()
+                .into_iter()
+                .collect::<Vec<_>>();
+            let actual_semantic = actual_values
+                .last()
+                .cloned()
+                .into_iter()
+                .collect::<Vec<_>>();
             let equivalent = if matches!(key, "commit.gpgSign" | "tag.gpgSign") {
-                last_optional_bool(Some(&expected_values)).unwrap_or(false)
-                    == last_optional_bool(Some(&actual_values)).unwrap_or(false)
+                matches!(
+                    (semantic_bool(Some(&expected_values)), semantic_bool(Some(&actual_values))),
+                    (Ok(expected), Ok(actual)) if expected == actual
+                )
             } else {
-                expected_values == actual_values
+                expected_semantic == actual_semantic
             };
             (!equivalent).then(|| IdentityDriftField {
                 key: key.to_owned(),
-                expected: expected_values,
-                actual: actual_values,
+                expected: expected_semantic,
+                actual: actual_semantic,
             })
         })
         .collect();
     IdentityDrift { fields }
+}
+
+fn semantic_bool(values: Option<&Vec<String>>) -> Result<bool, ()> {
+    if values.is_none_or(Vec::is_empty) {
+        Ok(false)
+    } else {
+        last_optional_bool(values).ok_or(())
+    }
 }
 
 fn effective_from_profile(
@@ -1380,6 +1458,33 @@ fn effective_from_profile(
         sign_tags: profile.sign_tags,
         drift,
     }
+}
+
+fn effective_from_external_global(
+    repository_id: &str,
+    global: &ConfigSnapshot,
+) -> Result<EffectiveIdentity, AppError> {
+    let empty = empty_config_snapshot();
+    let user_name = effective_required_text(global, "user.name", None, "Git user name")?;
+    let user_email = effective_required_text(global, "user.email", None, "Git user email")?;
+    let gpg_format = effective_optional_text(global, "gpg.format", None);
+    let signing_key = effective_optional_text(global, "user.signingKey", None);
+    let sign_commits = effective_bool_with_global(global, "commit.gpgSign", None, &empty)?;
+    let sign_tags = effective_bool_with_global(global, "tag.gpgSign", None, &empty)?;
+    Ok(EffectiveIdentity {
+        repository_id: repository_id.to_owned(),
+        profile_id: None,
+        profile: None,
+        source: IdentitySource::ExternalGlobal,
+        display_name: user_name.clone(),
+        user_name,
+        user_email,
+        gpg_format,
+        signing_key,
+        sign_commits,
+        sign_tags,
+        drift: None,
+    })
 }
 
 fn append_config_override(args: &mut Vec<OsString>, key: &str, value: &str) {
@@ -1709,6 +1814,36 @@ mod service_tests {
             .to_owned()
     }
 
+    fn run_git_config_at(repository: &Path, file: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .current_dir(repository)
+            .args(["config", "--file"])
+            .arg(file)
+            .args(args)
+            .output()
+            .expect("repository-aware git config starts");
+        assert!(
+            output.status.success(),
+            "repository-aware git config failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .expect("git config output is UTF-8")
+            .trim()
+            .to_owned()
+    }
+
+    fn conditional_include_section(repository: &Path, included_file_name: &str) -> String {
+        let mut git_dir = std::fs::canonicalize(repository.join(".git"))
+            .expect("Git directory canonicalizes")
+            .to_string_lossy()
+            .replace('\\', "/");
+        if let Some(without_verbatim_prefix) = git_dir.strip_prefix("//?/") {
+            git_dir = without_verbatim_prefix.to_owned();
+        }
+        format!("[includeIf \"gitdir/i:{git_dir}\"]\n\tpath = {included_file_name}\n")
+    }
+
     fn input(display_name: &str, user_name: &str, user_email: &str) -> IdentityProfileInput {
         IdentityProfileInput {
             display_name: display_name.to_owned(),
@@ -1847,6 +1982,33 @@ mod service_tests {
     }
 
     #[test]
+    fn unconditional_global_include_is_imported_without_mutating_either_file() {
+        let directory = tempfile::tempdir().expect("temporary directory creates");
+        let main = directory.path().join("global.gitconfig");
+        let included = directory.path().join("included.gitconfig");
+        std::fs::write(
+            &included,
+            "[user]\n\tname = Included User\n\temail = included@example.com\n",
+        )
+        .expect("included config writes");
+        std::fs::write(&main, "[include]\n\tpath = included.gitconfig\n")
+            .expect("main config writes");
+        let main_before = std::fs::read(&main).expect("main config reads");
+        let included_before = std::fs::read(&included).expect("included config reads");
+        let service = isolated_service(directory.path());
+
+        let imported = service
+            .import_global_if_empty()
+            .expect("include-aware import succeeds")
+            .expect("included identity imports");
+
+        assert_eq!(imported.user_name, "Included User");
+        assert_eq!(imported.user_email, "included@example.com");
+        assert_eq!(std::fs::read(&main).unwrap(), main_before);
+        assert_eq!(std::fs::read(&included).unwrap(), included_before);
+    }
+
+    #[test]
     fn imported_absent_false_signing_flags_do_not_report_immediate_global_drift() {
         let directory = tempfile::tempdir().expect("temporary directory creates");
         let config = directory.path().join("global.gitconfig");
@@ -1867,6 +2029,133 @@ mod service_tests {
 
         assert_eq!(effective.source, IdentitySource::GlobalProfile);
         assert_eq!(effective.drift, None);
+    }
+
+    #[test]
+    fn malformed_present_global_boolean_is_reported_as_profile_drift() {
+        let directory = tempfile::tempdir().expect("temporary directory creates");
+        let config = directory.path().join("global.gitconfig");
+        let repository_path = directory.path().join("repo");
+        init_repository(&repository_path);
+        let (database, service) = isolated_service_with_db(directory.path());
+        let repository = register_repository(&database, &repository_path, false);
+        let profile = service
+            .create(input("Global", "Global User", "global@example.com"))
+            .expect("profile creates");
+        service.set_global(&profile.id).expect("global applies");
+        run_git_config(&config, &["commit.gpgSign", "definitely-not-a-bool"]);
+
+        let effective = service
+            .effective_for_repository(&repository.id)
+            .expect("effective identity resolves with drift");
+
+        assert!(
+            effective
+                .drift
+                .as_ref()
+                .expect("malformed present boolean is drift")
+                .fields
+                .iter()
+                .any(|field| field.key == "commit.gpgSign"
+                    && field.actual == vec!["definitely-not-a-bool"])
+        );
+        assert!(matches!(
+            service.resolve_commit_identity(&repository.id, None),
+            Err(AppError::UserActionRequired(_))
+        ));
+    }
+
+    #[test]
+    fn matching_include_if_resolves_external_global_identity_without_a_database_profile() {
+        let directory = tempfile::tempdir().expect("temporary directory creates");
+        let repository_path = directory.path().join("repo");
+        init_repository(&repository_path);
+        let main = directory.path().join("global.gitconfig");
+        let conditional = directory.path().join("conditional.gitconfig");
+        std::fs::write(
+            &conditional,
+            "[user]\n\tname = Conditional User\n\temail = conditional@example.com\n",
+        )
+        .expect("conditional config writes");
+        std::fs::write(
+            &main,
+            conditional_include_section(&repository_path, "conditional.gitconfig"),
+        )
+        .expect("main config writes");
+        assert_eq!(
+            run_git_config_at(
+                &repository_path,
+                &main,
+                &["--includes", "--get", "user.name"]
+            ),
+            "Conditional User"
+        );
+        let (database, service) = isolated_service_with_db(directory.path());
+        let repository = register_repository(&database, &repository_path, false);
+
+        let effective = service
+            .effective_for_repository(&repository.id)
+            .expect("conditional external identity resolves");
+
+        assert_eq!(effective.profile_id, None);
+        assert_eq!(effective.user_name, "Conditional User");
+        assert_eq!(effective.user_email, "conditional@example.com");
+        assert!(effective.drift.is_none());
+    }
+
+    #[test]
+    fn conditional_global_override_is_reported_as_profile_drift() {
+        let directory = tempfile::tempdir().expect("temporary directory creates");
+        let repository_path = directory.path().join("repo");
+        init_repository(&repository_path);
+        let main = directory.path().join("global.gitconfig");
+        let conditional = directory.path().join("conditional.gitconfig");
+        let (database, service) = isolated_service_with_db(directory.path());
+        let repository = register_repository(&database, &repository_path, false);
+        let profile = service
+            .create(input("Global", "Global User", "global@example.com"))
+            .expect("profile creates");
+        service.set_global(&profile.id).expect("global applies");
+        std::fs::write(&conditional, "[user]\n\temail = conditional@example.com\n")
+            .expect("conditional config writes");
+        use std::io::Write as _;
+        let mut main_file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&main)
+            .expect("main config opens");
+        main_file
+            .write_all(
+                conditional_include_section(&repository_path, "conditional.gitconfig").as_bytes(),
+            )
+            .expect("conditional include appends");
+        drop(main_file);
+        assert_eq!(
+            run_git_config_at(
+                &repository_path,
+                &main,
+                &["--includes", "--get", "user.email"]
+            ),
+            "conditional@example.com"
+        );
+
+        let effective = service
+            .effective_for_repository(&repository.id)
+            .expect("effective identity resolves");
+
+        assert!(
+            effective
+                .drift
+                .as_ref()
+                .expect("conditional override is drift")
+                .fields
+                .iter()
+                .any(|field| field.key == "user.email"
+                    && field.actual == vec!["conditional@example.com"])
+        );
+        assert!(matches!(
+            service.resolve_commit_identity(&repository.id, None),
+            Err(AppError::UserActionRequired(_))
+        ));
     }
 
     #[test]
@@ -1988,6 +2277,33 @@ mod service_tests {
     }
 
     #[test]
+    fn setting_global_profile_with_include_changes_only_the_main_config() {
+        let directory = tempfile::tempdir().expect("temporary directory creates");
+        let config = directory.path().join("global.gitconfig");
+        let included = directory.path().join("included.gitconfig");
+        std::fs::write(
+            &included,
+            "[user]\n\tname = Included User\n\temail = included@example.com\n",
+        )
+        .expect("included config writes");
+        std::fs::write(&config, "[include]\n\tpath = included.gitconfig\n")
+            .expect("main config writes");
+        let included_before = std::fs::read(&included).expect("included config reads");
+        let service = isolated_service(directory.path());
+        let profile = service
+            .create(input("Global", "Managed User", "managed@example.com"))
+            .expect("profile creates");
+
+        service.set_global(&profile.id).expect("global applies");
+
+        assert_eq!(
+            run_git_config(&config, &["--get", "user.name"]),
+            "Managed User"
+        );
+        assert_eq!(std::fs::read(&included).unwrap(), included_before);
+    }
+
+    #[test]
     fn deleting_the_current_global_profile_is_rejected() {
         let directory = tempfile::tempdir().expect("temporary directory creates");
         let service = isolated_service(directory.path());
@@ -2029,6 +2345,47 @@ mod service_tests {
             "After User"
         );
         assert_eq!(service.list().expect("profiles list"), vec![updated]);
+    }
+
+    #[test]
+    fn global_display_only_update_preserves_external_git_drift() {
+        let directory = tempfile::tempdir().expect("temporary directory creates");
+        let config = directory.path().join("global.gitconfig");
+        let repository_path = directory.path().join("repo");
+        init_repository(&repository_path);
+        let (database, service) = isolated_service_with_db(directory.path());
+        let repository = register_repository(&database, &repository_path, false);
+        let profile = service
+            .create(input("Before Label", "Global User", "global@example.com"))
+            .expect("profile creates");
+        service.set_global(&profile.id).expect("global applies");
+        run_git_config(&config, &["user.email", "outside@example.com"]);
+
+        let updated = service
+            .update(
+                &profile.id,
+                input("After Label", "Global User", "global@example.com"),
+            )
+            .expect("display-only update succeeds");
+        let effective = service
+            .effective_for_repository(&repository.id)
+            .expect("effective identity resolves");
+
+        assert_eq!(updated.display_name, "After Label");
+        assert_eq!(
+            run_git_config(&config, &["--get", "user.email"]),
+            "outside@example.com"
+        );
+        assert!(
+            effective
+                .drift
+                .as_ref()
+                .expect("external drift remains")
+                .fields
+                .iter()
+                .any(|field| field.key == "user.email"
+                    && field.actual == vec!["outside@example.com"])
+        );
     }
 
     #[test]
@@ -2608,6 +2965,46 @@ mod service_tests {
             run_git_config(&config, &["--get", "user.email"]),
             "before@example.com"
         );
+        assert_eq!(service.global_profile_id().unwrap(), None);
+    }
+
+    #[test]
+    fn global_write_failure_restores_main_config_without_touching_include() {
+        let directory = tempfile::tempdir().expect("temporary directory creates");
+        let config = directory.path().join("global.gitconfig");
+        let included = directory.path().join("included.gitconfig");
+        std::fs::write(
+            &included,
+            "[user]\n\tname = Included User\n\temail = included@example.com\n",
+        )
+        .expect("included config writes");
+        std::fs::write(&config, "[include]\n\tpath = included.gitconfig\n")
+            .expect("main config writes");
+        run_git_config(&config, &["user.name", "Before"]);
+        run_git_config(&config, &["user.email", "before@example.com"]);
+        let included_before = std::fs::read(&included).expect("included config reads");
+        let database = Database::open_in_memory().expect("database opens");
+        let service = IdentityService::with_runner_and_global_file(
+            database,
+            Arc::new(FaultInjectingRunner::new("user.email", ConfigFault::Write)),
+            config.clone(),
+        )
+        .expect("identity service constructs");
+        let profile = service
+            .create(input("After", "After", "after@example.com"))
+            .expect("profile creates");
+
+        assert!(matches!(
+            service.set_global(&profile.id),
+            Err(AppError::Git(_))
+        ));
+
+        assert_eq!(run_git_config(&config, &["--get", "user.name"]), "Before");
+        assert_eq!(
+            run_git_config(&config, &["--get", "user.email"]),
+            "before@example.com"
+        );
+        assert_eq!(std::fs::read(&included).unwrap(), included_before);
         assert_eq!(service.global_profile_id().unwrap(), None);
     }
 
