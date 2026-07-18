@@ -1,8 +1,10 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Error)]
 pub enum AppError {
     #[error("database operation failed")]
     Database(#[from] rusqlite::Error),
@@ -18,6 +20,38 @@ pub enum AppError {
     SecretStore,
     #[error("serialization failed")]
     Serialization(#[from] serde_json::Error),
+    /// A Git invocation failed. The payload is retained for internal diagnostics, but the
+    /// user-facing display is deliberately stable so command arguments and credentials cannot
+    /// accidentally be echoed to a client.
+    #[error("git operation failed")]
+    Git(String),
+    #[error("git command timed out")]
+    Timeout,
+    #[error("git output exceeded the configured limit")]
+    OutputLimit,
+    #[error("path is not valid UTF-8")]
+    NonUtf8Path,
+}
+
+impl fmt::Debug for AppError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Do not include command arguments, repository URLs, or helper stderr in diagnostics.
+        // In particular, the payload of `Git` can originate from a credential helper.
+        let label = match self {
+            Self::Database(_) => "Database",
+            Self::Io(_) => "Io",
+            Self::InvalidInput(_) => "InvalidInput",
+            Self::PermissionDenied => "PermissionDenied",
+            Self::NotFound(_) => "NotFound",
+            Self::SecretStore => "SecretStore",
+            Self::Serialization(_) => "Serialization",
+            Self::Git(_) => "Git",
+            Self::Timeout => "Timeout",
+            Self::OutputLimit => "OutputLimit",
+            Self::NonUtf8Path => "NonUtf8Path",
+        };
+        formatter.write_str(label)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,14 +108,22 @@ impl From<AppError> for ErrorEnvelope {
             AppError::NotFound(_) => "resource.not-found",
             AppError::SecretStore => "secrets.unavailable",
             AppError::Serialization(_) => "serialization.json",
+            AppError::Git(_) => "git.failed",
+            AppError::Timeout => "git.timeout",
+            AppError::OutputLimit => "git.output-limit",
+            AppError::NonUtf8Path => "validation.non-utf8-path",
         };
         let category = match &error {
             AppError::InvalidInput(_) | AppError::NotFound(_) => ErrorCategory::Validation,
+            AppError::NonUtf8Path => ErrorCategory::Validation,
             AppError::PermissionDenied => ErrorCategory::UserActionRequired,
+            AppError::Timeout => ErrorCategory::Retryable,
             AppError::Database(_)
             | AppError::Io(_)
             | AppError::SecretStore
-            | AppError::Serialization(_) => ErrorCategory::InternalFatal,
+            | AppError::Serialization(_)
+            | AppError::Git(_)
+            | AppError::OutputLimit => ErrorCategory::InternalFatal,
         };
         Self {
             code: code.to_owned(),
@@ -91,8 +133,12 @@ impl From<AppError> for ErrorEnvelope {
             plugin_id: None,
             resource_id: None,
             failed_step: None,
-            retryable: false,
-            retry_after_ms: None,
+            retryable: matches!(error, AppError::Timeout),
+            retry_after_ms: if matches!(error, AppError::Timeout) {
+                Some(250)
+            } else {
+                None
+            },
             recovery_actions: Vec::new(),
             details: None,
         }
