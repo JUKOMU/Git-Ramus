@@ -10,6 +10,8 @@ export const projectSchema = z
     name: z.string().min(1),
     path: z.string().min(1).optional(),
     rootPath: z.string().min(1).optional(),
+    scanDepth: z.number().int().nonnegative().optional(),
+    excludePatterns: z.array(z.string().min(1)).optional(),
     createdAt: timestamp,
     updatedAt: timestamp
   })
@@ -21,34 +23,48 @@ export const projectSchema = z
 export const workspaceSchema = z
   .object({
     id: uuid,
-    projectId: uuid,
     name: z.string().min(1),
     path: z.string().min(1).optional(),
     rootPath: z.string().min(1).optional(),
+    projectIds: z.array(uuid).default([]),
     createdAt: timestamp,
     updatedAt: timestamp
   })
   .strict()
-  .refine((value) => value.path !== undefined || value.rootPath !== undefined, {
-    message: "workspace path is required"
-  });
+  .refine(
+    (value) =>
+      value.path !== undefined || value.rootPath !== undefined || value.projectIds.length > 0,
+    {
+      message: "workspace path or project relationship is required"
+    }
+  );
 
 export const repositorySchema = z
   .object({
     id: uuid,
-    workspaceId: uuid,
     name: z.string().min(1),
     path: z.string().min(1).optional(),
     rootPath: z.string().min(1).optional(),
+    workspaceIds: z.array(uuid).default([]),
+    canonicalPath: z.string().min(1).optional(),
+    displayName: z.string().min(1).optional(),
+    kind: z.enum(["normal", "bare", "worktree"]).optional(),
     remoteUrl: z.string().min(1).nullable().optional(),
     defaultBranch: z.string().min(1).nullable().optional(),
     createdAt: timestamp,
     updatedAt: timestamp
   })
   .strict()
-  .refine((value) => value.path !== undefined || value.rootPath !== undefined, {
-    message: "repository path is required"
-  });
+  .refine(
+    (value) =>
+      value.path !== undefined ||
+      value.rootPath !== undefined ||
+      value.canonicalPath !== undefined ||
+      value.workspaceIds.length > 0,
+    {
+      message: "repository path or workspace relationship is required"
+    }
+  );
 
 export const changeEntrySchema = z
   .object({
@@ -71,6 +87,25 @@ export const repositorySnapshotSchema = z
     ahead: z.number().int().nonnegative(),
     behind: z.number().int().nonnegative(),
     changes: z.array(changeEntrySchema),
+    upstream: z
+      .object({
+        branch: z.string().min(1).nullable(),
+        ahead: z.number().int().nonnegative(),
+        behind: z.number().int().nonnegative()
+      })
+      .strict()
+      .nullable()
+      .optional(),
+    summary: z
+      .object({
+        total: z.number().int().nonnegative(),
+        added: z.number().int().nonnegative(),
+        modified: z.number().int().nonnegative(),
+        deleted: z.number().int().nonnegative(),
+        untracked: z.number().int().nonnegative()
+      })
+      .strict()
+      .default({ total: 0, added: 0, modified: 0, deleted: 0, untracked: 0 }),
     capturedAt: timestamp
   })
   .strict();
@@ -83,7 +118,11 @@ export const identityProfileSchema = z
     email: z.string().email(),
     gpgFormat: z.enum(["openpgp", "ssh", "x509", "none"]).nullable().optional(),
     signingKey: z.string().min(1).nullable().optional(),
-    isGlobal: z.boolean().optional()
+    isGlobal: z.boolean().optional(),
+    signCommits: z.boolean().optional(),
+    signTags: z.boolean().optional(),
+    createdAt: timestamp.optional(),
+    updatedAt: timestamp.optional()
   })
   .strict()
   .refine((value) => value.name !== undefined || value.displayName !== undefined, {

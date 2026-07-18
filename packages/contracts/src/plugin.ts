@@ -1,9 +1,18 @@
 import { z } from "zod";
 
-const safeRelativePath = z
+export const safeRelativePath = z
   .string()
   .min(1)
   .refine((value) => !/^(?:[\\/]|[A-Za-z]:)/u.test(value), "path is absolute")
+  .refine((value) => !/^[A-Za-z][A-Za-z0-9+.-]*:/u.test(value), "path has a URL scheme")
+  .refine(
+    (value) =>
+      !Array.from(value).some((character) => {
+        const code = character.charCodeAt(0);
+        return code < 0x20 || code === 0x7f;
+      }),
+    "path contains control characters"
+  )
   .refine((value) => !value.split(/[\\/]/u).includes(".."), "path traverses its plugin root");
 
 export const permissionRequestSchema = z
@@ -23,7 +32,7 @@ export const navigationContributionSchema = z
   .strict();
 
 const themeIdSchema = z.string().regex(/^[a-z0-9]+(?:[.-][a-z0-9]+)+$/u);
-const themeContributionSchema = z
+export const themeContributionSchema = z
   .object({
     themeId: themeIdSchema,
     definition: safeRelativePath.optional(),

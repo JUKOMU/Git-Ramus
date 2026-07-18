@@ -8,7 +8,14 @@ import {
   pluginManifestSchema,
   rpcRequestSchema,
   themeDefinitionSchema,
-  projectSchema
+  projectSchema,
+  workspaceSchema,
+  repositorySchema,
+  repositorySnapshotSchema,
+  identityProfileSchema,
+  themeContributionSchema,
+  hostThemeChangedSchema,
+  themeChangedSchema
 } from "../index";
 
 describe("shared contracts", () => {
@@ -27,6 +34,24 @@ describe("shared contracts", () => {
       ).toThrow();
     }
   );
+
+  it.each([
+    "https://evil.test/theme.json",
+    "data:text/html,evil",
+    "file:theme.json",
+    "theme.json\u0000",
+    "theme\n.json"
+  ])("rejects scheme-like or control-character theme definition %s", (definition) => {
+    expect(() =>
+      pluginManifestSchema.parse({
+        ...manifest,
+        contributions: {
+          ...manifest.contributions,
+          theme: { themeId: "git-ramus.safe", definition }
+        }
+      })
+    ).toThrow();
+  });
 
   it("parses an RPC request", () => {
     const request = rpcRequestSchema.parse({
@@ -65,6 +90,27 @@ describe("shared contracts", () => {
         }
       }).type
     ).toBe("host:theme-changed");
+  });
+
+  it("normalizes an omitted init route and exports theme message schemas", () => {
+    expect(
+      hostInitSchema.parse({
+        type: "host:init",
+        sessionId: "e3d622f1-f1f7-4f7e-8f18-3db8a1e6ffbe",
+        pluginId: "git-ramus.welcome",
+        sdkVersion: "0.1.0"
+      }).route
+    ).toBe("/");
+    expect(
+      hostToPluginMessageSchema.parse({
+        type: "host:theme-changed",
+        sessionId: "e3d622f1-f1f7-4f7e-8f18-3db8a1e6ffbe",
+        theme: { themeId: "git-ramus.default", density: "compact" }
+      }).type
+    ).toBe("host:theme-changed");
+    expect(themeContributionSchema).toBeDefined();
+    expect(hostThemeChangedSchema).toBeDefined();
+    expect(themeChangedSchema).toBe(hostThemeChangedSchema);
   });
 
   it("accepts a theme contribution with a safe relative definition", () => {
@@ -121,10 +167,70 @@ describe("shared contracts", () => {
       id: "87a31769-8aaa-47ca-bef3-47e66f0c62fc",
       name: "Demo",
       path: "C:/demo",
+      rootPath: "C:/demo",
+      scanDepth: 3,
+      excludePatterns: ["node_modules"],
       createdAt: "2026-07-17T00:00:00Z",
       updatedAt: "2026-07-17T00:00:00Z"
     });
     expect(project.id).toBe("87a31769-8aaa-47ca-bef3-47e66f0c62fc");
+  });
+
+  it("models workspace and repository relationships as many-to-many", () => {
+    expect(
+      workspaceSchema.parse({
+        id: "87a31769-8aaa-47ca-bef3-47e66f0c62fc",
+        name: "Shared",
+        projectIds: ["e3d622f1-f1f7-4f7e-8f18-3db8a1e6ffbe"],
+        createdAt: "2026-07-17T00:00:00Z",
+        updatedAt: "2026-07-17T00:00:00Z"
+      }).projectIds
+    ).toHaveLength(1);
+    expect(
+      repositorySchema.parse({
+        id: "e3d622f1-f1f7-4f7e-8f18-3db8a1e6ffbe",
+        name: "Repo",
+        path: "C:/repo",
+        canonicalPath: "C:/repo",
+        displayName: "Repo",
+        kind: "normal",
+        workspaceIds: ["87a31769-8aaa-47ca-bef3-47e66f0c62fc"],
+        createdAt: "2026-07-17T00:00:00Z",
+        updatedAt: "2026-07-17T00:00:00Z"
+      }).workspaceIds
+    ).toHaveLength(1);
+  });
+
+  it("includes repository overview snapshot upstream and summary fields", () => {
+    const snapshot = repositorySnapshotSchema.parse({
+      id: "87a31769-8aaa-47ca-bef3-47e66f0c62fc",
+      repositoryId: "e3d622f1-f1f7-4f7e-8f18-3db8a1e6ffbe",
+      branch: "main",
+      headSha: "abc123",
+      isDirty: false,
+      ahead: 0,
+      behind: 0,
+      changes: [],
+      upstream: { branch: "origin/main", ahead: 0, behind: 0 },
+      summary: { total: 0, added: 0, modified: 0, deleted: 0, untracked: 0 },
+      capturedAt: "2026-07-17T00:00:00Z"
+    });
+    expect(snapshot.summary.total).toBe(0);
+  });
+
+  it("includes identity timestamps and signing policies", () => {
+    const identity = identityProfileSchema.parse({
+      id: "87a31769-8aaa-47ca-bef3-47e66f0c62fc",
+      displayName: "Demo User",
+      email: "demo@example.com",
+      gpgFormat: "ssh",
+      signingKey: "SHA256:key",
+      signCommits: true,
+      signTags: false,
+      createdAt: "2026-07-17T00:00:00Z",
+      updatedAt: "2026-07-17T00:00:00Z"
+    });
+    expect(identity.signCommits).toBe(true);
   });
 
   it("requires stable job and error codes", () => {

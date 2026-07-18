@@ -60,6 +60,19 @@ describe("plugin client", () => {
     client.dispose();
   });
 
+  it("defaults legacy init messages to the root route", async () => {
+    const transport = new FakeTransport();
+    const client = createPluginClient(transport);
+    transport.receive({
+      type: "host:init",
+      sessionId: "e3d622f1-f1f7-4f7e-8f18-3db8a1e6ffbe",
+      pluginId: "git-ramus.welcome",
+      sdkVersion: "0.1.0"
+    });
+    await expect(client.ready).resolves.toMatchObject({ route: "/" });
+    client.dispose();
+  });
+
   it("exposes route and applies validated theme updates", async () => {
     const transport = new FakeTransport();
     const client = createPluginClient(transport, () => "87a31769-8aaa-47ca-bef3-47e66f0c62fc");

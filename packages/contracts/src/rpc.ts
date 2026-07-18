@@ -62,6 +62,8 @@ export const hostThemeChangedSchema = z
   })
   .strict();
 
+export const themeChangedSchema = hostThemeChangedSchema;
+
 export const hostToPluginMessageSchema = z.union([
   hostInitSchema,
   rpcResultSchema,
