@@ -12,11 +12,66 @@ import {
   workspaceSchema,
   repositorySchema,
   repositorySnapshotSchema,
+  changeEntrySchema,
   identityProfileSchema,
+  effectiveIdentitySchema,
+  gitContextRequestSchema,
+  projectListResponseSchema,
+  projectUpdateScanRulesRequestSchema,
+  repositoryStageRequestSchema,
+  scanProjectResultSchema,
+  overviewSchema,
+  changesResultSchema,
+  diffResultSchema,
+  writeResultSchema,
+  identityListResponseSchema,
+  operationResponseSchema,
+  repositoryOperationResponseSchema,
   themeContributionSchema,
   hostThemeChangedSchema,
   themeChangedSchema
 } from "../index";
+
+const projectId = "87a31769-8aaa-47ca-bef3-47e66f0c62fc";
+const workspaceId = "e3d622f1-f1f7-4f7e-8f18-3db8a1e6ffbe";
+const repositoryId = "a032bc9c-8759-45ac-856f-b76f9addb9d1";
+const profileId = "d23957ac-5c0f-4857-9124-7f1599a41f33";
+
+const project = {
+  id: projectId,
+  name: "Demo",
+  rootPath: "C:/demo",
+  scanDepth: 3,
+  excludePatterns: ["node_modules"],
+  createdAt: "2026-07-17T00:00:00Z",
+  updatedAt: "2026-07-17T00:00:00Z"
+};
+
+const repository = {
+  id: repositoryId,
+  canonicalPath: "C:/demo/repository",
+  displayName: "Repository",
+  kind: "normal" as const,
+  createdAt: "2026-07-17T00:00:00Z",
+  updatedAt: "2026-07-17T00:00:00Z"
+};
+
+const snapshot = {
+  id: "c8f98df3-e949-48e0-a9ad-407fe371a94a",
+  repositoryId,
+  capturedAt: "2026-07-17T00:00:00Z",
+  headOid: "abc123",
+  branch: "main",
+  upstream: "origin/main",
+  ahead: 0,
+  behind: 0,
+  dirty: false,
+  stagedCount: 0,
+  unstagedCount: 0,
+  untrackedCount: 0,
+  conflictedCount: 0,
+  refreshErrorSummary: null
+};
 
 describe("shared contracts", () => {
   it("accepts the built-in welcome manifest", () => {
@@ -162,64 +217,53 @@ describe("shared contracts", () => {
     ).toThrow();
   });
 
-  it("parses Git project DTOs with opaque UUID ids", () => {
-    const project = projectSchema.parse({
-      id: "87a31769-8aaa-47ca-bef3-47e66f0c62fc",
-      name: "Demo",
-      rootPath: "C:/demo",
-      scanDepth: 3,
-      excludePatterns: ["node_modules"],
-      createdAt: "2026-07-17T00:00:00Z",
-      updatedAt: "2026-07-17T00:00:00Z"
-    });
-    expect(project.id).toBe("87a31769-8aaa-47ca-bef3-47e66f0c62fc");
-  });
-
-  it("models workspace and repository relationships as many-to-many", () => {
+  it("matches the camelCase Rust project, workspace, repository, and snapshot DTOs", () => {
+    expect(projectSchema.parse(project).id).toBe(projectId);
     expect(
       workspaceSchema.parse({
-        id: "87a31769-8aaa-47ca-bef3-47e66f0c62fc",
+        id: workspaceId,
         name: "Shared",
-        projectIds: ["e3d622f1-f1f7-4f7e-8f18-3db8a1e6ffbe"],
         createdAt: "2026-07-17T00:00:00Z",
         updatedAt: "2026-07-17T00:00:00Z"
-      }).projectIds
-    ).toHaveLength(1);
-    expect(
-      repositorySchema.parse({
-        id: "e3d622f1-f1f7-4f7e-8f18-3db8a1e6ffbe",
-        canonicalPath: "C:/repo",
-        displayName: "Repo",
-        kind: "normal",
-        workspaceIds: ["87a31769-8aaa-47ca-bef3-47e66f0c62fc"],
-        createdAt: "2026-07-17T00:00:00Z",
-        updatedAt: "2026-07-17T00:00:00Z"
-      }).workspaceIds
-    ).toHaveLength(1);
+      }).id
+    ).toBe(workspaceId);
+    expect(repositorySchema.parse(repository).id).toBe(repositoryId);
+    expect(repositorySnapshotSchema.parse(snapshot).headOid).toBe("abc123");
+
+    expect(() => workspaceSchema.parse({ ...project, projectIds: [projectId] })).toThrow();
+    expect(() => repositorySchema.parse({ ...repository, workspaceIds: [workspaceId] })).toThrow();
+    expect(() => repositorySnapshotSchema.parse({ ...snapshot, headSha: "abc123" })).toThrow();
   });
 
-  it("includes repository overview snapshot upstream and summary fields", () => {
-    const snapshot = repositorySnapshotSchema.parse({
-      id: "87a31769-8aaa-47ca-bef3-47e66f0c62fc",
-      repositoryId: "e3d622f1-f1f7-4f7e-8f18-3db8a1e6ffbe",
-      branch: "main",
-      headSha: "abc123",
-      isDirty: false,
-      ahead: 0,
-      behind: 0,
-      changes: [],
-      upstream: { branch: "origin/main", ahead: 0, behind: 0 },
-      summary: { total: 0, added: 0, modified: 0, deleted: 0, untracked: 0 },
-      capturedAt: "2026-07-17T00:00:00Z"
-    });
-    expect(snapshot.summary.total).toBe(0);
+  it("matches the complete Rust change entry DTO and rejects unknown fields", () => {
+    const change = {
+      path: "src/main.ts",
+      originalPath: null,
+      kind: "modified" as const,
+      staged: false,
+      unstaged: true,
+      conflicted: false,
+      binary: false,
+      old: null,
+      new: null,
+      oldPath: null,
+      newPath: null,
+      status: ".M",
+      indexStatus: ".",
+      worktreeStatus: "M",
+      additions: 2,
+      deletions: 1
+    };
+    expect(changeEntrySchema.parse(change).unstaged).toBe(true);
+    expect(() => changeEntrySchema.parse({ ...change, absolutePath: "C:/secret" })).toThrow();
   });
 
-  it("includes identity timestamps and signing policies", () => {
+  it("matches identity profile, source, and drift DTOs from the Rust host", () => {
     const identity = identityProfileSchema.parse({
-      id: "87a31769-8aaa-47ca-bef3-47e66f0c62fc",
-      displayName: "Demo User",
-      email: "demo@example.com",
+      id: profileId,
+      displayName: "Demo Profile",
+      userName: "Demo User",
+      userEmail: "demo@example.com",
       gpgFormat: "ssh",
       signingKey: "SHA256:key",
       signCommits: true,
@@ -227,7 +271,138 @@ describe("shared contracts", () => {
       createdAt: "2026-07-17T00:00:00Z",
       updatedAt: "2026-07-17T00:00:00Z"
     });
-    expect(identity.signCommits).toBe(true);
+    expect(identity.userEmail).toBe("demo@example.com");
+    expect(identityProfileSchema.parse({ ...identity, userEmail: "a@b" }).userEmail).toBe("a@b");
+    expect(
+      effectiveIdentitySchema.parse({
+        repositoryId,
+        profileId,
+        profile: identity,
+        source: "repositoryProfile",
+        displayName: "Demo Profile",
+        userName: "Demo User",
+        userEmail: "demo@example.com",
+        gpgFormat: "ssh",
+        signingKey: "SHA256:key",
+        signCommits: true,
+        signTags: false,
+        drift: {
+          fields: [{ key: "user.email", expected: ["demo@example.com"], actual: ["other@x.test"] }]
+        }
+      }).source
+    ).toBe("repositoryProfile");
+    expect(
+      effectiveIdentitySchema.parse({
+        repositoryId,
+        profileId: null,
+        profile: null,
+        source: "externalGlobal",
+        displayName: "External User",
+        userName: "External User",
+        userEmail: "git-config-value",
+        gpgFormat: "custom",
+        signingKey: null,
+        signCommits: false,
+        signTags: false,
+        drift: null
+      }).source
+    ).toBe("externalGlobal");
+    expect(() => identityProfileSchema.parse({ ...identity, email: identity.userEmail })).toThrow();
+  });
+
+  it("uses strict UUID request schemas and rejects arbitrary filesystem path keys", () => {
+    expect(gitContextRequestSchema.parse({ projectId })).toEqual({ projectId });
+    expect(() => gitContextRequestSchema.parse({ projectId, workspaceId })).toThrow();
+    expect(() => gitContextRequestSchema.parse({ projectId: "project" })).toThrow();
+    expect(() =>
+      projectUpdateScanRulesRequestSchema.parse({ projectId, rootPath: "C:/secret" })
+    ).toThrow();
+    expect(() =>
+      repositoryStageRequestSchema.parse({
+        projectId,
+        repositoryId,
+        paths: [],
+        all: true,
+        path: "C:/secret"
+      })
+    ).toThrow();
+    expect(projectListResponseSchema.parse({ projects: [project] }).projects).toHaveLength(1);
+    expect(() =>
+      projectListResponseSchema.parse({ projects: [project], rootPath: "C:/secret" })
+    ).toThrow();
+  });
+
+  it("parses the Rust overview, changes, diff, write, scan, and identity-list responses", () => {
+    expect(
+      overviewSchema.parse({
+        context: { projectId },
+        repositories: [{ repository, snapshot: null }],
+        repositoryCount: 1,
+        dirtyCount: 0,
+        stagedCount: 0,
+        unstagedCount: 0,
+        untrackedCount: 0,
+        conflictedCount: 0,
+        branches: ["main"]
+      }).repositoryCount
+    ).toBe(1);
+    expect(changesResultSchema.parse({ repositoryId, snapshot, changes: [] }).repositoryId).toBe(
+      repositoryId
+    );
+    expect(
+      diffResultSchema.parse({
+        repositoryId,
+        staged: false,
+        summary: {
+          files: [],
+          changes: [],
+          entries: [],
+          binary: false,
+          additions: 0,
+          deletions: 0
+        }
+      }).summary.files
+    ).toEqual([]);
+    expect(
+      writeResultSchema.parse({ repositoryId, snapshot: null, output: null }).output
+    ).toBeNull();
+    expect(
+      scanProjectResultSchema.parse({
+        projectId,
+        repositories: [],
+        failures: [],
+        total: 0,
+        completed: 0,
+        failed: 0,
+        discoveryFailed: 0,
+        progress: []
+      }).failed
+    ).toBe(0);
+    expect(
+      identityListResponseSchema.parse({ identities: [], globalIdentityProfileId: null })
+        .globalIdentityProfileId
+    ).toBeNull();
+  });
+
+  it("retains the asynchronous operation response compatibility contract", () => {
+    expect(
+      operationResponseSchema.parse({
+        operationId: projectId,
+        status: "accepted",
+        result: { queued: true }
+      }).status
+    ).toBe("accepted");
+    expect(
+      repositoryOperationResponseSchema.parse({
+        operationId: projectId,
+        repositoryId,
+        status: "completed",
+        snapshot
+      }).repositoryId
+    ).toBe(repositoryId);
+    expect(() =>
+      operationResponseSchema.parse({ repositoryId, snapshot: null, output: null })
+    ).toThrow();
   });
 
   it("requires canonical Git DTO fields", () => {

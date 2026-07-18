@@ -1,4 +1,4 @@
-import type { Job, PluginDescriptor } from "@git-ramus/contracts";
+import type { Job, PluginDescriptor, ThemeDefinition } from "@git-ramus/contracts";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useMemo, useState } from "react";
 import type { HostApi } from "./lib/hostApi";
@@ -8,13 +8,19 @@ import { AppShell } from "./shell/AppShell";
 
 interface AppProps {
   hostApi?: HostApi;
+  theme?: ThemeDefinition | null;
 }
 
-export function App({ hostApi = tauriHostApi }: AppProps) {
+interface PluginSelection {
+  pluginId: string;
+  route: string;
+}
+
+export function App({ hostApi = tauriHostApi, theme = null }: AppProps) {
   const [version, setVersion] = useState<string | null>(null);
   const [plugins, setPlugins] = useState<PluginDescriptor[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [selectedPluginId, setSelectedPluginId] = useState<string | null>(null);
+  const [selection, setSelection] = useState<PluginSelection | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -54,20 +60,26 @@ export function App({ hostApi = tauriHostApi }: AppProps) {
   }, [hostApi]);
 
   const selected = useMemo(
-    () => plugins.find((plugin) => plugin.manifest.id === selectedPluginId) ?? null,
-    [plugins, selectedPluginId]
+    () => plugins.find((plugin) => plugin.manifest.id === selection?.pluginId) ?? null,
+    [plugins, selection?.pluginId]
   );
 
   return (
     <AppShell
       version={version}
       plugins={plugins}
-      selectedPluginId={selectedPluginId}
+      selectedPluginId={selection?.pluginId ?? null}
+      selectedRoute={selection?.route ?? null}
       jobs={jobs}
       hostApi={hostApi}
-      onSelectPlugin={setSelectedPluginId}
+      onSelectPlugin={(pluginId, route) => setSelection({ pluginId, route })}
     >
-      <PluginHost descriptor={selected} hostApi={hostApi} />
+      <PluginHost
+        descriptor={selected}
+        hostApi={hostApi}
+        route={selection?.route ?? "/"}
+        theme={theme}
+      />
     </AppShell>
   );
 }

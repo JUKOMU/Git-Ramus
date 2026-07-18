@@ -1,8 +1,11 @@
 import {
+  errorEnvelopeSchema,
   pluginToHostMessageSchema,
+  themeDefinitionSchema,
   type ErrorEnvelope,
   type PluginDescriptor,
-  type RpcResult
+  type RpcResult,
+  type ThemeDefinition
 } from "@git-ramus/contracts";
 import { useEffect, useRef, useState } from "react";
 import type { HostApi } from "../lib/hostApi";
@@ -11,11 +14,14 @@ import { dispatchPluginRpc } from "./rpcRouter";
 interface PluginFrameProps {
   descriptor: PluginDescriptor;
   hostApi: HostApi;
+  route?: string;
+  theme?: ThemeDefinition | null;
 }
 
-export function PluginFrame({ descriptor, hostApi }: PluginFrameProps) {
+export function PluginFrame({ descriptor, hostApi, route = "/", theme = null }: PluginFrameProps) {
   const frameRef = useRef<HTMLIFrameElement>(null);
   const readyRef = useRef(false);
+  const initializedRef = useRef(false);
   const [sessionId] = useState(() => crypto.randomUUID());
   const [bridgeStatus, setBridgeStatus] = useState<
     "loading" | "ready" | "rpc-complete" | "rpc-failed"
@@ -69,18 +75,28 @@ export function PluginFrame({ descriptor, hostApi }: PluginFrameProps) {
     return () => window.removeEventListener("message", receive);
   }, [descriptor.manifest.id, hostApi, sessionId]);
 
+  useEffect(() => {
+    if (!initializedRef.current) {
+      return;
+    }
+    postTheme(frameRef.current, sessionId, theme);
+  }, [sessionId, theme]);
+
   const initialize = () => {
     readyRef.current = false;
+    initializedRef.current = true;
     setBridgeStatus("loading");
     frameRef.current?.contentWindow?.postMessage(
       {
         type: "host:init",
         sessionId,
         pluginId: descriptor.manifest.id,
-        sdkVersion: "0.1.0"
+        sdkVersion: "0.1.0",
+        route
       },
       "*"
     );
+    postTheme(frameRef.current, sessionId, theme);
   };
 
   return (
@@ -99,12 +115,37 @@ function postResult(frame: HTMLIFrameElement | null, result: RpcResult) {
   frame?.contentWindow?.postMessage(result, "*");
 }
 
+function postTheme(
+  frame: HTMLIFrameElement | null,
+  sessionId: string,
+  theme: ThemeDefinition | null
+) {
+  if (theme === null) {
+    return;
+  }
+  const parsed = themeDefinitionSchema.safeParse(theme);
+  if (!parsed.success) {
+    return;
+  }
+  frame?.contentWindow?.postMessage(
+    {
+      type: "host:theme-changed",
+      sessionId,
+      theme: parsed.data
+    },
+    "*"
+  );
+}
+
 function toPluginError(error: unknown, pluginId: string): ErrorEnvelope {
-  const permissionDenied = error instanceof Error && error.message.startsWith("Permission denied:");
+  const structured = errorEnvelopeSchema.safeParse(error);
+  if (structured.success) {
+    return structured.data;
+  }
   return {
-    code: permissionDenied ? "permission.denied" : "plugin.rpc-failed",
-    category: permissionDenied ? "userActionRequired" : "internalFatal",
-    message: error instanceof Error ? error.message : "Plugin RPC failed",
+    code: "plugin.rpc-failed",
+    category: "internalFatal",
+    message: "Plugin RPC failed",
     operationId: null,
     pluginId,
     resourceId: null,

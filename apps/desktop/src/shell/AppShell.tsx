@@ -7,9 +7,10 @@ interface AppShellProps {
   version: string | null;
   plugins: PluginDescriptor[];
   selectedPluginId: string | null;
+  selectedRoute: string | null;
   jobs: Job[];
   hostApi: HostApi;
-  onSelectPlugin(pluginId: string): void;
+  onSelectPlugin(pluginId: string, route: string): void;
   children: ReactNode;
 }
 
@@ -30,10 +31,13 @@ export function AppShell(props: AppShellProps) {
             plugin.manifest.contributions.navigation.map((item) => (
               <button
                 className="nav-item"
-                aria-pressed={props.selectedPluginId === plugin.manifest.id}
+                aria-pressed={
+                  props.selectedPluginId === plugin.manifest.id &&
+                  props.selectedRoute === item.route
+                }
                 key={`${plugin.manifest.id}:${item.id}`}
                 type="button"
-                onClick={() => props.onSelectPlugin(plugin.manifest.id)}
+                onClick={() => props.onSelectPlugin(plugin.manifest.id, item.route)}
               >
                 {item.label}
               </button>

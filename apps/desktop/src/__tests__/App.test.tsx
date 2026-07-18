@@ -19,7 +19,30 @@ const hostApi: HostApi = {
     updatedAt: "2026-07-17T00:00:00Z",
     error: null
   }),
-  cancelJob: async () => undefined
+  cancelJob: async () => undefined,
+  listProjects: async () => ({ projects: [] }),
+  updateProjectScanRules: async () => Promise.reject(new Error("not used")),
+  scanProject: async () => Promise.reject(new Error("not used")),
+  listWorkspaces: async () => ({ workspaces: [] }),
+  createWorkspace: async () => Promise.reject(new Error("not used")),
+  updateWorkspaceMembership: async () => [],
+  deleteWorkspace: async () => undefined,
+  getOverview: async () => Promise.reject(new Error("not used")),
+  getRepositorySnapshot: async () => Promise.reject(new Error("not used")),
+  getRepositoryChanges: async () => Promise.reject(new Error("not used")),
+  getRepositoryDiff: async () => Promise.reject(new Error("not used")),
+  stageRepository: async () => Promise.reject(new Error("not used")),
+  unstageRepository: async () => Promise.reject(new Error("not used")),
+  commitRepository: async () => Promise.reject(new Error("not used")),
+  trustRepository: async () => Promise.reject(new Error("not used")),
+  listIdentities: async () => ({ identities: [], globalIdentityProfileId: null }),
+  createIdentity: async () => Promise.reject(new Error("not used")),
+  updateIdentity: async () => Promise.reject(new Error("not used")),
+  deleteIdentity: async () => undefined,
+  setGlobalIdentity: async () => Promise.reject(new Error("not used")),
+  bindRepositoryIdentity: async () => Promise.reject(new Error("not used")),
+  unbindRepositoryIdentity: async () => undefined,
+  getEffectiveRepositoryIdentity: async () => Promise.reject(new Error("not used"))
 };
 
 describe("App", () => {
