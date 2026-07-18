@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS repository_snapshots (
     untracked_count INTEGER NOT NULL DEFAULT 0,
     conflicted_count INTEGER NOT NULL DEFAULT 0,
     refresh_error_summary TEXT,
-    FOREIGN KEY (repository_id) REFERENCES repositories(id) ON DELETE CASCADE
+    FOREIGN KEY (repository_id) REFERENCES repositories(id) ON DELETE RESTRICT
 );
 CREATE INDEX IF NOT EXISTS idx_repository_snapshots_repository ON repository_snapshots(repository_id, captured_at DESC);
 CREATE TABLE IF NOT EXISTS repository_remotes (
@@ -67,13 +67,13 @@ CREATE TABLE IF NOT EXISTS repository_remotes (
     fetch_url TEXT,
     push_url TEXT,
     PRIMARY KEY (repository_id, name),
-    FOREIGN KEY (repository_id) REFERENCES repositories(id) ON DELETE CASCADE
+    FOREIGN KEY (repository_id) REFERENCES repositories(id) ON DELETE RESTRICT
 );
 CREATE TABLE IF NOT EXISTS trusted_repositories (
     repository_id TEXT PRIMARY KEY NOT NULL,
     trusted_at TEXT NOT NULL,
     trust_version INTEGER NOT NULL DEFAULT 1 CHECK (trust_version > 0),
-    FOREIGN KEY (repository_id) REFERENCES repositories(id) ON DELETE CASCADE
+    FOREIGN KEY (repository_id) REFERENCES repositories(id) ON DELETE RESTRICT
 );
 
 CREATE TABLE IF NOT EXISTS identity_profiles (
@@ -92,8 +92,9 @@ CREATE TABLE IF NOT EXISTS repository_identity_bindings (
     repository_id TEXT PRIMARY KEY NOT NULL,
     identity_profile_id TEXT NOT NULL,
     managed INTEGER NOT NULL DEFAULT 1 CHECK (managed IN (0,1)),
-    FOREIGN KEY (repository_id) REFERENCES repositories(id) ON DELETE CASCADE,
-    FOREIGN KEY (identity_profile_id) REFERENCES identity_profiles(id) ON DELETE CASCADE
+    bound_at TEXT NOT NULL,
+    FOREIGN KEY (repository_id) REFERENCES repositories(id) ON DELETE RESTRICT,
+    FOREIGN KEY (identity_profile_id) REFERENCES identity_profiles(id) ON DELETE RESTRICT
 );
 CREATE TABLE IF NOT EXISTS themes (
     theme_id TEXT PRIMARY KEY NOT NULL,
@@ -108,6 +109,8 @@ CREATE TABLE IF NOT EXISTS global_settings (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     global_identity_profile_id TEXT,
     active_theme_id TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     FOREIGN KEY (global_identity_profile_id) REFERENCES identity_profiles(id) ON DELETE SET NULL,
     FOREIGN KEY (active_theme_id) REFERENCES themes(theme_id) ON DELETE SET NULL
 );

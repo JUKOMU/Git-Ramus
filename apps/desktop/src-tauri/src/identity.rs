@@ -65,6 +65,8 @@ pub struct Theme {
 pub struct GlobalSettings {
     pub global_identity_profile_id: Option<String>,
     pub active_theme_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 impl Theme {
     pub fn new(id: &str, plugin: &str, version: &str, definition: &str) -> Self {
@@ -152,19 +154,21 @@ impl GlobalSettingsRepository {
     pub fn get(&self) -> Result<GlobalSettings, AppError> {
         self.db.with_connection(|c| {
             c.query_row(
-                "SELECT global_identity_profile_id,active_theme_id FROM global_settings WHERE id=1",
+                "SELECT global_identity_profile_id,active_theme_id,created_at,updated_at FROM global_settings WHERE id=1",
                 [],
                 |r| {
                     Ok(GlobalSettings {
                         global_identity_profile_id: r.get(0)?,
                         active_theme_id: r.get(1)?,
+                        created_at: dt(r.get(2)?)?,
+                        updated_at: dt(r.get(3)?)?,
                     })
                 },
             )
         })
     }
     pub fn set(&self, settings: &GlobalSettings) -> Result<(), AppError> {
-        self.db.with_transaction(|tx| tx.execute("UPDATE global_settings SET global_identity_profile_id=?1,active_theme_id=?2 WHERE id=1", params![settings.global_identity_profile_id, settings.active_theme_id]).map(|_| ()))
+        self.db.with_transaction(|tx| tx.execute("UPDATE global_settings SET global_identity_profile_id=?1,active_theme_id=?2,updated_at=?3 WHERE id=1", params![settings.global_identity_profile_id, settings.active_theme_id, settings.updated_at.to_rfc3339()]).map(|_| ()))
     }
 }
 
@@ -180,5 +184,23 @@ mod tests {
             })
             .unwrap();
         assert_eq!(count, 1);
+        let identities = super::IdentityProfileRepository::new(db.clone());
+        let profile = super::IdentityProfile::new("A", "a", "a@example.com");
+        identities.create(&profile).unwrap();
+        let themes = super::ThemeRepository::new(db.clone());
+        let theme = super::Theme::new("theme", "builtin", "1", "{}");
+        themes.create(&theme).unwrap();
+        let settings_repo = super::GlobalSettingsRepository::new(db);
+        let mut settings = settings_repo.get().unwrap();
+        settings.global_identity_profile_id = Some(profile.id);
+        settings.active_theme_id = Some(theme.theme_id);
+        settings.updated_at = chrono::Utc::now();
+        settings_repo.set(&settings).unwrap();
+        let loaded = settings_repo.get().unwrap();
+        assert_eq!(
+            loaded.global_identity_profile_id,
+            settings.global_identity_profile_id
+        );
+        assert_eq!(loaded.active_theme_id, settings.active_theme_id);
     }
 }

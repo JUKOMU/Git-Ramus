@@ -119,6 +119,26 @@ pub struct RepositorySnapshot {
     pub conflicted_count: i64,
     pub refresh_error_summary: Option<String>,
 }
+impl RepositorySnapshot {
+    pub fn new(repository_id: &str) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            repository_id: repository_id.into(),
+            captured_at: now(),
+            head_oid: None,
+            branch: None,
+            upstream: None,
+            ahead: 0,
+            behind: 0,
+            dirty: false,
+            staged_count: 0,
+            unstaged_count: 0,
+            untracked_count: 0,
+            conflicted_count: 0,
+            refresh_error_summary: None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Remote {
@@ -133,6 +153,14 @@ pub struct Trust {
     pub repository_id: String,
     pub trusted_at: DateTime<Utc>,
     pub trust_version: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct IdentityBinding {
+    pub repository_id: String,
+    pub identity_profile_id: String,
+    pub managed: bool,
+    pub bound_at: DateTime<Utc>,
 }
 
 pub use crate::identity::{IdentityProfile, Theme};

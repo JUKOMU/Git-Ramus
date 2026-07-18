@@ -119,4 +119,43 @@ mod tests {
             .unwrap();
         assert_eq!(fk, 2);
     }
+
+    #[test]
+    fn migration_runner_is_safe_to_run_twice_and_creates_all_v2_tables() {
+        let mut connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        super::migrations::run(&mut connection).unwrap();
+        super::migrations::run(&mut connection).unwrap();
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 2);
+        let names = [
+            "projects",
+            "workspaces",
+            "workspace_projects",
+            "repositories",
+            "project_repositories",
+            "repository_snapshots",
+            "repository_remotes",
+            "trusted_repositories",
+            "identity_profiles",
+            "repository_identity_bindings",
+            "global_settings",
+            "themes",
+        ];
+        for name in names {
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                        [name],
+                        |r| r.get::<_, i64>(0)
+                    )
+                    .unwrap(),
+                1,
+                "missing {name}"
+            );
+        }
+    }
 }

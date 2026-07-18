@@ -162,6 +162,22 @@ fn map_snapshot(r: &Row) -> Result<RepositorySnapshot, rusqlite::Error> {
 pub struct TrustRepository {
     db: Database,
 }
+
+#[derive(Clone)]
+pub struct IdentityBindingRepository {
+    db: Database,
+}
+impl IdentityBindingRepository {
+    pub fn new(db: Database) -> Self {
+        Self { db }
+    }
+    pub fn bind(&self, repository_id: &str, identity_profile_id: &str) -> Result<(), AppError> {
+        self.db.with_connection(|c| c.execute("INSERT INTO repository_identity_bindings(repository_id,identity_profile_id,managed,bound_at) VALUES(?1,?2,1,?3) ON CONFLICT(repository_id) DO UPDATE SET identity_profile_id=excluded.identity_profile_id,managed=excluded.managed,bound_at=excluded.bound_at", params![repository_id, identity_profile_id, chrono::Utc::now().to_rfc3339()]).map(|_| ()))
+    }
+    pub fn get(&self, repository_id: &str) -> Result<IdentityBinding, AppError> {
+        self.db.with_connection(|c| c.query_row("SELECT repository_id,identity_profile_id,managed,bound_at FROM repository_identity_bindings WHERE repository_id=?1", [repository_id], |r| Ok(IdentityBinding { repository_id: r.get(0)?, identity_profile_id: r.get(1)?, managed: r.get(2)?, bound_at: dt(r.get(3)?)? })).optional()).and_then(|v| v.ok_or_else(|| AppError::NotFound(format!("identity binding {repository_id}"))))
+    }
+}
 impl TrustRepository {
     pub fn new(db: Database) -> Self {
         Self { db }
