@@ -221,6 +221,9 @@ pub struct DetectedRepository {
 /// Parse `git status --porcelain=v2 -z --branch` without lossy decoding.
 pub fn parse_status_v2(input: impl AsRef<[u8]>) -> Result<RepositorySnapshot, AppError> {
     let bytes = input.as_ref();
+    if !bytes.is_empty() && !bytes.ends_with(&[0]) {
+        return Err(invalid_status("porcelain v2 stream is not NUL terminated"));
+    }
     let records = bytes.split(|byte| *byte == 0).collect::<Vec<_>>();
     let mut snapshot = RepositorySnapshot::default();
     let mut index = 0;
@@ -664,6 +667,11 @@ fn diff_file_with_paths(old: String, new: String, _copied: bool, binary: bool) -
 }
 
 fn parse_nul_diff_summary(bytes: &[u8]) -> Result<DiffSummary, AppError> {
+    if !bytes.ends_with(&[0]) {
+        return Err(AppError::InvalidInput(
+            "structured diff stream is not NUL terminated".to_owned(),
+        ));
+    }
     let records = bytes.split(|byte| *byte == 0).collect::<Vec<_>>();
     let mut files = Vec::new();
     let mut index = 0;

@@ -344,6 +344,14 @@ fn status_parser_rejects_unknown_nonempty_records() {
 }
 
 #[test]
+fn status_parser_requires_a_trailing_nul() {
+    assert!(matches!(
+        parse_status_v2(b"? file.txt"),
+        Err(AppError::InvalidInput(_))
+    ));
+}
+
+#[test]
 fn diff_parser_rejects_interior_empty_nul_records() {
     let fixture = b"1\t0\tfirst.txt\0\x00";
     let fixture = [fixture.as_slice(), b"1\t1\tsecond.txt\0"].concat();
@@ -359,6 +367,17 @@ fn diff_parser_keeps_name_status_nul_paths_after_double_dash() {
     let summary = parse_diff_summary(fixture).expect("name-status NUL parses");
     assert_eq!(summary.files.len(), 1);
     assert_eq!(summary.files[0].path, "--added file.txt");
+}
+
+#[test]
+fn structured_nul_diff_requires_a_trailing_nul_but_plain_numstat_does_not() {
+    assert!(matches!(
+        parse_diff_summary(b"A\0file.txt"),
+        Err(AppError::InvalidInput(_))
+    ));
+    let plain = parse_diff_summary(b"1\t0\tfile.txt").expect("plain numstat parses without NUL");
+    assert_eq!(plain.files.len(), 1);
+    assert_eq!(plain.files[0].path, "file.txt");
 }
 
 #[test]
