@@ -2,6 +2,8 @@ pub mod app_state;
 pub mod commands;
 pub mod db;
 pub mod error;
+pub mod git;
+pub mod identity;
 pub mod jobs;
 pub mod plugins;
 pub mod secrets;

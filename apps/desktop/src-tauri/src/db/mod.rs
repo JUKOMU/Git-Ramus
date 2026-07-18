@@ -46,6 +46,17 @@ impl Database {
     ) -> Result<T, AppError> {
         operation(&self.connection.lock()).map_err(AppError::from)
     }
+
+    pub fn with_transaction<T>(
+        &self,
+        operation: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T, rusqlite::Error>,
+    ) -> Result<T, AppError> {
+        let mut guard = self.connection.lock();
+        let transaction = guard.transaction()?;
+        let result = operation(&transaction)?;
+        transaction.commit()?;
+        Ok(result)
+    }
 }
 
 #[cfg(test)]
@@ -70,7 +81,7 @@ mod tests {
             })
             .expect("version query succeeds");
         assert_eq!(table_count, 4);
-        assert_eq!(version, 1);
+        assert_eq!(version, 2);
     }
 
     #[test]
@@ -82,5 +93,30 @@ mod tests {
             })
             .expect("pragma query succeeds");
         assert_eq!(enabled, 1);
+    }
+
+    #[test]
+    fn git_migration_is_idempotent_and_has_relationship_foreign_keys() {
+        let database = Database::open_in_memory().expect("database opens");
+        database
+            .with_connection(|connection| {
+                connection.execute_batch(
+                    "BEGIN; CREATE TABLE IF NOT EXISTS __migration_probe (id INTEGER); ROLLBACK;",
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let tables: i64 = database.with_connection(|c| c.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','workspaces','workspace_projects','repositories','repository_snapshots','trusted_repositories','identity_profiles','themes','global_settings')", [], |r| r.get(0))).unwrap();
+        assert_eq!(tables, 9);
+        let fk: i64 = database
+            .with_connection(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM pragma_foreign_key_list('workspace_projects')",
+                    [],
+                    |r| r.get(0),
+                )
+            })
+            .unwrap();
+        assert_eq!(fk, 2);
     }
 }
