@@ -76,9 +76,11 @@ impl WorkspaceRepository {
     }
     pub fn projects(&self, id: &str) -> Result<Vec<String>, AppError> {
         self.db.with_connection(|c| {
-            let mut s = c.prepare("SELECT project_id FROM workspace_projects WHERE workspace_id=?1 ORDER BY position")?;
+            let mut s = c.prepare(
+                "SELECT project_id FROM workspace_projects WHERE workspace_id=?1 ORDER BY position",
+            )?;
             s.query_map([id], |r| r.get(0))?.collect()
-        }).map_err(AppError::from)
+        })
     }
 }
 
@@ -102,10 +104,10 @@ impl RepositoryRepository {
         repository_id: &str,
         relative_path: &str,
     ) -> Result<(), AppError> {
-        self.db.with_connection(|c| c.execute("INSERT INTO project_repositories(project_id,repository_id,relative_path) VALUES(?1,?2,?3) ON CONFLICT(project_id,repository_id) DO UPDATE SET relative_path=excluded.relative_path", params![project_id, repository_id, relative_path]).map(|_|())).map_err(AppError::from)
+        self.db.with_connection(|c| c.execute("INSERT INTO project_repositories(project_id,repository_id,relative_path) VALUES(?1,?2,?3) ON CONFLICT(project_id,repository_id) DO UPDATE SET relative_path=excluded.relative_path", params![project_id, repository_id, relative_path]).map(|_|()))
     }
     pub fn add_remote(&self, remote: &Remote) -> Result<(), AppError> {
-        self.db.with_connection(|c| c.execute("INSERT INTO repository_remotes(repository_id,name,fetch_url,push_url) VALUES(?1,?2,?3,?4) ON CONFLICT(repository_id,name) DO UPDATE SET fetch_url=excluded.fetch_url,push_url=excluded.push_url", params![remote.repository_id, remote.name, remote.fetch_url, remote.push_url]).map(|_|())).map_err(AppError::from)
+        self.db.with_connection(|c| c.execute("INSERT INTO repository_remotes(repository_id,name,fetch_url,push_url) VALUES(?1,?2,?3,?4) ON CONFLICT(repository_id,name) DO UPDATE SET fetch_url=excluded.fetch_url,push_url=excluded.push_url", params![remote.repository_id, remote.name, remote.fetch_url, remote.push_url]).map(|_|()))
     }
 }
 fn map_repo(r: &Row) -> Result<Repository, rusqlite::Error> {
@@ -131,7 +133,7 @@ impl SnapshotRepository {
         Self { db }
     }
     pub fn upsert(&self, s: &RepositorySnapshot) -> Result<(), AppError> {
-        self.db.with_connection(|c|c.execute("INSERT INTO repository_snapshots(id,repository_id,captured_at,head_oid,branch,upstream,ahead,behind,dirty,staged_count,unstaged_count,untracked_count,conflicted_count,refresh_error_summary) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14) ON CONFLICT(id) DO UPDATE SET repository_id=excluded.repository_id,captured_at=excluded.captured_at,head_oid=excluded.head_oid,branch=excluded.branch,upstream=excluded.upstream,ahead=excluded.ahead,behind=excluded.behind,dirty=excluded.dirty,staged_count=excluded.staged_count,unstaged_count=excluded.unstaged_count,untracked_count=excluded.untracked_count,conflicted_count=excluded.conflicted_count,refresh_error_summary=excluded.refresh_error_summary",params![s.id,s.repository_id,s.captured_at.to_rfc3339(),s.head_oid,s.branch,s.upstream,s.ahead,s.behind,s.dirty,s.staged_count,s.unstaged_count,s.untracked_count,s.conflicted_count,s.refresh_error_summary]).map(|_|())).map_err(AppError::from)
+        self.db.with_connection(|c|c.execute("INSERT INTO repository_snapshots(id,repository_id,captured_at,head_oid,branch,upstream,ahead,behind,dirty,staged_count,unstaged_count,untracked_count,conflicted_count,refresh_error_summary) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14) ON CONFLICT(id) DO UPDATE SET repository_id=excluded.repository_id,captured_at=excluded.captured_at,head_oid=excluded.head_oid,branch=excluded.branch,upstream=excluded.upstream,ahead=excluded.ahead,behind=excluded.behind,dirty=excluded.dirty,staged_count=excluded.staged_count,unstaged_count=excluded.unstaged_count,untracked_count=excluded.untracked_count,conflicted_count=excluded.conflicted_count,refresh_error_summary=excluded.refresh_error_summary",params![s.id,s.repository_id,s.captured_at.to_rfc3339(),s.head_oid,s.branch,s.upstream,s.ahead,s.behind,s.dirty,s.staged_count,s.unstaged_count,s.untracked_count,s.conflicted_count,s.refresh_error_summary]).map(|_|()))
     }
     pub fn get(&self, id: &str) -> Result<RepositorySnapshot, AppError> {
         self.db.with_connection(|c|c.query_row("SELECT id,repository_id,captured_at,head_oid,branch,upstream,ahead,behind,dirty,staged_count,unstaged_count,untracked_count,conflicted_count,refresh_error_summary FROM repository_snapshots WHERE id=?1",[id],map_snapshot).optional()).and_then(|x|x.ok_or_else(||AppError::NotFound(format!("snapshot {id}"))))
@@ -165,7 +167,7 @@ impl TrustRepository {
         Self { db }
     }
     pub fn set(&self, trust: &Trust) -> Result<(), AppError> {
-        self.db.with_connection(|c| c.execute("INSERT INTO trusted_repositories(repository_id,trusted_at,trust_version) VALUES(?1,?2,?3) ON CONFLICT(repository_id) DO UPDATE SET trusted_at=excluded.trusted_at,trust_version=excluded.trust_version", params![trust.repository_id, trust.trusted_at.to_rfc3339(), trust.trust_version]).map(|_| ())).map_err(AppError::from)
+        self.db.with_connection(|c| c.execute("INSERT INTO trusted_repositories(repository_id,trusted_at,trust_version) VALUES(?1,?2,?3) ON CONFLICT(repository_id) DO UPDATE SET trusted_at=excluded.trusted_at,trust_version=excluded.trust_version", params![trust.repository_id, trust.trusted_at.to_rfc3339(), trust.trust_version]).map(|_| ()))
     }
     pub fn is_trusted(&self, repository_id: &str) -> Result<bool, AppError> {
         self.db
@@ -178,6 +180,5 @@ impl TrustRepository {
                 .optional()
             })
             .map(|x| x.unwrap_or(false))
-            .map_err(AppError::from)
     }
 }
