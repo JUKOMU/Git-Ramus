@@ -203,4 +203,36 @@ describe("plugin client", () => {
     expect(values.get("--gr-colors-background")).toBe("#000");
     expect(values.has("--gr-colors-text")).toBe(false);
   });
+
+  it("clears the active theme when the client is disposed", async () => {
+    const values = new Map<string, string>();
+    const root = {
+      style: {
+        setProperty: (key: string, value: string) => values.set(key, value),
+        removeProperty: (key: string) => values.delete(key)
+      }
+    } as unknown as HTMLElement;
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      value: { documentElement: root }
+    });
+    const transport = new FakeTransport();
+    const client = createPluginClient(transport);
+    transport.receive({
+      type: "host:init",
+      sessionId: "e3d622f1-f1f7-4f7e-8f18-3db8a1e6ffbe",
+      pluginId: "git-ramus.welcome",
+      sdkVersion: "0.1.0"
+    });
+    transport.receive({
+      type: "host:theme-changed",
+      sessionId: "e3d622f1-f1f7-4f7e-8f18-3db8a1e6ffbe",
+      theme: { themeId: "git-ramus.dark", colors: { background: "#000" } }
+    });
+    expect(values.has("--gr-colors-background")).toBe(true);
+    client.dispose();
+    expect(client.currentTheme).toBeNull();
+    expect(values.size).toBe(0);
+    delete (globalThis as { document?: unknown }).document;
+  });
 });

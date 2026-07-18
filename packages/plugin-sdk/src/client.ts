@@ -142,6 +142,8 @@ export function createPluginClient(
       const error = new Error("plugin client disposed");
       rejectReady(error);
       rejectPending(error);
+      clearAppliedTheme();
+      currentTheme = null;
       themeListeners.clear();
     }
   };
