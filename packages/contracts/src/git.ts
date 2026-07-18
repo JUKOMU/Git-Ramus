@@ -30,14 +30,7 @@ export const workspaceSchema = z
     createdAt: timestamp,
     updatedAt: timestamp
   })
-  .strict()
-  .refine(
-    (value) =>
-      value.path !== undefined || value.rootPath !== undefined || value.projectIds.length > 0,
-    {
-      message: "workspace path or project relationship is required"
-    }
-  );
+  .strict();
 
 export const repositorySchema = z
   .object({
@@ -54,17 +47,7 @@ export const repositorySchema = z
     createdAt: timestamp,
     updatedAt: timestamp
   })
-  .strict()
-  .refine(
-    (value) =>
-      value.path !== undefined ||
-      value.rootPath !== undefined ||
-      value.canonicalPath !== undefined ||
-      value.workspaceIds.length > 0,
-    {
-      message: "repository path or workspace relationship is required"
-    }
-  );
+  .strict();
 
 export const changeEntrySchema = z
   .object({
