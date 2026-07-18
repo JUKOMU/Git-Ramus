@@ -33,6 +33,8 @@ pub enum AppError {
     NonUtf8Path,
     #[error("repository trust is required before this write")]
     TrustRequired,
+    #[error("user action required: {0}")]
+    UserActionRequired(String),
     #[error("operation completed with partial results: {0}")]
     PartialResult(String),
 }
@@ -54,6 +56,7 @@ impl fmt::Debug for AppError {
             Self::OutputLimit => "OutputLimit",
             Self::NonUtf8Path => "NonUtf8Path",
             Self::TrustRequired => "TrustRequired",
+            Self::UserActionRequired(_) => "UserActionRequired",
             Self::PartialResult(_) => "PartialResult",
         };
         formatter.write_str(label)
@@ -119,14 +122,15 @@ impl From<AppError> for ErrorEnvelope {
             AppError::OutputLimit => "git.output-limit",
             AppError::NonUtf8Path => "validation.non-utf8-path",
             AppError::TrustRequired => "git.trust-required",
+            AppError::UserActionRequired(_) => "user.action-required",
             AppError::PartialResult(_) => "git.partial-result",
         };
         let category = match &error {
             AppError::InvalidInput(_) | AppError::NotFound(_) => ErrorCategory::Validation,
             AppError::NonUtf8Path => ErrorCategory::Validation,
-            AppError::PermissionDenied | AppError::TrustRequired => {
-                ErrorCategory::UserActionRequired
-            }
+            AppError::PermissionDenied
+            | AppError::TrustRequired
+            | AppError::UserActionRequired(_) => ErrorCategory::UserActionRequired,
             AppError::PartialResult(_) => ErrorCategory::PartialResult,
             AppError::Timeout => ErrorCategory::Retryable,
             AppError::Database(_)
@@ -168,6 +172,18 @@ mod tests {
         assert!(!envelope.retryable);
         assert!(envelope.retry_after_ms.is_none());
         assert!(envelope.recovery_actions.is_empty());
+        assert!(envelope.details.is_none());
+    }
+
+    #[test]
+    fn signing_and_drift_errors_have_a_stable_user_action_envelope() {
+        let envelope = ErrorEnvelope::from(AppError::UserActionRequired(
+            "configure a signing tool".to_owned(),
+        ));
+        assert_eq!(envelope.code, "user.action-required");
+        assert_eq!(envelope.category, ErrorCategory::UserActionRequired);
+        assert!(!envelope.retryable);
+        assert!(envelope.retry_after_ms.is_none());
         assert!(envelope.details.is_none());
     }
 }

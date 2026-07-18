@@ -60,7 +60,15 @@ pub fn run() {
             commands::git_repository_stage,
             commands::git_repository_unstage,
             commands::git_repository_commit,
-            commands::git_repository_trust
+            commands::git_repository_trust,
+            commands::git_identity_list,
+            commands::git_identity_create,
+            commands::git_identity_update,
+            commands::git_identity_delete,
+            commands::git_identity_set_global,
+            commands::git_repository_bind_identity,
+            commands::git_repository_unbind_identity,
+            commands::git_repository_effective_identity
         ])
         .run(tauri::generate_context!())
         .expect("Git-Ramus failed to start");

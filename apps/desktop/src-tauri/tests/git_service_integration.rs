@@ -9,11 +9,13 @@ use std::time::Duration;
 
 use git_ramus_desktop_lib::db::Database;
 use git_ramus_desktop_lib::error::AppError;
-use git_ramus_desktop_lib::git::engine::{GitCommand, GitOutput, GitRunner};
+use git_ramus_desktop_lib::git::engine::{GitCommand, GitOutput, GitRunner, SystemGitRunner};
 use git_ramus_desktop_lib::git::model::RepositoryKind;
+use git_ramus_desktop_lib::git::repository::RepositoryWriteLocks;
 use git_ramus_desktop_lib::git::service::{
     GitService, ProjectCreateInput, ProjectUpdateInput, QueryContext, validate_relative_path,
 };
+use git_ramus_desktop_lib::identity::{IdentityProfileInput, IdentityService};
 use tempfile::tempdir;
 
 #[test]
@@ -376,6 +378,276 @@ fn trust_stage_unstage_and_commit_use_safe_paths_and_stdin_message() {
         .unwrap();
     let log = run_git_output(root.path(), &["log", "-1", "--pretty=%s"]).unwrap();
     assert_eq!(String::from_utf8_lossy(&log), "message from stdin\n");
+}
+
+#[test]
+fn commit_with_selected_identity_uses_command_scope_overrides_without_mutating_local_config() {
+    if !git_available() {
+        return;
+    }
+    let root = tempdir().unwrap();
+    run_git(root.path(), &["init", "--quiet"]);
+    run_git(root.path(), &["config", "user.name", "Fixture"]);
+    run_git(
+        root.path(),
+        &["config", "user.email", "fixture@example.test"],
+    );
+    fs::write(root.path().join("tracked.txt"), "one\n").unwrap();
+    run_git(root.path(), &["add", "--", "tracked.txt"]);
+    run_git(root.path(), &["commit", "--quiet", "-m", "seed"]);
+    fs::write(root.path().join("tracked.txt"), "two\n").unwrap();
+
+    let database = Database::open_in_memory().unwrap();
+    let runner = Arc::new(SystemGitRunner::default());
+    let write_locks = RepositoryWriteLocks::default();
+    let git = GitService::with_runner_concurrency_and_write_locks(
+        database.clone(),
+        runner.clone(),
+        4,
+        write_locks.clone(),
+    );
+    let identities = IdentityService::with_runner_global_file_and_write_locks(
+        database,
+        runner,
+        root.path().join("isolated-global.gitconfig"),
+        write_locks,
+    )
+    .unwrap();
+    let project = git
+        .create_project(ProjectCreateInput {
+            root_path: root.path().to_string_lossy().into_owned(),
+            name: "Fixture".to_owned(),
+            scan_depth: Some(0),
+            exclude_patterns: Vec::new(),
+        })
+        .unwrap();
+    let scan = git.scan_project(&project.id).unwrap();
+    let repository_id = scan.repositories[0].repository.id.clone();
+    let context = QueryContext::project(&project.id);
+    git.trust_repository_in_context(&context, &repository_id)
+        .unwrap();
+    git.stage(&context, &repository_id, &["tracked.txt".to_owned()], false)
+        .unwrap();
+    let profile = identities
+        .create(IdentityProfileInput {
+            display_name: "Selected".to_owned(),
+            user_name: "Selected User".to_owned(),
+            user_email: "selected@example.com".to_owned(),
+            gpg_format: None,
+            signing_key: None,
+            sign_commits: false,
+            sign_tags: false,
+        })
+        .unwrap();
+
+    git.commit_with_identity(
+        &context,
+        &repository_id,
+        "selected identity",
+        &identities,
+        Some(&profile.id),
+    )
+    .unwrap();
+
+    assert_eq!(
+        String::from_utf8_lossy(
+            &run_git_output(root.path(), &["log", "-1", "--pretty=%an <%ae>"]).unwrap()
+        ),
+        "Selected User <selected@example.com>\n"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(
+            &run_git_output(root.path(), &["config", "--local", "--get", "user.name"]).unwrap()
+        ),
+        "Fixture\n"
+    );
+}
+
+#[test]
+fn signed_commit_never_downgrades_when_configured_tool_is_unavailable() {
+    if !git_available() {
+        return;
+    }
+    let root = tempdir().unwrap();
+    run_git(root.path(), &["init", "--quiet"]);
+    run_git(root.path(), &["config", "user.name", "Fixture"]);
+    run_git(
+        root.path(),
+        &["config", "user.email", "fixture@example.test"],
+    );
+    fs::write(root.path().join("tracked.txt"), "one\n").unwrap();
+    run_git(root.path(), &["add", "--", "tracked.txt"]);
+    run_git(root.path(), &["commit", "--quiet", "-m", "seed"]);
+    fs::write(root.path().join("tracked.txt"), "two\n").unwrap();
+    let key = root.path().join("placeholder-key");
+    fs::write(&key, "placeholder").unwrap();
+    run_git(
+        root.path(),
+        &[
+            "config",
+            "gpg.ssh.program",
+            "git-ramus-signing-tool-that-does-not-exist",
+        ],
+    );
+
+    let database = Database::open_in_memory().unwrap();
+    let runner = Arc::new(SystemGitRunner::default());
+    let write_locks = RepositoryWriteLocks::default();
+    let git = GitService::with_runner_concurrency_and_write_locks(
+        database.clone(),
+        runner.clone(),
+        4,
+        write_locks.clone(),
+    );
+    let identities = IdentityService::with_runner_global_file_and_write_locks(
+        database,
+        runner,
+        root.path().join("isolated-global.gitconfig"),
+        write_locks,
+    )
+    .unwrap();
+    let project = git
+        .create_project(ProjectCreateInput {
+            root_path: root.path().to_string_lossy().into_owned(),
+            name: "Fixture".to_owned(),
+            scan_depth: Some(0),
+            exclude_patterns: Vec::new(),
+        })
+        .unwrap();
+    let scan = git.scan_project(&project.id).unwrap();
+    let repository_id = scan.repositories[0].repository.id.clone();
+    let context = QueryContext::project(&project.id);
+    git.trust_repository_in_context(&context, &repository_id)
+        .unwrap();
+    git.stage(&context, &repository_id, &["tracked.txt".to_owned()], false)
+        .unwrap();
+    let profile = identities
+        .create(IdentityProfileInput {
+            display_name: "Signed".to_owned(),
+            user_name: "Signed User".to_owned(),
+            user_email: "signed@example.com".to_owned(),
+            gpg_format: Some("ssh".to_owned()),
+            signing_key: Some(key.to_string_lossy().into_owned()),
+            sign_commits: true,
+            sign_tags: false,
+        })
+        .unwrap();
+
+    assert!(matches!(
+        git.commit_with_identity(
+            &context,
+            &repository_id,
+            "must stay signed",
+            &identities,
+            Some(&profile.id),
+        ),
+        Err(AppError::UserActionRequired(_))
+    ));
+    assert_eq!(
+        String::from_utf8_lossy(
+            &run_git_output(root.path(), &["rev-list", "--count", "HEAD"]).unwrap()
+        ),
+        "1\n"
+    );
+}
+
+#[test]
+fn ssh_profile_creates_a_real_ssh_signed_commit_when_ssh_keygen_is_available() {
+    if !git_available() || Command::new("ssh-keygen").arg("-V").output().is_err() {
+        eprintln!("git or ssh-keygen unavailable; skipping SSH signing test");
+        return;
+    }
+    let root = tempdir().unwrap();
+    run_git(root.path(), &["init", "--quiet"]);
+    run_git(root.path(), &["config", "user.name", "Fixture"]);
+    run_git(
+        root.path(),
+        &["config", "user.email", "fixture@example.test"],
+    );
+    fs::write(root.path().join("tracked.txt"), "one\n").unwrap();
+    run_git(root.path(), &["add", "--", "tracked.txt"]);
+    run_git(root.path(), &["commit", "--quiet", "-m", "seed"]);
+    fs::write(root.path().join("tracked.txt"), "two\n").unwrap();
+    let key = root.path().join("id_ed25519");
+    let key_output = Command::new("ssh-keygen")
+        .args([
+            "-q",
+            "-t",
+            "ed25519",
+            "-N",
+            "",
+            "-C",
+            "git-ramus-test",
+            "-f",
+        ])
+        .arg(&key)
+        .output()
+        .expect("ssh-keygen starts");
+    assert!(
+        key_output.status.success(),
+        "ssh-keygen failed: {}",
+        String::from_utf8_lossy(&key_output.stderr)
+    );
+
+    let database = Database::open_in_memory().unwrap();
+    let runner = Arc::new(SystemGitRunner::default());
+    let write_locks = RepositoryWriteLocks::default();
+    let git = GitService::with_runner_concurrency_and_write_locks(
+        database.clone(),
+        runner.clone(),
+        4,
+        write_locks.clone(),
+    );
+    let identities = IdentityService::with_runner_global_file_and_write_locks(
+        database,
+        runner,
+        root.path().join("isolated-global.gitconfig"),
+        write_locks,
+    )
+    .unwrap();
+    let project = git
+        .create_project(ProjectCreateInput {
+            root_path: root.path().to_string_lossy().into_owned(),
+            name: "Fixture".to_owned(),
+            scan_depth: Some(0),
+            exclude_patterns: Vec::new(),
+        })
+        .unwrap();
+    let repository_id = git.scan_project(&project.id).unwrap().repositories[0]
+        .repository
+        .id
+        .clone();
+    let context = QueryContext::project(&project.id);
+    git.trust_repository_in_context(&context, &repository_id)
+        .unwrap();
+    git.stage(&context, &repository_id, &["tracked.txt".to_owned()], false)
+        .unwrap();
+    let profile = identities
+        .create(IdentityProfileInput {
+            display_name: "SSH Signed".to_owned(),
+            user_name: "SSH User".to_owned(),
+            user_email: "ssh@example.com".to_owned(),
+            gpg_format: Some("ssh".to_owned()),
+            signing_key: Some(key.to_string_lossy().into_owned()),
+            sign_commits: true,
+            sign_tags: false,
+        })
+        .unwrap();
+
+    git.commit_with_identity(
+        &context,
+        &repository_id,
+        "SSH signed",
+        &identities,
+        Some(&profile.id),
+    )
+    .expect("SSH signed commit succeeds");
+
+    let commit = run_git_output(root.path(), &["cat-file", "commit", "HEAD"]).unwrap();
+    assert!(
+        String::from_utf8_lossy(&commit).contains("-----BEGIN SSH SIGNATURE-----"),
+        "commit object did not contain an SSH signature"
+    );
 }
 
 #[test]

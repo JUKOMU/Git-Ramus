@@ -5,6 +5,30 @@ use crate::{
 };
 use chrono::{DateTime, Utc};
 use rusqlite::{OptionalExtension, Row, params};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
+
+/// Shared per-repository write serialization. GitService and IdentityService receive the same
+/// registry from AppState so config application cannot interleave with Stage/Commit.
+#[derive(Clone, Default)]
+pub struct RepositoryWriteLocks {
+    locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+}
+
+impl RepositoryWriteLocks {
+    pub fn lock_for(&self, repository_id: &str) -> Arc<Mutex<()>> {
+        let mut locks = self
+            .locks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        locks
+            .entry(repository_id.to_owned())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+}
 
 fn dt(s: String) -> Result<DateTime<Utc>, rusqlite::Error> {
     DateTime::parse_from_rfc3339(&s)
@@ -485,7 +509,21 @@ impl IdentityBindingRepository {
         self.db.with_connection(|c| c.execute("INSERT INTO repository_identity_bindings(repository_id,identity_profile_id,managed,bound_at) VALUES(?1,?2,1,?3) ON CONFLICT(repository_id) DO UPDATE SET identity_profile_id=excluded.identity_profile_id,managed=excluded.managed,bound_at=excluded.bound_at", params![repository_id, identity_profile_id, chrono::Utc::now().to_rfc3339()]).map(|_| ())).map_err(|e| map_constraint_error(e, "repository identity binding"))
     }
     pub fn get(&self, repository_id: &str) -> Result<IdentityBinding, AppError> {
-        self.db.with_connection(|c| c.query_row("SELECT repository_id,identity_profile_id,managed,bound_at FROM repository_identity_bindings WHERE repository_id=?1", [repository_id], |r| Ok(IdentityBinding { repository_id: r.get(0)?, identity_profile_id: r.get(1)?, managed: r.get(2)?, bound_at: dt(r.get(3)?)? })).optional()).and_then(|v| v.ok_or_else(|| AppError::NotFound(format!("identity binding {repository_id}"))))
+        self.get_optional(repository_id)?
+            .ok_or_else(|| AppError::NotFound(format!("identity binding {repository_id}")))
+    }
+    pub fn get_optional(&self, repository_id: &str) -> Result<Option<IdentityBinding>, AppError> {
+        self.db.with_connection(|c| c.query_row("SELECT repository_id,identity_profile_id,managed,bound_at FROM repository_identity_bindings WHERE repository_id=?1", [repository_id], |r| Ok(IdentityBinding { repository_id: r.get(0)?, identity_profile_id: r.get(1)?, managed: r.get(2)?, bound_at: dt(r.get(3)?)? })).optional())
+    }
+    pub fn unbind(&self, repository_id: &str) -> Result<(), AppError> {
+        self.db.with_connection(|connection| {
+            connection
+                .execute(
+                    "DELETE FROM repository_identity_bindings WHERE repository_id=?1",
+                    [repository_id],
+                )
+                .map(|_| ())
+        })
     }
 }
 impl TrustRepository {

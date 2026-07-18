@@ -5,7 +5,9 @@ use tauri::{AppHandle, Manager};
 
 use crate::db::Database;
 use crate::error::AppError;
+use crate::git::repository::RepositoryWriteLocks;
 use crate::git::service::GitService;
+use crate::identity::IdentityService;
 use crate::jobs::JobService;
 use crate::plugins::PluginRegistry;
 use crate::plugins::manifest::PluginKind;
@@ -15,6 +17,7 @@ use crate::secrets::{KeyringSecretStore, SecretStore};
 pub struct AppState {
     pub database: Database,
     pub git: GitService,
+    pub identities: IdentityService,
     pub secrets: Arc<dyn SecretStore>,
     pub jobs: JobService,
     pub plugins: PluginRegistry,
@@ -29,7 +32,9 @@ impl AppState {
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
         std::fs::create_dir_all(&app_data)?;
         let plugin_root = bundled_plugin_root(app)?;
-        Self::from_paths(&app_data.join("git-ramus.db"), &plugin_root)
+        let state = Self::from_paths(&app_data.join("git-ramus.db"), &plugin_root)?;
+        state.identities.import_global_if_empty()?;
+        Ok(state)
     }
 
     pub fn from_paths(database_path: &Path, plugin_root: &Path) -> Result<Self, AppError> {
@@ -74,9 +79,11 @@ impl AppState {
                 permissions.grant_manifest_permissions(manifest)?;
             }
         }
+        let write_locks = RepositoryWriteLocks::default();
         Ok(Self {
             jobs: JobService::new(database.clone()),
-            git: GitService::new(database.clone()),
+            git: GitService::with_write_locks(database.clone(), write_locks.clone()),
+            identities: IdentityService::with_write_locks(database.clone(), write_locks),
             secrets: Arc::new(KeyringSecretStore::new("io.git-ramus.desktop")),
             plugins,
             permissions,

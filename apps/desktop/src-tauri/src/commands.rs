@@ -3,11 +3,12 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::app_state::AppState;
 use crate::error::{AppError, ErrorEnvelope};
-use crate::git::model::{Project, Trust, Workspace};
+use crate::git::model::{IdentityBinding, Project, Trust, Workspace};
 use crate::git::service::{
     ChangesResult, DiffResult, Overview, ProjectCreateInput, QueryContext, RepositoryScanRecord,
     ScanProjectResult, WorkspaceCreateInput, WorkspaceMembershipInput, WriteResult,
 };
+use crate::identity::{EffectiveIdentity, IdentityProfile, IdentityProfileInput};
 use crate::jobs::model::Job;
 use crate::plugins::PluginDescriptor;
 
@@ -161,11 +162,64 @@ pub struct GitRepositoryCommitRequest {
     pub workspace_id: Option<String>,
     pub repository_id: String,
     pub message: String,
+    pub identity_profile_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GitRepositoryTrustRequest {
+    pub project_id: Option<String>,
+    pub workspace_id: Option<String>,
+    pub repository_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitIdentityCreateRequest {
+    pub display_name: String,
+    pub user_name: String,
+    pub user_email: String,
+    pub gpg_format: Option<String>,
+    pub signing_key: Option<String>,
+    #[serde(default)]
+    pub sign_commits: bool,
+    #[serde(default)]
+    pub sign_tags: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitIdentityUpdateRequest {
+    pub profile_id: String,
+    pub display_name: String,
+    pub user_name: String,
+    pub user_email: String,
+    pub gpg_format: Option<String>,
+    pub signing_key: Option<String>,
+    #[serde(default)]
+    pub sign_commits: bool,
+    #[serde(default)]
+    pub sign_tags: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitIdentityProfileRequest {
+    pub profile_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitRepositoryIdentityBindRequest {
+    pub project_id: Option<String>,
+    pub workspace_id: Option<String>,
+    pub repository_id: String,
+    pub identity_profile_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitRepositoryIdentityRequest {
     pub project_id: Option<String>,
     pub workspace_id: Option<String>,
     pub repository_id: String,
@@ -187,6 +241,13 @@ pub struct GitWorkspaceListResponse {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GitTrustResponse {
     pub trust: Trust,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitIdentityListResponse {
+    pub identities: Vec<IdentityProfile>,
+    pub global_identity_profile_id: Option<String>,
 }
 
 #[tauri::command]
@@ -512,7 +573,13 @@ pub fn git_repository_commit(
     };
     state
         .git
-        .commit(&context, &request.repository_id, &request.message)
+        .commit_with_identity(
+            &context,
+            &request.repository_id,
+            &request.message,
+            &state.identities,
+            request.identity_profile_id.as_deref(),
+        )
         .map_err(command_error)
 }
 
@@ -529,6 +596,139 @@ pub fn git_repository_trust(
         .git
         .trust_repository_in_context(&context, &request.repository_id)
         .map(|trust| GitTrustResponse { trust })
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn git_identity_list(state: State<'_, AppState>) -> CommandResult<GitIdentityListResponse> {
+    let identities = state.identities.list().map_err(command_error)?;
+    let global_identity_profile_id = state
+        .identities
+        .global_profile_id()
+        .map_err(command_error)?;
+    Ok(GitIdentityListResponse {
+        identities,
+        global_identity_profile_id,
+    })
+}
+
+#[tauri::command]
+pub fn git_identity_create(
+    state: State<'_, AppState>,
+    request: GitIdentityCreateRequest,
+) -> CommandResult<IdentityProfile> {
+    state
+        .identities
+        .create(IdentityProfileInput {
+            display_name: request.display_name,
+            user_name: request.user_name,
+            user_email: request.user_email,
+            gpg_format: request.gpg_format,
+            signing_key: request.signing_key,
+            sign_commits: request.sign_commits,
+            sign_tags: request.sign_tags,
+        })
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn git_identity_update(
+    state: State<'_, AppState>,
+    request: GitIdentityUpdateRequest,
+) -> CommandResult<IdentityProfile> {
+    state
+        .identities
+        .update(
+            &request.profile_id,
+            IdentityProfileInput {
+                display_name: request.display_name,
+                user_name: request.user_name,
+                user_email: request.user_email,
+                gpg_format: request.gpg_format,
+                signing_key: request.signing_key,
+                sign_commits: request.sign_commits,
+                sign_tags: request.sign_tags,
+            },
+        )
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn git_identity_delete(
+    state: State<'_, AppState>,
+    request: GitIdentityProfileRequest,
+) -> CommandResult<()> {
+    state
+        .identities
+        .delete(&request.profile_id)
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn git_identity_set_global(
+    state: State<'_, AppState>,
+    request: GitIdentityProfileRequest,
+) -> CommandResult<IdentityProfile> {
+    state
+        .identities
+        .set_global(&request.profile_id)
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn git_repository_bind_identity(
+    state: State<'_, AppState>,
+    request: GitRepositoryIdentityBindRequest,
+) -> CommandResult<IdentityBinding> {
+    let context = QueryContext {
+        project_id: request.project_id,
+        workspace_id: request.workspace_id,
+    };
+    state
+        .git
+        .validate_repository_context(&context, &request.repository_id)
+        .map_err(command_error)?;
+    state
+        .identities
+        .bind_repository(&request.repository_id, &request.identity_profile_id)
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn git_repository_unbind_identity(
+    state: State<'_, AppState>,
+    request: GitRepositoryIdentityRequest,
+) -> CommandResult<()> {
+    let context = QueryContext {
+        project_id: request.project_id,
+        workspace_id: request.workspace_id,
+    };
+    state
+        .git
+        .validate_repository_context(&context, &request.repository_id)
+        .map_err(command_error)?;
+    state
+        .identities
+        .unbind_repository(&request.repository_id)
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn git_repository_effective_identity(
+    state: State<'_, AppState>,
+    request: GitRepositoryIdentityRequest,
+) -> CommandResult<EffectiveIdentity> {
+    let context = QueryContext {
+        project_id: request.project_id,
+        workspace_id: request.workspace_id,
+    };
+    state
+        .git
+        .validate_repository_context(&context, &request.repository_id)
+        .map_err(command_error)?;
+    state
+        .identities
+        .effective_for_repository(&request.repository_id)
         .map_err(command_error)
 }
 
@@ -559,7 +759,10 @@ fn command_error(error: AppError) -> Box<ErrorEnvelope> {
 #[cfg(test)]
 mod tests {
     use super::app_info;
-    use super::{GitProjectCreateRequest, GitProjectDeleteRequest, GitWorkspaceUpdateRequest};
+    use super::{
+        GitIdentityCreateRequest, GitProjectCreateRequest, GitProjectDeleteRequest,
+        GitRepositoryCommitRequest, GitRepositoryIdentityBindRequest, GitWorkspaceUpdateRequest,
+    };
     use serde_json::json;
 
     #[test]
@@ -593,6 +796,58 @@ mod tests {
                 "unexpected": true
             }))
             .is_err()
+        );
+    }
+
+    #[test]
+    fn identity_and_commit_requests_are_typed_camel_case_and_reject_unknown_fields() {
+        let commit: GitRepositoryCommitRequest = serde_json::from_value(json!({
+            "projectId": "project",
+            "workspaceId": null,
+            "repositoryId": "repository",
+            "message": "message",
+            "identityProfileId": "profile"
+        }))
+        .expect("commit request parses");
+        assert_eq!(commit.identity_profile_id.as_deref(), Some("profile"));
+
+        assert!(
+            serde_json::from_value::<GitIdentityCreateRequest>(json!({
+                "displayName": "Alice",
+                "userName": "Alice",
+                "userEmail": "alice@example.com",
+                "gpgFormat": null,
+                "signingKey": null,
+                "signCommits": false,
+                "signTags": false,
+                "unexpected": true
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<GitRepositoryIdentityBindRequest>(json!({
+                "projectId": "project",
+                "workspaceId": null,
+                "repositoryId": "repository",
+                "identityProfileId": "profile",
+                "path": "C:/must-not-be-accepted"
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn identity_list_response_exposes_the_unique_global_profile_pointer() {
+        let response = super::GitIdentityListResponse {
+            identities: Vec::new(),
+            global_identity_profile_id: Some("profile".to_owned()),
+        };
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            json!({
+                "identities": [],
+                "globalIdentityProfileId": "profile"
+            })
         );
     }
 }

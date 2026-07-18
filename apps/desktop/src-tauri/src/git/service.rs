@@ -23,11 +23,12 @@ use super::parser::{
     RepositorySnapshot as ParsedSnapshot, detect_repository, parse_diff_summary, parse_status_v2,
 };
 use super::repository::{
-    ProjectRepository, RepositoryRepository, SnapshotRepository, TrustRepository,
-    WorkspaceRepository,
+    ProjectRepository, RepositoryRepository, RepositoryWriteLocks, SnapshotRepository,
+    TrustRepository, WorkspaceRepository,
 };
 use crate::db::Database;
 use crate::error::AppError;
+use crate::identity::IdentityService;
 
 const DEFAULT_SCAN_DEPTH: i64 = 3;
 const DEFAULT_READ_CONCURRENCY: usize = 4;
@@ -266,7 +267,7 @@ pub struct GitService {
     snapshots: SnapshotRepository,
     trusts: TrustRepository,
     read_gate: Arc<ReadGate>,
-    write_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+    write_locks: RepositoryWriteLocks,
     project_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     status_cache: Arc<Mutex<HashMap<String, ParsedSnapshot>>>,
 }
@@ -280,10 +281,33 @@ impl GitService {
         Self::with_runner_and_concurrency(db, runner, DEFAULT_READ_CONCURRENCY)
     }
 
+    pub fn with_write_locks(db: Database, write_locks: RepositoryWriteLocks) -> Self {
+        Self::with_runner_concurrency_and_write_locks(
+            db,
+            Arc::new(SystemGitRunner::default()),
+            DEFAULT_READ_CONCURRENCY,
+            write_locks,
+        )
+    }
+
     pub fn with_runner_and_concurrency(
         db: Database,
         runner: Arc<dyn GitRunner>,
         read_concurrency: usize,
+    ) -> Self {
+        Self::with_runner_concurrency_and_write_locks(
+            db,
+            runner,
+            read_concurrency,
+            RepositoryWriteLocks::default(),
+        )
+    }
+
+    pub fn with_runner_concurrency_and_write_locks(
+        db: Database,
+        runner: Arc<dyn GitRunner>,
+        read_concurrency: usize,
+        write_locks: RepositoryWriteLocks,
     ) -> Self {
         Self {
             projects: ProjectRepository::new(db.clone()),
@@ -294,7 +318,7 @@ impl GitService {
             db,
             runner,
             read_gate: Arc::new(ReadGate::new(read_concurrency)),
-            write_locks: Arc::new(Mutex::new(HashMap::new())),
+            write_locks,
             project_locks: Arc::new(Mutex::new(HashMap::new())),
             status_cache: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -1013,6 +1037,72 @@ impl GitService {
         }
     }
 
+    /// Commit with an explicitly selected Profile or the repository's effective identity. The
+    /// legacy `commit` method remains available for callers that intentionally use ambient Git
+    /// config; typed host commands use this path.
+    pub fn commit_with_identity(
+        &self,
+        context: &QueryContext,
+        repository_id: &str,
+        message: &str,
+        identities: &IdentityService,
+        identity_profile_id: Option<&str>,
+    ) -> Result<WriteResult, AppError> {
+        self.ensure_context_membership(context, repository_id)?;
+        if message.trim().is_empty() {
+            return Err(AppError::InvalidInput(
+                "commit message must not be empty".to_owned(),
+            ));
+        }
+        if message.len() > MAX_COMMIT_MESSAGE_BYTES {
+            return Err(AppError::InvalidInput(
+                "commit message is too large".to_owned(),
+            ));
+        }
+        let repository = self.repositories.get(repository_id)?;
+        self.require_trust(repository_id)?;
+        let lock = self.write_lock(repository_id);
+        let _guard = lock.lock().expect("repository write lock is not poisoned");
+        let parsed = self.latest_or_refresh_status(&repository)?;
+        if parsed.staged_count == 0 {
+            return Err(AppError::InvalidInput(
+                "commit requires staged changes".to_owned(),
+            ));
+        }
+        // Resolve and validate the signing tool while holding the same lock used by Local config
+        // application. This prevents a binding/profile apply from interleaving between identity
+        // resolution and the commit process.
+        let identity = identities.resolve_commit_identity(repository_id, identity_profile_id)?;
+        let mut args = identity.command_scope_args();
+        args.extend([
+            OsString::from("commit"),
+            OsString::from("-F"),
+            OsString::from("-"),
+        ]);
+        let mut bytes = message.as_bytes().to_vec();
+        if !bytes.ends_with(b"\n") {
+            bytes.push(b'\n');
+        }
+        let result = self.run_git(&repository, args, Some(bytes));
+        let refresh = self.refresh_after_write(&repository);
+        match result {
+            Ok(output) => {
+                let status_result = ensure_success(&output);
+                let snapshot_result = refresh;
+                status_result?;
+                Ok(WriteResult {
+                    repository_id: repository_id.to_owned(),
+                    snapshot: snapshot_result?,
+                    output: Some(sanitize_text(&output.stdout)),
+                })
+            }
+            Err(error) => {
+                let _ = refresh;
+                Err(error)
+            }
+        }
+    }
+
     pub fn stage_for_project(
         &self,
         project_id: &str,
@@ -1297,14 +1387,7 @@ impl GitService {
     }
 
     fn write_lock(&self, repository_id: &str) -> Arc<Mutex<()>> {
-        let mut locks = self
-            .write_locks
-            .lock()
-            .expect("write lock map is not poisoned");
-        locks
-            .entry(repository_id.to_owned())
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
+        self.write_locks.lock_for(repository_id)
     }
 
     fn project_lock(&self, project_id: &str) -> Arc<Mutex<()>> {
@@ -1355,6 +1438,15 @@ impl GitService {
                 "repository {repository_id} in workspace {workspace_id}"
             )))
         }
+    }
+
+    pub fn validate_repository_context(
+        &self,
+        context: &QueryContext,
+        repository_id: &str,
+    ) -> Result<(), AppError> {
+        self.ensure_context_membership(context, repository_id)
+            .map(|_| ())
     }
 
     fn repositories_for_context(
@@ -1818,6 +1910,23 @@ fn is_candidate_error(error: &AppError) -> bool {
 mod tests {
     use super::*;
     use crate::git::parser::ChangeKind;
+    use crate::git::repository::RepositoryWriteLocks;
+
+    #[test]
+    fn git_service_uses_the_injected_repository_write_lock_registry() {
+        let locks = RepositoryWriteLocks::default();
+        let service = GitService::with_runner_concurrency_and_write_locks(
+            Database::open_in_memory().unwrap(),
+            Arc::new(SystemGitRunner::default()),
+            1,
+            locks.clone(),
+        );
+
+        assert!(Arc::ptr_eq(
+            &locks.lock_for("repository"),
+            &service.write_lock("repository")
+        ));
+    }
 
     #[test]
     fn glob_match_supports_simple_wildcards() {
