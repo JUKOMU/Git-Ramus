@@ -14,13 +14,18 @@ use plugins::protocol::{
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .register_uri_scheme_protocol(PLUGIN_PROTOCOL_SCHEME, |context, request| {
+    let builder = tauri::Builder::default().register_uri_scheme_protocol(
+        PLUGIN_PROTOCOL_SCHEME,
+        |context, request| {
             let Some(state) = context.app_handle().try_state::<app_state::AppState>() else {
                 return service_unavailable_response();
             };
             build_plugin_response(&state.plugins, &request)
-        })
+        },
+    );
+    #[cfg(feature = "e2e")]
+    let builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
+    builder
         .setup(|app| {
             let state = app_state::AppState::bootstrap(app.handle())?;
             app.manage(state);

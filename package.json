@@ -8,6 +8,15 @@
     "node": ">=24 <27",
     "npm": ">=11"
   },
+  "overrides": {
+    "serialize-javascript": "7.0.7",
+    "@wdio/tauri-service@1.2.0": {
+      "@wdio/native-utils": "2.5.0",
+      "@wdio/native-core": {
+        "@wdio/native-utils": "2.5.0"
+      }
+    }
+  },
   "workspaces": [
     "packages/*",
     "plugins/*",
