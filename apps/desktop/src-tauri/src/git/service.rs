@@ -155,6 +155,7 @@ pub struct ScanProjectResult {
     pub total: usize,
     pub completed: usize,
     pub failed: usize,
+    pub discovery_failed: usize,
     pub progress: Vec<ScanProgressRecord>,
 }
 
@@ -266,6 +267,7 @@ pub struct GitService {
     trusts: TrustRepository,
     read_gate: Arc<ReadGate>,
     write_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+    project_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     status_cache: Arc<Mutex<HashMap<String, ParsedSnapshot>>>,
 }
 
@@ -293,6 +295,7 @@ impl GitService {
             runner,
             read_gate: Arc::new(ReadGate::new(read_concurrency)),
             write_locks: Arc::new(Mutex::new(HashMap::new())),
+            project_locks: Arc::new(Mutex::new(HashMap::new())),
             status_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -322,6 +325,8 @@ impl GitService {
     }
 
     pub fn update_project(&self, input: ProjectUpdateInput) -> Result<Project, AppError> {
+        let project_lock = self.project_lock(&input.project_id);
+        let _project_guard = project_lock.lock().expect("project lock is not poisoned");
         let mut project = self.projects.get(&input.project_id)?;
         let original_root = project.root_path.clone();
         if let Some(path) = input.root_path {
@@ -358,6 +363,8 @@ impl GitService {
     }
 
     pub fn delete_project_by_id(&self, project_id: &str) -> Result<(), AppError> {
+        let project_lock = self.project_lock(project_id);
+        let _project_guard = project_lock.lock().expect("project lock is not poisoned");
         self.projects.delete(project_id)
     }
 
@@ -370,6 +377,8 @@ impl GitService {
     }
 
     pub fn delete_project(&self, project_id: &str) -> Result<(), AppError> {
+        let project_lock = self.project_lock(project_id);
+        let _project_guard = project_lock.lock().expect("project lock is not poisoned");
         self.projects.delete(project_id)
     }
 
@@ -459,6 +468,20 @@ impl GitService {
     where
         F: Fn(&RepositoryScanRecord) + Send + Sync + 'static,
     {
+        self.scan_project_with_progress_limit(project_id, progress, MAX_SCAN_ENTRIES)
+    }
+
+    fn scan_project_with_progress_limit<F>(
+        &self,
+        project_id: &str,
+        progress: F,
+        entry_limit: usize,
+    ) -> Result<ScanProjectResult, AppError>
+    where
+        F: Fn(&RepositoryScanRecord) + Send + Sync + 'static,
+    {
+        let project_lock = self.project_lock(project_id);
+        let _project_guard = project_lock.lock().expect("project lock is not poisoned");
         let project = self.projects.get(project_id)?;
         let mut candidates = Vec::<(DetectedRepository, String)>::new();
         let mut failures = Vec::new();
@@ -468,7 +491,7 @@ impl GitService {
         let mut entries_seen = 0_usize;
 
         while let Some((directory, depth)) = stack.pop() {
-            if entries_seen >= MAX_SCAN_ENTRIES {
+            if entries_seen >= entry_limit {
                 failures.push(RepositoryScanFailure {
                     path: directory.to_string_lossy().into_owned(),
                     error: "scan entry limit exceeded".to_owned(),
@@ -608,7 +631,8 @@ impl GitService {
             }
             prepared.push((detected.canonical_path, repository));
         }
-        let total = prepared.len();
+        let prepared_total = prepared.len();
+        let discovery_failed = failures.len();
 
         // Relationship writes happen on this thread. Snapshot writes are serialized by the
         // Database connection mutex inside each worker; ReadGate bounds the actual Git processes.
@@ -618,7 +642,7 @@ impl GitService {
         let records = Arc::new(Mutex::new(Vec::<(usize, RepositoryScanRecord)>::new()));
         let refresh_failures = Arc::new(Mutex::new(Vec::<RepositoryScanFailure>::new()));
         let callback: Arc<dyn Fn(&RepositoryScanRecord) + Send + Sync> = Arc::new(progress);
-        let worker_count = self.read_gate.limit().min(total.max(1));
+        let worker_count = self.read_gate.limit().min(prepared_total.max(1));
         thread::scope(|scope| {
             for _ in 0..worker_count {
                 let queue = Arc::clone(&queue);
@@ -707,13 +731,16 @@ impl GitService {
         );
         failures.sort_by(|left, right| left.path.cmp(&right.path));
 
+        let total = records.len();
         let completed = records
             .iter()
             .filter(|record| record.error.is_none())
             .count();
-        // Refresh failures are present in both a record and the failure list; count each only
-        // once in the aggregate.
-        let failed = failures.len();
+        let failed = records
+            .iter()
+            .filter(|record| record.error.is_some())
+            .count();
+        debug_assert_eq!(total, completed + failed);
         let progress = records
             .iter()
             .enumerate()
@@ -732,6 +759,7 @@ impl GitService {
             total,
             completed,
             failed,
+            discovery_failed,
             progress,
         })
     }
@@ -1099,18 +1127,13 @@ impl GitService {
 
     fn ensure_repository(&self, detected: &DetectedRepository) -> Result<Repository, AppError> {
         let canonical = path_to_utf8(&detected.canonical_path)?;
-        if let Some(existing) = self.repositories.get_by_canonical_path(&canonical)? {
-            // Keep display metadata fresh without changing the stable repository ID.
-            return Ok(existing);
-        }
         let display_name = detected
             .canonical_path
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or(AppError::NonUtf8Path)?;
         let repository = Repository::new(&canonical, display_name, detected.kind.clone());
-        self.repositories.create(&repository)?;
-        Ok(repository)
+        self.repositories.get_or_create(&repository)
     }
 
     fn refresh_repository_inner(
@@ -1280,6 +1303,17 @@ impl GitService {
             .expect("write lock map is not poisoned");
         locks
             .entry(repository_id.to_owned())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    fn project_lock(&self, project_id: &str) -> Arc<Mutex<()>> {
+        let mut locks = self
+            .project_locks
+            .lock()
+            .expect("project lock map is not poisoned");
+        locks
+            .entry(project_id.to_owned())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone()
     }
@@ -1801,6 +1835,41 @@ mod tests {
         assert!(validate_relative_path("src/main.rs").is_ok());
         assert!(validate_relative_path("../secret").is_err());
         assert!(validate_relative_path("C:\\secret").is_err());
+    }
+
+    #[test]
+    fn project_locks_are_partitioned_by_project_id() {
+        let service = GitService::new(Database::open_in_memory().unwrap());
+        let project_a = service.project_lock("project-a");
+        let project_a_again = service.project_lock("project-a");
+        let project_b = service.project_lock("project-b");
+        assert!(Arc::ptr_eq(&project_a, &project_a_again));
+        assert!(!Arc::ptr_eq(&project_a, &project_b));
+    }
+
+    #[test]
+    fn scan_entry_limit_counts_as_discovery_failure_not_record_failure() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("child")).unwrap();
+        let service = GitService::new(Database::open_in_memory().unwrap());
+        let project = service
+            .create_project(ProjectCreateInput {
+                root_path: root.path().to_string_lossy().into_owned(),
+                name: "entry limit".to_owned(),
+                scan_depth: Some(1),
+                exclude_patterns: Vec::new(),
+            })
+            .unwrap();
+
+        let result = service
+            .scan_project_with_progress_limit(&project.id, |_| {}, 1)
+            .unwrap();
+
+        assert_eq!((result.total, result.completed, result.failed), (0, 0, 0));
+        assert_eq!(result.discovery_failed, 1);
+        assert_eq!(result.failures.len(), 1);
+        assert_eq!(result.failures[0].error, "scan entry limit exceeded");
+        assert!(result.progress.is_empty());
     }
 
     #[test]

@@ -52,6 +52,45 @@ mod tests {
     }
 
     #[test]
+    fn repository_get_or_create_is_atomic_for_one_canonical_path() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        const WORKERS: usize = 8;
+        let db = Database::open_in_memory().unwrap();
+        let repositories = super::repository::RepositoryRepository::new(db);
+        let barrier = Arc::new(Barrier::new(WORKERS));
+        let workers = (0..WORKERS)
+            .map(|index| {
+                let repositories = repositories.clone();
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    let candidate = super::model::Repository::new(
+                        "/tmp/shared-get-or-create",
+                        &format!("candidate-{index}"),
+                        super::model::RepositoryKind::Normal,
+                    );
+                    barrier.wait();
+                    repositories.get_or_create(&candidate).unwrap()
+                })
+            })
+            .collect::<Vec<_>>();
+        let returned = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>();
+
+        assert!(
+            returned
+                .iter()
+                .all(|repository| repository.id == returned[0].id)
+        );
+        let stored = repositories.list_all().unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].id, returned[0].id);
+    }
+
+    #[test]
     fn project_repository_many_to_many_and_snapshot_upsert_round_trip() {
         let db = Database::open_in_memory().unwrap();
         let projects = super::repository::ProjectRepository::new(db.clone());

@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::Path;
 use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -313,6 +313,10 @@ fn scan_surfaces_refresh_snapshot_persistence_failure() {
         "snapshot persistence failure was hidden: {error}"
     );
     assert!(scan.failures[0].error.contains("database operation failed"));
+    assert_eq!((scan.total, scan.completed, scan.failed), (1, 0, 1));
+    assert_eq!(scan.discovery_failed, 0);
+    assert_eq!(scan.total, scan.completed + scan.failed);
+    assert!(scan.progress.iter().all(|entry| entry.total == scan.total));
 }
 
 #[test]
@@ -493,6 +497,73 @@ fn changing_project_root_removes_stale_repository_context_only_for_root_changes(
 }
 
 #[test]
+fn project_root_update_waits_for_scan_and_clears_relationships() {
+    if !git_available() {
+        return;
+    }
+    let root = tempdir().unwrap();
+    let root_a = root.path().join("root-a");
+    let root_b = root.path().join("root-b");
+    run_git(root.path(), &["init", "--quiet", root_a.to_str().unwrap()]);
+    fs::create_dir(&root_b).unwrap();
+    let (runner, config_entered, release_config) = BlockingConfigRunner::new();
+    let service = GitService::with_runner(Database::open_in_memory().unwrap(), Arc::new(runner));
+    let project = service
+        .create_project(ProjectCreateInput {
+            root_path: root_a.to_string_lossy().into_owned(),
+            name: "scan race".to_owned(),
+            scan_depth: Some(0),
+            exclude_patterns: Vec::new(),
+        })
+        .unwrap();
+
+    let scan_service = service.clone();
+    let scan_project_id = project.id.clone();
+    let scan = thread::spawn(move || scan_service.scan_project(&scan_project_id));
+    config_entered
+        .recv_timeout(Duration::from_secs(2))
+        .expect("scan reaches the blocked config query");
+
+    let update_service = service.clone();
+    let update_project_id = project.id.clone();
+    let update_root = root_b.to_string_lossy().into_owned();
+    let (updated, update_observed) = mpsc::channel();
+    let update = thread::spawn(move || {
+        let result = update_service.update_project(ProjectUpdateInput {
+            project_id: update_project_id,
+            root_path: Some(update_root),
+            name: None,
+            scan_depth: None,
+            exclude_patterns: None,
+        });
+        updated.send(()).unwrap();
+        result
+    });
+
+    let observed_while_scan_blocked = update_observed.recv_timeout(Duration::from_millis(100));
+    release_config.send(()).unwrap();
+    let scan_result = scan.join().unwrap().unwrap();
+    update.join().unwrap().unwrap();
+
+    assert!(
+        matches!(
+            observed_while_scan_blocked,
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ),
+        "same-project root update completed while scan still held its project guard"
+    );
+    assert_eq!(scan_result.repositories.len(), 1);
+    assert_eq!(
+        service
+            .get_overview_for_project(&project.id)
+            .unwrap()
+            .repository_count,
+        0,
+        "root update must clear the relationship created by the completed old-root scan"
+    );
+}
+
+#[test]
 fn duplicate_project_root_update_rolls_back_project_and_relationships() {
     if !git_available() {
         return;
@@ -600,7 +671,16 @@ fn scan_refresh_workers_are_bounded_and_failed_count_is_not_double_counted() {
         runner.max_active() <= 2,
         "refreshes exceed configured bound"
     );
-    assert_eq!(result.failed, result.failures.len());
+    assert_eq!((result.total, result.completed, result.failed), (6, 6, 0));
+    assert_eq!(result.discovery_failed, 0);
+    assert!(result.failures.is_empty());
+    assert_eq!(result.total, result.completed + result.failed);
+    assert!(
+        result
+            .progress
+            .iter()
+            .all(|entry| entry.total == result.total)
+    );
 }
 
 #[test]
@@ -632,7 +712,16 @@ fn first_refresh_failure_is_returned_as_an_error_snapshot() {
         .as_ref()
         .expect("failure has an explicit snapshot");
     assert!(snapshot.refresh_error_summary.is_some());
-    assert_eq!(result.failed, result.failures.len());
+    assert_eq!((result.total, result.completed, result.failed), (1, 0, 1));
+    assert_eq!(result.discovery_failed, 0);
+    assert_eq!(result.failures.len(), 1);
+    assert_eq!(result.total, result.completed + result.failed);
+    assert!(
+        result
+            .progress
+            .iter()
+            .all(|entry| entry.total == result.total)
+    );
     let calls = runner.calls();
     assert!(
         calls
@@ -1052,7 +1141,10 @@ fn project_inside_an_outer_repository_returns_a_partial_scan() {
             .to_string_lossy()
     );
     assert_eq!(scan.failures.len(), 1);
-    assert_eq!(scan.failed, 1);
+    assert_eq!((scan.total, scan.completed, scan.failed), (1, 1, 0));
+    assert_eq!(scan.discovery_failed, 1);
+    assert_eq!(scan.total, scan.completed + scan.failed);
+    assert!(scan.progress.iter().all(|entry| entry.total == scan.total));
     assert!(scan.failures[0].error.contains("escapes project root"));
 }
 
@@ -1080,6 +1172,48 @@ struct RecordingRunner {
     delay: Duration,
     fail: bool,
     config_output: Arc<Vec<u8>>,
+}
+
+#[derive(Clone)]
+struct BlockingConfigRunner {
+    inner: RecordingRunner,
+    config_entered: Arc<Mutex<Option<mpsc::Sender<()>>>>,
+    release_config: Arc<Mutex<mpsc::Receiver<()>>>,
+}
+
+impl BlockingConfigRunner {
+    fn new() -> (Self, mpsc::Receiver<()>, mpsc::Sender<()>) {
+        let (config_entered, entered) = mpsc::channel();
+        let (release, release_config) = mpsc::channel();
+        (
+            Self {
+                inner: RecordingRunner::new(Duration::ZERO, false),
+                config_entered: Arc::new(Mutex::new(Some(config_entered))),
+                release_config: Arc::new(Mutex::new(release_config)),
+            },
+            entered,
+            release,
+        )
+    }
+}
+
+impl GitRunner for BlockingConfigRunner {
+    fn run(&self, command: GitCommand) -> Result<GitOutput, AppError> {
+        let is_config = command
+            .args
+            .iter()
+            .any(|argument| argument.to_string_lossy() == "config");
+        let entered = if is_config {
+            self.config_entered.lock().unwrap().take()
+        } else {
+            None
+        };
+        if let Some(entered) = entered {
+            entered.send(()).unwrap();
+            self.release_config.lock().unwrap().recv().unwrap();
+        }
+        self.inner.run(command)
+    }
 }
 
 impl RecordingRunner {

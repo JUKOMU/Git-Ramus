@@ -227,6 +227,31 @@ impl RepositoryRepository {
     pub fn create(&self, r: &Repository) -> Result<(), AppError> {
         self.db.with_connection(|c|c.execute("INSERT INTO repositories(id,canonical_path,display_name,kind,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6)",params![r.id,r.canonical_path,r.display_name,r.kind.as_str(),r.created_at.to_rfc3339(),r.updated_at.to_rfc3339()]).map(|_|())).map_err(|e| map_constraint_error(e, "repository"))
     }
+    pub fn get_or_create(&self, repository: &Repository) -> Result<Repository, AppError> {
+        self.db
+            .with_transaction(|transaction| {
+                transaction.execute(
+                    "INSERT INTO repositories(id,canonical_path,display_name,kind,created_at,updated_at)
+                     VALUES(?1,?2,?3,?4,?5,?6)
+                     ON CONFLICT(canonical_path) DO NOTHING",
+                    params![
+                        repository.id,
+                        repository.canonical_path,
+                        repository.display_name,
+                        repository.kind.as_str(),
+                        repository.created_at.to_rfc3339(),
+                        repository.updated_at.to_rfc3339()
+                    ],
+                )?;
+                transaction.query_row(
+                    "SELECT id,canonical_path,display_name,kind,created_at,updated_at
+                     FROM repositories WHERE canonical_path=?1",
+                    [&repository.canonical_path],
+                    map_repo,
+                )
+            })
+            .map_err(|error| map_constraint_error(error, "repository"))
+    }
     pub fn get(&self, id: &str) -> Result<Repository, AppError> {
         self.db.with_connection(|c|c.query_row("SELECT id,canonical_path,display_name,kind,created_at,updated_at FROM repositories WHERE id=?1",[id],map_repo).optional()).and_then(|x|x.ok_or_else(||AppError::NotFound(format!("repository {id}"))))
     }
