@@ -439,6 +439,7 @@ fn read_commands_include_lock_and_textconv_safety_flags() {
         .iter()
         .find(|args| args.iter().any(|arg| arg == "diff"))
         .expect("diff call");
+    assert!(diff.iter().any(|arg| arg == "--no-optional-locks"));
     assert!(diff.iter().any(|arg| arg == "--no-ext-diff"));
     assert!(diff.iter().any(|arg| arg == "--no-textconv"));
 }

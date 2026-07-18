@@ -812,7 +812,10 @@ impl GitService {
         let repository = self.repositories.get(repository_id)?;
         let parsed = self.latest_or_refresh_status(&repository)?;
         let validated = validate_change_paths(paths, &parsed.changes)?;
-        let mut args = vec![OsString::from("diff")];
+        let mut args = vec![
+            OsString::from("--no-optional-locks"),
+            OsString::from("diff"),
+        ];
         if staged {
             args.push(OsString::from("--cached"));
         }
