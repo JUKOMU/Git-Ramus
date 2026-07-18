@@ -64,6 +64,7 @@ export const repositorySnapshotSchema = z
     changes: z.array(changeEntrySchema),
     upstream: z
       .object({
+        remote: z.string().min(1).nullable().optional(),
         branch: z.string().min(1).nullable(),
         ahead: z.number().int().nonnegative(),
         behind: z.number().int().nonnegative()
@@ -76,7 +77,10 @@ export const repositorySnapshotSchema = z
         added: z.number().int().nonnegative(),
         modified: z.number().int().nonnegative(),
         deleted: z.number().int().nonnegative(),
-        untracked: z.number().int().nonnegative()
+        untracked: z.number().int().nonnegative(),
+        staged: z.number().int().nonnegative().optional(),
+        unstaged: z.number().int().nonnegative().optional(),
+        conflicted: z.number().int().nonnegative().optional()
       })
       .strict(),
     capturedAt: timestamp
