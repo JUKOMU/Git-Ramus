@@ -21,6 +21,7 @@ interface PendingRequest {
 export interface PluginClient {
   ready: Promise<HostInit>;
   readonly currentTheme: ThemeDefinition | null;
+  readonly theme: ThemeDefinition | null;
   onThemeChanged(listener: (theme: ThemeDefinition) => void): () => void;
   request<T>(method: string, params: unknown): Promise<T>;
   dispose(): void;
@@ -53,13 +54,27 @@ export function createPluginClient(
   let currentTheme: ThemeDefinition | null = null;
   const themeListeners = new Set<(theme: ThemeDefinition) => void>();
   let resolveReady: (message: HostInit) => void = () => undefined;
-  const ready = new Promise<HostInit>((resolve) => {
+  let rejectReady: (error: unknown) => void = () => undefined;
+  const ready = new Promise<HostInit>((resolve, reject) => {
     resolveReady = resolve;
+    rejectReady = reject;
   });
   const pending = new Map<string, PendingRequest>();
+  let disposed = false;
+
+  const rejectPending = (error: Error) => {
+    for (const request of pending.values()) request.reject(error);
+    pending.clear();
+  };
 
   const unsubscribe = transport.subscribe((message) => {
     if (message.type === "host:init") {
+      if (disposed) return;
+      if (init?.sessionId === message.sessionId) return;
+      if (init !== null) {
+        rejectPending(new Error("plugin session replaced"));
+        currentTheme = null;
+      }
       init = { ...message, route: message.route ?? "/" };
       transport.send({ type: "plugin:ready", sessionId: message.sessionId });
       resolveReady(init);
@@ -71,7 +86,13 @@ export function createPluginClient(
       if (!parsed.success) return;
       currentTheme = parsed.data;
       applyThemeToDocument(currentTheme);
-      for (const listener of themeListeners) listener(currentTheme);
+      for (const listener of themeListeners) {
+        try {
+          listener(currentTheme);
+        } catch {
+          // One plugin listener must not prevent the remaining listeners from running.
+        }
+      }
       return;
     }
     const request = pending.get(message.requestId);
@@ -87,12 +108,17 @@ export function createPluginClient(
     get currentTheme() {
       return currentTheme;
     },
+    get theme() {
+      return currentTheme;
+    },
     onThemeChanged(listener) {
       themeListeners.add(listener);
       return () => themeListeners.delete(listener);
     },
     async request<T>(method: string, params: unknown): Promise<T> {
+      if (disposed) throw new Error("plugin client disposed");
       const session = init ?? (await ready);
+      if (disposed) throw new Error("plugin client disposed");
       const requestId = createId();
       const response = new Promise<unknown>((resolve, reject) => {
         pending.set(requestId, { resolve, reject });
@@ -107,11 +133,12 @@ export function createPluginClient(
       return (await response) as T;
     },
     dispose() {
+      if (disposed) return;
+      disposed = true;
       unsubscribe();
-      for (const request of pending.values()) {
-        request.reject(new Error("plugin client disposed"));
-      }
-      pending.clear();
+      const error = new Error("plugin client disposed");
+      rejectReady(error);
+      rejectPending(error);
       themeListeners.clear();
     }
   };
