@@ -41,9 +41,19 @@ impl ProjectRepository {
     }
 
     pub fn update(&self, project: &Project) -> Result<(), AppError> {
+        self.update_with_root_change(project, false)
+    }
+
+    pub fn update_with_root_change(
+        &self,
+        project: &Project,
+        root_changed: bool,
+    ) -> Result<(), AppError> {
         let encoded = serde_json::to_string(&project.exclude_patterns)?;
-        let changed = self.db.with_connection(|c| {
-            c.execute(
+        let changed = self
+            .db
+            .with_transaction(|transaction| {
+                let changed = transaction.execute(
                 "UPDATE projects SET root_path=?2,name=?3,scan_depth=?4,exclude_patterns_json=?5,updated_at=?6 WHERE id=?1",
                 params![
                     project.id,
@@ -53,8 +63,16 @@ impl ProjectRepository {
                     encoded,
                     project.updated_at.to_rfc3339()
                 ],
-            )
-        })?;
+                )?;
+                if changed != 0 && root_changed {
+                    transaction.execute(
+                        "DELETE FROM project_repositories WHERE project_id=?1",
+                        [&project.id],
+                    )?;
+                }
+                Ok(changed)
+            })
+            .map_err(|error| map_constraint_error(error, "project"))?;
         if changed == 0 {
             return Err(AppError::NotFound(format!("project {}", project.id)));
         }

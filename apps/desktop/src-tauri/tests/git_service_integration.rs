@@ -12,7 +12,7 @@ use git_ramus_desktop_lib::error::AppError;
 use git_ramus_desktop_lib::git::engine::{GitCommand, GitOutput, GitRunner};
 use git_ramus_desktop_lib::git::model::RepositoryKind;
 use git_ramus_desktop_lib::git::service::{
-    GitService, ProjectCreateInput, QueryContext, validate_relative_path,
+    GitService, ProjectCreateInput, ProjectUpdateInput, QueryContext, validate_relative_path,
 };
 use tempfile::tempdir;
 
@@ -214,6 +214,108 @@ fn status_failure_preserves_previous_snapshot_fields_and_redacts_error() {
 }
 
 #[test]
+fn changes_and_diff_refresh_failures_persist_error_snapshots() {
+    if !git_available() {
+        return;
+    }
+    let root = tempdir().unwrap();
+    run_git(root.path(), &["init", "--quiet"]);
+    run_git(root.path(), &["config", "user.name", "Fixture"]);
+    run_git(
+        root.path(),
+        &["config", "user.email", "fixture@example.test"],
+    );
+    fs::write(root.path().join("tracked.txt"), "seed\n").unwrap();
+    run_git(root.path(), &["add", "--", "tracked.txt"]);
+    run_git(root.path(), &["commit", "--quiet", "-m", "seed"]);
+    let db = Database::open_in_memory().unwrap();
+    let service = GitService::new(db.clone());
+    let project = service
+        .create_project(ProjectCreateInput {
+            root_path: root.path().to_string_lossy().into_owned(),
+            name: "query failure".to_owned(),
+            scan_depth: Some(0),
+            exclude_patterns: Vec::new(),
+        })
+        .unwrap();
+    let scan = service.scan_project(&project.id).unwrap();
+    let repository_id = scan.repositories[0].repository.id.clone();
+    let successful = scan.repositories[0].snapshot.clone().unwrap();
+    db.with_connection(|connection| {
+        connection.execute(
+            "UPDATE repositories SET canonical_path=?1 WHERE id=?2",
+            rusqlite::params![
+                root.path().join("missing").to_string_lossy(),
+                &repository_id
+            ],
+        )
+    })
+    .unwrap();
+    let context = QueryContext::project(&project.id);
+
+    assert!(matches!(
+        service.get_changes(&context, &repository_id),
+        Err(AppError::Git(_))
+    ));
+    assert_eq!(snapshot_count(&db, &repository_id), 2);
+    let overview = service.get_overview(&context).unwrap();
+    let failed_snapshot = overview.repositories[0].snapshot.as_ref().unwrap();
+    assert_eq!(failed_snapshot.head_oid, successful.head_oid);
+    assert!(failed_snapshot.refresh_error_summary.is_some());
+
+    assert!(matches!(
+        service.get_diff(&context, &repository_id, &[], false),
+        Err(AppError::Git(_))
+    ));
+    assert_eq!(snapshot_count(&db, &repository_id), 3);
+    assert!(
+        service.get_overview(&context).unwrap().repositories[0]
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .refresh_error_summary
+            .is_some()
+    );
+}
+
+#[test]
+fn scan_surfaces_refresh_snapshot_persistence_failure() {
+    if !git_available() {
+        return;
+    }
+    let root = tempdir().unwrap();
+    let repo = root.path().join("repo");
+    run_git(root.path(), &["init", "--quiet", repo.to_str().unwrap()]);
+    let db = Database::open_in_memory().unwrap();
+    db.with_connection(|connection| {
+        connection.execute_batch(
+            "CREATE TRIGGER reject_snapshot_insert BEFORE INSERT ON repository_snapshots
+             BEGIN SELECT RAISE(ABORT, 'snapshot insert rejected'); END;",
+        )
+    })
+    .unwrap();
+    let runner = RecordingRunner::new(Duration::ZERO, true);
+    let service = GitService::with_runner(db, Arc::new(runner));
+    let project = service
+        .create_project(ProjectCreateInput {
+            root_path: root.path().to_string_lossy().into_owned(),
+            name: "persistence failure".to_owned(),
+            scan_depth: Some(1),
+            exclude_patterns: Vec::new(),
+        })
+        .unwrap();
+
+    let scan = service.scan_project(&project.id).unwrap();
+    assert_eq!(scan.repositories.len(), 1);
+    let error = scan.repositories[0].error.as_deref().unwrap();
+    assert!(
+        error.contains("database operation failed"),
+        "snapshot persistence failure was hidden: {error}"
+    );
+    assert!(scan.failures[0].error.contains("database operation failed"));
+}
+
+#[test]
 fn trust_stage_unstage_and_commit_use_safe_paths_and_stdin_message() {
     if !git_available() {
         return;
@@ -316,6 +418,134 @@ fn workspace_context_can_query_repositories_from_two_projects() {
         .unwrap();
     let overview = service.get_overview_for_workspace(&workspace.id).unwrap();
     assert_eq!(overview.repository_count, 2);
+}
+
+#[test]
+fn changing_project_root_removes_stale_repository_context_only_for_root_changes() {
+    if !git_available() {
+        return;
+    }
+    let root = tempdir().unwrap();
+    let root_a = root.path().join("root-a");
+    let root_b = root.path().join("root-b");
+    run_git(root.path(), &["init", "--quiet", root_a.to_str().unwrap()]);
+    run_git(root.path(), &["init", "--quiet", root_b.to_str().unwrap()]);
+    let service = GitService::new(Database::open_in_memory().unwrap());
+    let project = service
+        .create_project(ProjectCreateInput {
+            root_path: root_a.to_string_lossy().into_owned(),
+            name: "movable".to_owned(),
+            scan_depth: Some(0),
+            exclude_patterns: Vec::new(),
+        })
+        .unwrap();
+    let scan_a = service.scan_project(&project.id).unwrap();
+    let repository_a = scan_a.repositories[0].repository.id.clone();
+
+    service
+        .update_project(ProjectUpdateInput {
+            project_id: project.id.clone(),
+            root_path: Some(root_b.to_string_lossy().into_owned()),
+            name: None,
+            scan_depth: None,
+            exclude_patterns: None,
+        })
+        .unwrap();
+    assert!(
+        service
+            .get_overview_for_project(&project.id)
+            .unwrap()
+            .repositories
+            .is_empty()
+    );
+    let context = QueryContext::project(&project.id);
+    assert!(
+        service
+            .trust_repository_in_context(&context, &repository_a)
+            .is_err()
+    );
+    assert!(service.stage(&context, &repository_a, &[], true).is_err());
+    assert!(
+        service
+            .commit(&context, &repository_a, "must not commit stale repository")
+            .is_err()
+    );
+
+    let scan_b = service.scan_project(&project.id).unwrap();
+    assert_eq!(scan_b.repositories.len(), 1);
+    service
+        .update_project(ProjectUpdateInput {
+            project_id: project.id.clone(),
+            root_path: None,
+            name: Some("renamed".to_owned()),
+            scan_depth: Some(2),
+            exclude_patterns: Some(vec!["vendor".to_owned()]),
+        })
+        .unwrap();
+    assert_eq!(
+        service
+            .get_overview_for_project(&project.id)
+            .unwrap()
+            .repository_count,
+        1,
+        "name and scan-rule updates must preserve repository relationships"
+    );
+}
+
+#[test]
+fn duplicate_project_root_update_rolls_back_project_and_relationships() {
+    if !git_available() {
+        return;
+    }
+    let root = tempdir().unwrap();
+    let root_a = root.path().join("root-a");
+    let root_b = root.path().join("root-b");
+    run_git(root.path(), &["init", "--quiet", root_a.to_str().unwrap()]);
+    run_git(root.path(), &["init", "--quiet", root_b.to_str().unwrap()]);
+    let service = GitService::new(Database::open_in_memory().unwrap());
+    let project_a = service
+        .create_project(ProjectCreateInput {
+            root_path: root_a.to_string_lossy().into_owned(),
+            name: "A".to_owned(),
+            scan_depth: Some(0),
+            exclude_patterns: Vec::new(),
+        })
+        .unwrap();
+    let project_b = service
+        .create_project(ProjectCreateInput {
+            root_path: root_b.to_string_lossy().into_owned(),
+            name: "B".to_owned(),
+            scan_depth: Some(0),
+            exclude_patterns: Vec::new(),
+        })
+        .unwrap();
+    service.scan_project(&project_a.id).unwrap();
+
+    assert!(
+        service
+            .update_project(ProjectUpdateInput {
+                project_id: project_a.id.clone(),
+                root_path: Some(root_b.to_string_lossy().into_owned()),
+                name: Some("should roll back".to_owned()),
+                scan_depth: None,
+                exclude_patterns: None,
+            })
+            .is_err()
+    );
+    let loaded = service.get_project(&project_a.id).unwrap();
+    assert_eq!(
+        loaded.root_path,
+        fs::canonicalize(&root_a).unwrap().to_string_lossy()
+    );
+    assert_eq!(loaded.name, "A");
+    assert_eq!(
+        service
+            .get_overview_for_project(&project_a.id)
+            .unwrap()
+            .repository_count,
+        1
+    );
+    assert_eq!(service.get_project(&project_b.id).unwrap().name, "B");
 }
 
 #[test]
@@ -956,6 +1186,17 @@ impl GitRunner for RecordingRunner {
 
 fn git_available() -> bool {
     Command::new("git").arg("--version").output().is_ok()
+}
+
+fn snapshot_count(db: &Database, repository_id: &str) -> i64 {
+    db.with_connection(|connection| {
+        connection.query_row(
+            "SELECT COUNT(*) FROM repository_snapshots WHERE repository_id=?1",
+            [repository_id],
+            |row| row.get(0),
+        )
+    })
+    .unwrap()
 }
 
 fn filtered_repository(kind: &str) -> tempfile::TempDir {

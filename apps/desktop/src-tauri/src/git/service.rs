@@ -323,6 +323,7 @@ impl GitService {
 
     pub fn update_project(&self, input: ProjectUpdateInput) -> Result<Project, AppError> {
         let mut project = self.projects.get(&input.project_id)?;
+        let original_root = project.root_path.clone();
         if let Some(path) = input.root_path {
             project.root_path = canonical_directory(&path)?;
         }
@@ -336,7 +337,8 @@ impl GitService {
             project.exclude_patterns = validate_excludes(excludes)?;
         }
         project.updated_at = Utc::now();
-        self.projects.update(&project)?;
+        self.projects
+            .update_with_root_change(&project, project.root_path != original_root)?;
         Ok(project)
     }
 
@@ -645,11 +647,19 @@ impl GitService {
                                 None,
                             ),
                             Err(error) => {
-                                let summary = stable_error(&error);
-                                let snapshot = service
+                                let refresh_summary = stable_error(&error);
+                                let (snapshot, summary) = match service
                                     .record_refresh_failure(&repository, &error)
-                                    .ok()
-                                    .flatten();
+                                {
+                                    Ok(snapshot) => (snapshot, refresh_summary),
+                                    Err(persistence_error) => (
+                                        None,
+                                        format!(
+                                            "{refresh_summary}; snapshot persistence failed: {}",
+                                            stable_error(&persistence_error)
+                                        ),
+                                    ),
+                                };
                                 (
                                     RepositoryScanRecord {
                                         repository: repository.clone(),
@@ -812,7 +822,7 @@ impl GitService {
     ) -> Result<ChangesResult, AppError> {
         self.ensure_context_membership(context, repository_id)?;
         let repository = self.repositories.get(repository_id)?;
-        let (snapshot, parsed) = self.refresh_repository_inner(&repository)?;
+        let (snapshot, parsed) = self.refresh_repository_recording_failure(&repository)?;
         Ok(ChangesResult {
             repository_id: repository_id.to_owned(),
             snapshot,
@@ -1116,6 +1126,22 @@ impl GitService {
         Ok((snapshot, parsed))
     }
 
+    fn refresh_repository_recording_failure(
+        &self,
+        repository: &Repository,
+    ) -> Result<(RepositorySnapshot, ParsedSnapshot), AppError> {
+        match self.refresh_repository_inner(repository) {
+            Ok(result) => Ok(result),
+            Err(refresh_error) => {
+                // Persist the redacted failure while preserving the last successful fields. If
+                // persistence itself fails, return that storage error rather than hiding it
+                // behind the original Git error.
+                self.record_refresh_failure(repository, &refresh_error)?;
+                Err(refresh_error)
+            }
+        }
+    }
+
     fn refresh_after_write(
         &self,
         repository: &Repository,
@@ -1222,7 +1248,7 @@ impl GitService {
         &self,
         repository: &Repository,
     ) -> Result<ParsedSnapshot, AppError> {
-        let (_, parsed) = self.refresh_repository_inner(repository)?;
+        let (_, parsed) = self.refresh_repository_recording_failure(repository)?;
         Ok(parsed)
     }
 
@@ -1505,27 +1531,21 @@ fn safe_diff_summary(
                     .is_some_and(|path| requested.contains(path))
         })
         .map(|change| {
-            let (old_path, new_path) = match change.kind {
-                ChangeKind::Added | ChangeKind::Untracked => (None, Some(change.path.clone())),
-                ChangeKind::Deleted => (
-                    Some(
-                        change
-                            .original_path
-                            .clone()
-                            .unwrap_or_else(|| change.path.clone()),
-                    ),
-                    None,
-                ),
+            let side_kind = side_change_kind(change, staged);
+            let side_path = side_change_path(change, staged);
+            let (old_path, new_path) = match side_kind {
+                ChangeKind::Added | ChangeKind::Untracked => (None, Some(side_path.clone())),
+                ChangeKind::Deleted => (Some(side_path.clone()), None),
                 ChangeKind::Renamed | ChangeKind::Copied => {
                     (change.original_path.clone(), Some(change.path.clone()))
                 }
                 ChangeKind::Modified
                 | ChangeKind::TypeChanged
                 | ChangeKind::Conflicted
-                | ChangeKind::Unknown => (Some(change.path.clone()), Some(change.path.clone())),
+                | ChangeKind::Unknown => (Some(side_path.clone()), Some(side_path.clone())),
             };
             DiffFile {
-                path: change.path.clone(),
+                path: side_path,
                 old_path: old_path.clone(),
                 new_path: new_path.clone(),
                 binary: change.binary,
@@ -1546,6 +1566,44 @@ fn safe_diff_summary(
         binary,
         additions,
         deletions,
+    }
+}
+
+fn side_change_kind(change: &ChangeEntry, staged: bool) -> ChangeKind {
+    if change.conflicted {
+        return ChangeKind::Conflicted;
+    }
+    let code = if staged {
+        change.index_status
+    } else {
+        change.worktree_status
+    };
+    match code {
+        Some('A') => ChangeKind::Added,
+        Some('M') => ChangeKind::Modified,
+        Some('D') => ChangeKind::Deleted,
+        Some('R') => ChangeKind::Renamed,
+        Some('C') => ChangeKind::Copied,
+        Some('T') => ChangeKind::TypeChanged,
+        Some('U') => ChangeKind::Conflicted,
+        _ => change.kind,
+    }
+}
+
+fn side_change_path(change: &ChangeEntry, staged: bool) -> String {
+    // For an unstaged rename (`MR`), the index-side modification still refers to the original
+    // path. Once the index itself contains the rename (`RM`/`RD`), worktree-side changes refer to
+    // the new path. `original_path` is otherwise reserved for the side whose status is R/C.
+    if staged
+        && !matches!(change.index_status, Some('R' | 'C'))
+        && matches!(change.worktree_status, Some('R' | 'C'))
+    {
+        change
+            .original_path
+            .clone()
+            .unwrap_or_else(|| change.path.clone())
+    } else {
+        change.path.clone()
     }
 }
 
@@ -1748,14 +1806,13 @@ mod tests {
     #[test]
     fn safe_diff_summary_maps_added_deleted_and_renamed_aliases() {
         let changes = vec![
-            change("added.txt", None, ChangeKind::Added, true, false),
-            change("deleted.txt", None, ChangeKind::Deleted, true, false),
-            change(
+            xy_change("added.txt", None, ChangeKind::Added, "A."),
+            xy_change("deleted.txt", None, ChangeKind::Deleted, "D."),
+            xy_change(
                 "new-name.txt",
                 Some("old-name.txt"),
                 ChangeKind::Renamed,
-                true,
-                false,
+                "R.",
             ),
         ];
         let summary = safe_diff_summary(&changes, &[], true);
@@ -1768,6 +1825,100 @@ mod tests {
         assert_eq!(summary.files[1].new_path, None);
         assert_eq!(summary.files[2].old_path.as_deref(), Some("old-name.txt"));
         assert_eq!(summary.files[2].new_path.as_deref(), Some("new-name.txt"));
+    }
+
+    #[test]
+    fn safe_diff_summary_maps_each_xy_side_independently() {
+        let cases = [
+            (
+                "AD",
+                ChangeKind::Added,
+                None,
+                (None, Some("path.txt")),
+                (Some("path.txt"), None),
+            ),
+            (
+                "AM",
+                ChangeKind::Added,
+                None,
+                (None, Some("path.txt")),
+                (Some("path.txt"), Some("path.txt")),
+            ),
+            (
+                "MD",
+                ChangeKind::Modified,
+                None,
+                (Some("path.txt"), Some("path.txt")),
+                (Some("path.txt"), None),
+            ),
+            (
+                "RM",
+                ChangeKind::Renamed,
+                Some("old.txt"),
+                (Some("old.txt"), Some("path.txt")),
+                (Some("path.txt"), Some("path.txt")),
+            ),
+            (
+                "RD",
+                ChangeKind::Renamed,
+                Some("old.txt"),
+                (Some("old.txt"), Some("path.txt")),
+                (Some("path.txt"), None),
+            ),
+            (
+                "MR",
+                ChangeKind::Renamed,
+                Some("old.txt"),
+                (Some("old.txt"), Some("old.txt")),
+                (Some("old.txt"), Some("path.txt")),
+            ),
+        ];
+        for (xy, kind, original, staged_paths, unstaged_paths) in cases {
+            let change = xy_change("path.txt", original, kind, xy);
+            let staged = safe_diff_summary(std::slice::from_ref(&change), &[], true);
+            let unstaged = safe_diff_summary(std::slice::from_ref(&change), &[], false);
+            assert_eq!(
+                (
+                    staged.files[0].old_path.as_deref(),
+                    staged.files[0].new_path.as_deref()
+                ),
+                staged_paths,
+                "staged side for {xy}"
+            );
+            assert_eq!(
+                (
+                    unstaged.files[0].old_path.as_deref(),
+                    unstaged.files[0].new_path.as_deref()
+                ),
+                unstaged_paths,
+                "unstaged side for {xy}"
+            );
+            assert_eq!(staged.files, staged.changes);
+            assert_eq!(unstaged.files, unstaged.entries);
+        }
+
+        for xy in ["AA", "UU"] {
+            let mut change = xy_change("conflict.txt", None, ChangeKind::Conflicted, xy);
+            change.conflicted = true;
+            let staged = safe_diff_summary(std::slice::from_ref(&change), &[], true);
+            let unstaged = safe_diff_summary(std::slice::from_ref(&change), &[], false);
+            assert_eq!(
+                (
+                    staged.files[0].old_path.as_deref(),
+                    staged.files[0].new_path.as_deref()
+                ),
+                (Some("conflict.txt"), Some("conflict.txt")),
+                "staged conflict for {xy}"
+            );
+            assert_eq!(
+                (
+                    unstaged.files[0].old_path.as_deref(),
+                    unstaged.files[0].new_path.as_deref()
+                ),
+                (Some("conflict.txt"), Some("conflict.txt")),
+                "unstaged conflict for {xy}"
+            );
+        }
     }
 
     #[test]
@@ -1818,5 +1969,23 @@ mod tests {
             additions: None,
             deletions: None,
         }
+    }
+
+    fn xy_change(
+        path: &str,
+        original_path: Option<&str>,
+        kind: ChangeKind,
+        xy: &str,
+    ) -> ChangeEntry {
+        let mut change = change(path, original_path, kind, true, true);
+        let mut chars = xy.chars();
+        let index = chars.next().unwrap();
+        let worktree = chars.next().unwrap();
+        change.status = xy.to_owned();
+        change.index_status = Some(index);
+        change.worktree_status = Some(worktree);
+        change.staged = index != '.' && index != '?';
+        change.unstaged = worktree != '.' && worktree != '?';
+        change
     }
 }
