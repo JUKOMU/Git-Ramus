@@ -139,6 +139,10 @@ fn git_config_parser_returns_key_value_pairs() {
 
 #[test]
 fn detect_repository_recognizes_normal_bare_and_worktree() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git executable unavailable; skipping repository detection integration test");
+        return;
+    }
     let temp = tempfile::tempdir().unwrap();
     let normal = temp.path().join("normal");
     run_git(temp.path(), &["init", "--", normal.to_str().unwrap()]);
