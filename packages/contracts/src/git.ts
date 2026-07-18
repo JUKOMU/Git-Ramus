@@ -63,7 +63,55 @@ export const repositorySchema = z
   })
   .strict();
 
+export const changeEntrySchema = z
+  .object({
+    path: z.string().min(1),
+    status: z.enum(["added", "modified", "deleted", "renamed", "untracked", "conflicted"]),
+    oldPath: z.string().min(1).nullable().optional(),
+    staged: z.boolean().optional(),
+    additions: nonnegativeInteger.nullable().optional(),
+    deletions: nonnegativeInteger.nullable().optional()
+  })
+  .strict();
+
+// Public Task 1 asynchronous-operation payload. Keep this stable for existing SDK consumers.
 export const repositorySnapshotSchema = z
+  .object({
+    id: uuid,
+    repositoryId: uuid,
+    branch: z.string().min(1).nullable(),
+    headSha: z.string().min(1).nullable(),
+    isDirty: z.boolean(),
+    ahead: nonnegativeInteger,
+    behind: nonnegativeInteger,
+    changes: z.array(changeEntrySchema),
+    upstream: z
+      .object({
+        remote: z.string().min(1).nullable().optional(),
+        branch: z.string().min(1).nullable(),
+        ahead: nonnegativeInteger,
+        behind: nonnegativeInteger
+      })
+      .strict()
+      .nullable(),
+    summary: z
+      .object({
+        total: nonnegativeInteger,
+        added: nonnegativeInteger,
+        modified: nonnegativeInteger,
+        deleted: nonnegativeInteger,
+        untracked: nonnegativeInteger,
+        staged: nonnegativeInteger.optional(),
+        unstaged: nonnegativeInteger.optional(),
+        conflicted: nonnegativeInteger.optional()
+      })
+      .strict(),
+    capturedAt: timestamp
+  })
+  .strict();
+
+// Exact camelCase DTO serialized by the Rust persistence/service layer in Task 6.
+export const persistedRepositorySnapshotSchema = z
   .object({
     id: uuid,
     repositoryId: uuid,
@@ -94,7 +142,7 @@ export const changeKindSchema = z.enum([
   "unknown"
 ]);
 
-export const changeEntrySchema = z
+export const parsedChangeEntrySchema = z
   .object({
     path: z.string().min(1),
     originalPath: nullableText,
@@ -123,7 +171,7 @@ export const parsedRepositorySnapshotSchema = z
     headSha: nullableText,
     ahead: nonnegativeInteger,
     behind: nonnegativeInteger,
-    changes: z.array(changeEntrySchema),
+    changes: z.array(parsedChangeEntrySchema),
     dirty: z.boolean(),
     isDirty: z.boolean(),
     stagedCount: nonnegativeInteger,
@@ -366,7 +414,7 @@ export const repositoryIdentityRequestSchema = repositoryRequestSchema;
 export const repositoryScanRecordSchema = z
   .object({
     repository: repositorySchema,
-    snapshot: repositorySnapshotSchema.nullable(),
+    snapshot: persistedRepositorySnapshotSchema.nullable(),
     changes: parsedRepositorySnapshotSchema.nullable(),
     error: nullableText
   })
@@ -400,7 +448,7 @@ export const scanProjectResultSchema = z
   .strict();
 
 export const overviewRepositorySchema = z
-  .object({ repository: repositorySchema, snapshot: repositorySnapshotSchema.nullable() })
+  .object({ repository: repositorySchema, snapshot: persistedRepositorySnapshotSchema.nullable() })
   .strict();
 
 export const overviewSchema = z
@@ -420,8 +468,8 @@ export const overviewSchema = z
 export const changesResultSchema = z
   .object({
     repositoryId: uuid,
-    snapshot: repositorySnapshotSchema,
-    changes: z.array(changeEntrySchema)
+    snapshot: persistedRepositorySnapshotSchema,
+    changes: z.array(parsedChangeEntrySchema)
   })
   .strict();
 
@@ -432,7 +480,7 @@ export const diffResultSchema = z
 export const writeResultSchema = z
   .object({
     repositoryId: uuid,
-    snapshot: repositorySnapshotSchema.nullable(),
+    snapshot: persistedRepositorySnapshotSchema.nullable(),
     output: nullableText
   })
   .strict();
@@ -469,8 +517,10 @@ export type Project = z.infer<typeof projectSchema>;
 export type Workspace = z.infer<typeof workspaceSchema>;
 export type Repository = z.infer<typeof repositorySchema>;
 export type RepositorySnapshot = z.infer<typeof repositorySnapshotSchema>;
+export type PersistedRepositorySnapshot = z.infer<typeof persistedRepositorySnapshotSchema>;
 export type ParsedRepositorySnapshot = z.infer<typeof parsedRepositorySnapshotSchema>;
 export type ChangeEntry = z.infer<typeof changeEntrySchema>;
+export type ParsedChangeEntry = z.infer<typeof parsedChangeEntrySchema>;
 export type DiffFile = z.infer<typeof diffFileSchema>;
 export type DiffSummary = z.infer<typeof diffSummarySchema>;
 export type IdentityProfile = z.infer<typeof identityProfileSchema>;

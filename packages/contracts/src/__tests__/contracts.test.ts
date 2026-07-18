@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import manifest from "../../../../plugins/builtin-welcome/plugin.json";
+import type { PersistedRepositorySnapshot, RepositorySnapshot } from "../index";
 import {
   errorEnvelopeSchema,
   hostInitSchema,
@@ -12,7 +13,8 @@ import {
   workspaceSchema,
   repositorySchema,
   repositorySnapshotSchema,
-  changeEntrySchema,
+  persistedRepositorySnapshotSchema,
+  parsedChangeEntrySchema,
   identityProfileSchema,
   effectiveIdentitySchema,
   gitContextRequestSchema,
@@ -56,7 +58,7 @@ const repository = {
   updatedAt: "2026-07-17T00:00:00Z"
 };
 
-const snapshot = {
+const persistedSnapshot = {
   id: "c8f98df3-e949-48e0-a9ad-407fe371a94a",
   repositoryId,
   capturedAt: "2026-07-17T00:00:00Z",
@@ -71,7 +73,7 @@ const snapshot = {
   untrackedCount: 0,
   conflictedCount: 0,
   refreshErrorSummary: null
-};
+} satisfies PersistedRepositorySnapshot;
 
 describe("shared contracts", () => {
   it("accepts the built-in welcome manifest", () => {
@@ -228,11 +230,13 @@ describe("shared contracts", () => {
       }).id
     ).toBe(workspaceId);
     expect(repositorySchema.parse(repository).id).toBe(repositoryId);
-    expect(repositorySnapshotSchema.parse(snapshot).headOid).toBe("abc123");
+    expect(persistedRepositorySnapshotSchema.parse(persistedSnapshot).headOid).toBe("abc123");
 
     expect(() => workspaceSchema.parse({ ...project, projectIds: [projectId] })).toThrow();
     expect(() => repositorySchema.parse({ ...repository, workspaceIds: [workspaceId] })).toThrow();
-    expect(() => repositorySnapshotSchema.parse({ ...snapshot, headSha: "abc123" })).toThrow();
+    expect(() =>
+      persistedRepositorySnapshotSchema.parse({ ...persistedSnapshot, headSha: "abc123" })
+    ).toThrow();
   });
 
   it("matches the complete Rust change entry DTO and rejects unknown fields", () => {
@@ -254,8 +258,8 @@ describe("shared contracts", () => {
       additions: 2,
       deletions: 1
     };
-    expect(changeEntrySchema.parse(change).unstaged).toBe(true);
-    expect(() => changeEntrySchema.parse({ ...change, absolutePath: "C:/secret" })).toThrow();
+    expect(parsedChangeEntrySchema.parse(change).unstaged).toBe(true);
+    expect(() => parsedChangeEntrySchema.parse({ ...change, absolutePath: "C:/secret" })).toThrow();
   });
 
   it("matches identity profile, source, and drift DTOs from the Rust host", () => {
@@ -346,9 +350,10 @@ describe("shared contracts", () => {
         branches: ["main"]
       }).repositoryCount
     ).toBe(1);
-    expect(changesResultSchema.parse({ repositoryId, snapshot, changes: [] }).repositoryId).toBe(
-      repositoryId
-    );
+    expect(
+      changesResultSchema.parse({ repositoryId, snapshot: persistedSnapshot, changes: [] })
+        .repositoryId
+    ).toBe(repositoryId);
     expect(
       diffResultSchema.parse({
         repositoryId,
@@ -396,13 +401,61 @@ describe("shared contracts", () => {
       repositoryOperationResponseSchema.parse({
         operationId: projectId,
         repositoryId,
-        status: "completed",
-        snapshot
+        status: "accepted"
       }).repositoryId
     ).toBe(repositoryId);
     expect(() =>
       operationResponseSchema.parse({ repositoryId, snapshot: null, output: null })
     ).toThrow();
+  });
+
+  it("retains the Task 1 repository snapshot payload contract", () => {
+    const task1Snapshot = {
+      id: "c8f98df3-e949-48e0-a9ad-407fe371a94a",
+      repositoryId,
+      branch: "main",
+      headSha: "abc123",
+      isDirty: true,
+      ahead: 1,
+      behind: 2,
+      changes: [
+        {
+          path: "README.md",
+          status: "modified",
+          oldPath: null,
+          staged: true,
+          additions: 3,
+          deletions: 1
+        }
+      ],
+      upstream: {
+        remote: "origin",
+        branch: "origin/main",
+        ahead: 1,
+        behind: 2
+      },
+      summary: {
+        total: 1,
+        added: 0,
+        modified: 1,
+        deleted: 0,
+        untracked: 0,
+        staged: 1,
+        unstaged: 0,
+        conflicted: 0
+      },
+      capturedAt: "2026-07-17T00:00:00Z"
+    } satisfies RepositorySnapshot;
+
+    expect(repositorySnapshotSchema.parse(task1Snapshot).headSha).toBe("abc123");
+    expect(
+      repositoryOperationResponseSchema.parse({
+        operationId: projectId,
+        repositoryId,
+        status: "completed",
+        snapshot: task1Snapshot
+      }).snapshot?.summary.total
+    ).toBe(1);
   });
 
   it("requires canonical Git DTO fields", () => {
