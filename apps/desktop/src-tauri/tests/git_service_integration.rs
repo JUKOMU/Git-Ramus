@@ -444,6 +444,108 @@ fn read_commands_include_lock_and_textconv_safety_flags() {
     assert!(diff.iter().any(|arg| arg == "--no-textconv"));
 }
 
+#[test]
+fn concurrent_diff_processes_share_the_global_read_limit() {
+    if !git_available() {
+        return;
+    }
+    let root = tempdir().unwrap();
+    let repo = root.path().join("repo");
+    run_git(root.path(), &["init", "--quiet", repo.to_str().unwrap()]);
+    let runner = RecordingRunner::new(Duration::from_millis(30), false);
+    let service = GitService::with_runner_and_concurrency(
+        Database::open_in_memory().unwrap(),
+        Arc::new(runner.clone()),
+        2,
+    );
+    let project = service
+        .create_project(ProjectCreateInput {
+            root_path: root.path().to_string_lossy().into_owned(),
+            name: "diff concurrency".to_owned(),
+            scan_depth: Some(1),
+            exclude_patterns: Vec::new(),
+        })
+        .unwrap();
+    let scan = service.scan_project(&project.id).unwrap();
+    let repository_id = scan.repositories[0].repository.id.clone();
+    runner.reset_activity();
+
+    let mut workers = Vec::new();
+    for _ in 0..6 {
+        let service = service.clone();
+        let repository_id = repository_id.clone();
+        let context = QueryContext::project(&project.id);
+        workers.push(thread::spawn(move || {
+            service
+                .get_diff(&context, &repository_id, &[], false)
+                .unwrap();
+        }));
+    }
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    assert!(runner.max_active() > 1, "read processes should overlap");
+    assert!(
+        runner.max_active() <= 2,
+        "diff process escaped the configured read limit"
+    );
+}
+
+#[test]
+fn project_inside_an_outer_repository_returns_a_partial_scan() {
+    if !git_available() {
+        return;
+    }
+    let outer = tempdir().unwrap();
+    run_git(outer.path(), &["init", "--quiet"]);
+    let project_root = outer.path().join("child-project");
+    fs::create_dir(&project_root).unwrap();
+    let nested_repository = project_root.join("nested-repository");
+    run_git(
+        &project_root,
+        &["init", "--quiet", nested_repository.to_str().unwrap()],
+    );
+    let service = GitService::new(Database::open_in_memory().unwrap());
+    let project = service
+        .create_project(ProjectCreateInput {
+            root_path: project_root.to_string_lossy().into_owned(),
+            name: "nested root".to_owned(),
+            scan_depth: Some(1),
+            exclude_patterns: Vec::new(),
+        })
+        .unwrap();
+
+    let scan = service
+        .scan_project(&project.id)
+        .expect("out-of-scope detected root is a partial result");
+    assert_eq!(scan.repositories.len(), 1);
+    assert_eq!(
+        scan.repositories[0].repository.canonical_path,
+        fs::canonicalize(nested_repository)
+            .unwrap()
+            .to_string_lossy()
+    );
+    assert_eq!(scan.failures.len(), 1);
+    assert_eq!(scan.failed, 1);
+    assert!(scan.failures[0].error.contains("escapes project root"));
+}
+
+#[test]
+fn repository_kind_serializes_to_contract_values() {
+    assert_eq!(
+        serde_json::to_string(&RepositoryKind::Normal).unwrap(),
+        "\"normal\""
+    );
+    assert_eq!(
+        serde_json::to_string(&RepositoryKind::Bare).unwrap(),
+        "\"bare\""
+    );
+    assert_eq!(
+        serde_json::to_string(&RepositoryKind::Worktree).unwrap(),
+        "\"worktree\""
+    );
+}
+
 #[derive(Clone)]
 struct RecordingRunner {
     calls: Arc<Mutex<Vec<Vec<String>>>>,
@@ -470,6 +572,11 @@ impl RecordingRunner {
 
     fn max_active(&self) -> usize {
         *self.max_active.lock().unwrap()
+    }
+
+    fn reset_activity(&self) {
+        assert_eq!(*self.active.lock().unwrap(), 0);
+        *self.max_active.lock().unwrap() = 0;
     }
 }
 

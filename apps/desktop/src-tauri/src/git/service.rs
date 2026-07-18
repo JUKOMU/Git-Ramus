@@ -484,16 +484,28 @@ impl GitService {
                 continue;
             }
 
-            // Detection intentionally happens before reading children.  `detect_repository`
-            // walks upward and therefore also recognizes a candidate below a repository root.
+            // Detection intentionally happens before reading children. `detect_repository`
+            // recognizes marker layout; the later bounded `git status` process provides the
+            // actual Git verification and captures a per-repository error instead of aborting.
+            // It also walks upward, so a Project inside an outer repository must be rejected as
+            // an out-of-scope candidate rather than linked to the outer root.
+            let mut repository_detected_in_scope = false;
             match detect_repository(&canonical) {
-                Ok(detected) => {
-                    if seen.insert(detected.canonical_path.clone()) {
-                        let relative = relative_path(&project.root_path, &detected.canonical_path)?;
-                        candidates.push((detected, relative));
+                Ok(detected) => match relative_path(&project.root_path, &detected.canonical_path) {
+                    Ok(relative) => {
+                        repository_detected_in_scope = true;
+                        if seen.insert(detected.canonical_path.clone()) {
+                            candidates.push((detected, relative));
+                        }
                     }
-                    continue;
-                }
+                    Err(error) if seen.insert(detected.canonical_path.clone()) => {
+                        failures.push(RepositoryScanFailure {
+                            path: canonical.to_string_lossy().into_owned(),
+                            error: stable_error(&error),
+                        });
+                    }
+                    Err(_) => {}
+                },
                 Err(error) if !is_candidate_error(&error) => {
                     failures.push(RepositoryScanFailure {
                         path: canonical.to_string_lossy().into_owned(),
@@ -501,6 +513,9 @@ impl GitService {
                     });
                 }
                 Err(_) => {}
+            }
+            if repository_detected_in_scope {
+                continue;
             }
 
             if depth >= project.scan_depth {
@@ -826,6 +841,10 @@ impl GitService {
         ]);
         args.push(OsString::from("--"));
         args.extend(validated.iter().map(OsString::from));
+        // Status and diff use separate permits, but each actual read-only Git process remains
+        // under the same global gate. This prevents concurrent diff calls from escaping the scan
+        // read bound after their status refresh has completed.
+        let _permit = self.read_gate.acquire();
         let output = self.run_git(&repository, args, None)?;
         ensure_success(&output)?;
         Ok(DiffResult {
