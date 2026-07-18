@@ -43,6 +43,49 @@ pub struct SystemGitRunner {
     poll_interval: Duration,
 }
 
+struct ChildGuard {
+    child: Option<Child>,
+    reaped: bool,
+}
+
+impl ChildGuard {
+    fn new(child: Child) -> Self {
+        Self {
+            child: Some(child),
+            reaped: false,
+        }
+    }
+
+    fn child_mut(&mut self) -> &mut Child {
+        self.child.as_mut().expect("child guard must own a process")
+    }
+
+    fn mark_reaped(&mut self) {
+        self.reaped = true;
+    }
+
+    fn terminate(&mut self) {
+        if !self.reaped {
+            self.reaped = if let Some(child) = self.child.as_mut() {
+                terminate_and_reap(child).is_ok()
+            } else {
+                true
+            };
+        }
+    }
+
+    fn disarm(mut self) {
+        self.reaped = true;
+        let _ = self.child.take();
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        self.terminate();
+    }
+}
+
 impl Default for SystemGitRunner {
     fn default() -> Self {
         Self::new()
@@ -107,26 +150,33 @@ impl GitRunner for SystemGitRunner {
             ));
         }
 
-        let mut child = self
+        let child = self
             .command(&request)
             .spawn()
             .map_err(|error| AppError::Git(spawn_error_kind(error)))?;
+        let mut guard = ChildGuard::new(child);
 
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| AppError::Git("Git stdout pipe unavailable".to_owned()))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| AppError::Git("Git stderr pipe unavailable".to_owned()))?;
+        let stdout = match guard.child_mut().stdout.take() {
+            Some(stdout) => stdout,
+            None => {
+                guard.terminate();
+                return Err(AppError::Git("Git stdout pipe unavailable".to_owned()));
+            }
+        };
+        let stderr = match guard.child_mut().stderr.take() {
+            Some(stderr) => stderr,
+            None => {
+                guard.terminate();
+                return Err(AppError::Git("Git stderr pipe unavailable".to_owned()));
+            }
+        };
         let stdout_limited = Arc::new(AtomicBool::new(false));
         let stderr_limited = Arc::new(AtomicBool::new(false));
         let stdout_thread = spawn_reader(stdout, self.max_stdout_bytes, stdout_limited.clone());
         let stderr_thread = spawn_reader(stderr, self.max_stderr_bytes, stderr_limited.clone());
 
         let stdin_thread = request.stdin.map(|input| {
-            let mut stdin = child.stdin.take();
+            let mut stdin = guard.child_mut().stdin.take();
             thread::spawn(move || {
                 if let Some(mut stdin) = stdin.take() {
                     // A short-lived Git process can close stdin before all bytes are written; a
@@ -136,20 +186,30 @@ impl GitRunner for SystemGitRunner {
                 }
             })
         });
-        drop(child.stdin.take());
+        drop(guard.child_mut().stdin.take());
 
-        let (status, timed_out) = wait_bounded(
-            &mut child,
+        let wait_result = wait_bounded(
+            guard.child_mut(),
             request.timeout,
             self.poll_interval,
             &stdout_limited,
             &stderr_limited,
-        )?;
-        let stdout = join_reader(stdout_thread)?;
-        let stderr = join_reader(stderr_thread)?;
-        if let Some(thread) = stdin_thread {
-            let _ = thread.join();
-        }
+        );
+        let (status, timed_out) = match wait_result {
+            Ok(result) => {
+                guard.mark_reaped();
+                result
+            }
+            Err(error) => {
+                // Ensure all process and pipe resources are closed before returning an error.
+                guard.terminate();
+                let _ = join_output_threads(stdout_thread, stderr_thread);
+                join_stdin_thread(stdin_thread);
+                return Err(error);
+            }
+        };
+        let output_result = join_output_threads(stdout_thread, stderr_thread);
+        join_stdin_thread(stdin_thread);
 
         if timed_out {
             return Err(AppError::Timeout);
@@ -157,6 +217,8 @@ impl GitRunner for SystemGitRunner {
         if stdout_limited.load(Ordering::Acquire) || stderr_limited.load(Ordering::Acquire) {
             return Err(AppError::OutputLimit);
         }
+        let (stdout, stderr) = output_result?;
+        guard.disarm();
         Ok(GitOutput {
             status,
             stdout,
@@ -201,6 +263,31 @@ fn join_reader(handle: JoinHandle<io::Result<Vec<u8>>>) -> Result<Vec<u8>, AppEr
     }
 }
 
+fn join_output_threads(
+    stdout: JoinHandle<io::Result<Vec<u8>>>,
+    stderr: JoinHandle<io::Result<Vec<u8>>>,
+) -> Result<(Vec<u8>, Vec<u8>), AppError> {
+    let stdout = join_reader(stdout);
+    let stderr = join_reader(stderr);
+    match (stdout, stderr) {
+        (Ok(stdout), Ok(stderr)) => Ok((stdout, stderr)),
+        (Err(error), _) | (_, Err(error)) => Err(error),
+    }
+}
+
+fn join_stdin_thread(stdin: Option<JoinHandle<()>>) {
+    if let Some(thread) = stdin {
+        let _ = thread.join();
+    }
+}
+
+fn terminate_and_reap(child: &mut Child) -> Result<ExitStatus, AppError> {
+    let _ = child.kill();
+    child
+        .wait()
+        .map_err(|error| AppError::Git(wait_error_kind(error)))
+}
+
 fn wait_bounded(
     child: &mut Child,
     timeout: Duration,
@@ -212,10 +299,7 @@ fn wait_bounded(
     let mut timed_out = false;
     loop {
         if stdout_limited.load(Ordering::Acquire) || stderr_limited.load(Ordering::Acquire) {
-            let _ = child.kill();
-            let status = child
-                .wait()
-                .map_err(|error| AppError::Git(wait_error_kind(error)))?;
+            let status = terminate_and_reap(child)?;
             return Ok((status, false));
         }
         if let Some(status) = child
@@ -226,10 +310,7 @@ fn wait_bounded(
         }
         if started.elapsed() >= timeout {
             timed_out = true;
-            let _ = child.kill();
-            let status = child
-                .wait()
-                .map_err(|error| AppError::Git(wait_error_kind(error)))?;
+            let status = terminate_and_reap(child)?;
             return Ok((status, timed_out));
         }
         let remaining = timeout.saturating_sub(started.elapsed());
@@ -291,4 +372,25 @@ fn reader_error_kind(error: io::Error) -> String {
 fn wait_error_kind(error: io::Error) -> String {
     let _ = error;
     "unable to wait for git".to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminate_and_reap_always_reaps_child() {
+        let Ok(mut child) = Command::new("git")
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            eprintln!("git executable unavailable; skipping cleanup helper test");
+            return;
+        };
+        let _ = terminate_and_reap(&mut child).expect("child can be reaped");
+        assert!(child.try_wait().expect("try_wait succeeds").is_some());
+    }
 }

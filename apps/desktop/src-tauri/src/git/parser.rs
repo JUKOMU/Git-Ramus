@@ -229,7 +229,12 @@ pub fn parse_status_v2(input: impl AsRef<[u8]>) -> Result<RepositorySnapshot, Ap
         let record = records[index];
         index += 1;
         if record.is_empty() {
-            continue;
+            // Only the final empty slice is the sentinel from a trailing NUL. An empty record
+            // before another record is malformed and must not be silently discarded.
+            if index == records.len() {
+                continue;
+            }
+            return Err(invalid_status("empty porcelain v2 record"));
         }
 
         // Git versions differ slightly in whether branch headers are separated by newlines or
@@ -441,6 +446,20 @@ fn invalid_status(message: &str) -> AppError {
 pub fn parse_diff_summary(input: impl AsRef<[u8]>) -> Result<DiffSummary, AppError> {
     let bytes = input.as_ref();
     if bytes.contains(&0) {
+        // `git diff --binary --numstat -z` emits a NUL-delimited summary, an extra NUL, and
+        // then the textual patch. Treat that extra NUL as a format boundary and merge entries by
+        // path; an empty record elsewhere remains malformed.
+        if let Some(boundary) = bytes.windows(2).position(|window| window == [0, 0]) {
+            let suffix = &bytes[boundary + 2..];
+            if suffix.starts_with(b"diff --git ")
+                || suffix.starts_with(b"--- ")
+                || suffix.starts_with(b"GIT binary patch")
+            {
+                let prefix = parse_nul_diff_summary(&bytes[..boundary + 1])?;
+                let patch = parse_diff_summary(suffix)?;
+                return Ok(merge_diff_summaries(prefix, patch));
+            }
+        }
         let nul_summary = parse_nul_diff_summary(bytes)?;
         if !nul_summary.files.is_empty() {
             return Ok(nul_summary);
@@ -518,15 +537,18 @@ pub fn parse_diff_summary(input: impl AsRef<[u8]>) -> Result<DiffSummary, AppErr
 }
 
 fn parse_nul_diff_summary(bytes: &[u8]) -> Result<DiffSummary, AppError> {
-    let records = bytes
-        .split(|byte| *byte == 0)
-        .filter(|record| !record.is_empty())
-        .collect::<Vec<_>>();
+    let records = bytes.split(|byte| *byte == 0).collect::<Vec<_>>();
     let mut files = Vec::new();
     let mut index = 0;
     while index < records.len() {
         let record = records[index];
         index += 1;
+        if record.is_empty() {
+            if index == records.len() {
+                continue;
+            }
+            return Err(AppError::InvalidInput("empty NUL diff record".to_owned()));
+        }
         if let Some((additions, deletions, path)) = parse_numstat(record)? {
             let mut file = new_diff_file(path, None);
             file.additions = additions;
@@ -552,6 +574,18 @@ fn parse_nul_diff_summary(bytes: &[u8]) -> Result<DiffSummary, AppError> {
                     old: None,
                     new: Some(path),
                 });
+            } else {
+                // `git diff --raw -z` emits metadata and path as separate NUL records.
+                let metadata = record.split(|byte| *byte == b' ').collect::<Vec<_>>();
+                let path = records.get(index).ok_or_else(|| {
+                    AppError::InvalidInput("raw diff record is missing its path".to_owned())
+                })?;
+                index += 1;
+                let path = decode_path(path)?;
+                files.push(raw_diff_file(
+                    path,
+                    metadata.last().is_some_and(|status| *status == b"B"),
+                ));
             }
             continue;
         }
@@ -559,34 +593,86 @@ fn parse_nul_diff_summary(bytes: &[u8]) -> Result<DiffSummary, AppError> {
         // including names that begin with `--`; a rename has one additional NUL path.
         if let Some(tab) = record.iter().position(|byte| *byte == b'\t') {
             let status = &record[..tab];
-            if status
+            if !status
                 .first()
                 .is_some_and(|byte| matches!(*byte, b'A' | b'M' | b'D' | b'R' | b'C' | b'T'))
             {
-                let path = decode_path(&record[tab + 1..])?;
-                let kind = match status[0] {
-                    b'A' => ChangeKind::Added,
-                    b'M' => ChangeKind::Modified,
-                    b'D' => ChangeKind::Deleted,
-                    b'R' => ChangeKind::Renamed,
-                    b'C' => ChangeKind::Copied,
-                    _ => ChangeKind::TypeChanged,
-                };
-                let mut file = new_diff_file(path, None);
-                file.binary = false;
-                if matches!(kind, ChangeKind::Renamed | ChangeKind::Copied) {
-                    if let Some(original) = records.get(index) {
-                        let original = decode_path(original)?;
-                        file.old_path = Some(original.clone());
-                        file.old = Some(original);
-                        index += 1;
-                    }
-                }
-                files.push(file);
+                return Err(AppError::InvalidInput("unknown NUL diff record".to_owned()));
             }
+            let path = decode_path(&record[tab + 1..])?;
+            let kind = match status[0] {
+                b'A' => ChangeKind::Added,
+                b'M' => ChangeKind::Modified,
+                b'D' => ChangeKind::Deleted,
+                b'R' => ChangeKind::Renamed,
+                b'C' => ChangeKind::Copied,
+                _ => ChangeKind::TypeChanged,
+            };
+            let mut file = new_diff_file(path, None);
+            file.binary = false;
+            if matches!(kind, ChangeKind::Renamed | ChangeKind::Copied) {
+                let original = records.get(index).ok_or_else(|| {
+                    AppError::InvalidInput("rename record is missing its original path".to_owned())
+                })?;
+                let original = decode_path(original)?;
+                index += 1;
+                file.old_path = Some(original.clone());
+                file.old = Some(original);
+            }
+            files.push(file);
+            continue;
+        }
+        // `git diff --name-status -z` emits `A\0path\0` (and `R100\0old\0new\0`).
+        if matches!(
+            record.first(),
+            Some(b'A' | b'M' | b'D' | b'R' | b'C' | b'T')
+        ) {
+            let status = record;
+            let path = records.get(index).ok_or_else(|| {
+                AppError::InvalidInput("name-status record is missing its path".to_owned())
+            })?;
+            index += 1;
+            let first_path = decode_path(path)?;
+            let kind = match status[0] {
+                b'A' => ChangeKind::Added,
+                b'M' => ChangeKind::Modified,
+                b'D' => ChangeKind::Deleted,
+                b'R' => ChangeKind::Renamed,
+                b'C' => ChangeKind::Copied,
+                _ => ChangeKind::TypeChanged,
+            };
+            let mut file = new_diff_file(first_path.clone(), None);
+            if matches!(kind, ChangeKind::Renamed | ChangeKind::Copied) {
+                let new_path = records.get(index).ok_or_else(|| {
+                    AppError::InvalidInput("rename record is missing its new path".to_owned())
+                })?;
+                index += 1;
+                let new_path = decode_path(new_path)?;
+                file.old_path = Some(first_path.clone());
+                file.old = Some(first_path);
+                file.path = new_path.clone();
+                file.new_path = Some(new_path.clone());
+                file.new = Some(new_path);
+            }
+            files.push(file);
+        } else {
+            return Err(AppError::InvalidInput("unknown NUL diff record".to_owned()));
         }
     }
     Ok(diff_summary_from_files(files))
+}
+
+fn raw_diff_file(path: String, binary: bool) -> DiffFile {
+    DiffFile {
+        path: path.clone(),
+        old_path: None,
+        new_path: Some(path.clone()),
+        binary,
+        additions: None,
+        deletions: None,
+        old: None,
+        new: Some(path),
+    }
 }
 
 fn diff_summary_from_files(files: Vec<DiffFile>) -> DiffSummary {
@@ -601,6 +687,39 @@ fn diff_summary_from_files(files: Vec<DiffFile>) -> DiffSummary {
         additions,
         deletions,
     }
+}
+
+fn merge_diff_summaries(mut first: DiffSummary, second: DiffSummary) -> DiffSummary {
+    for incoming in second.files {
+        if let Some(existing) = first
+            .files
+            .iter_mut()
+            .find(|file| file.path == incoming.path)
+        {
+            existing.binary |= incoming.binary;
+            if existing.old_path.is_none() {
+                existing.old_path = incoming.old_path.clone();
+            }
+            if existing.new_path.is_none() {
+                existing.new_path = incoming.new_path.clone();
+            }
+            if existing.old.is_none() {
+                existing.old = incoming.old.clone();
+            }
+            if existing.new.is_none() {
+                existing.new = incoming.new.clone();
+            }
+            if existing.additions.is_none() {
+                existing.additions = incoming.additions;
+            }
+            if existing.deletions.is_none() {
+                existing.deletions = incoming.deletions;
+            }
+        } else {
+            first.files.push(incoming);
+        }
+    }
+    diff_summary_from_files(first.files)
 }
 
 fn new_diff_file(path: String, old_path: Option<String>) -> DiffFile {
@@ -797,10 +916,11 @@ pub fn detect_repository(path: impl AsRef<Path>) -> Result<DetectedRepository, A
     let mut cursor = Some(canonical.as_path());
     while let Some(candidate) = cursor {
         let dot_git = candidate.join(".git");
-        if dot_git.is_dir() {
+        if dot_git.is_dir() && is_standard_git_dir(&dot_git) {
+            let git_dir = fs::canonicalize(&dot_git).map_err(|_| invalid_repository())?;
             return Ok(DetectedRepository {
                 canonical_path: candidate.to_path_buf(),
-                git_dir: dot_git,
+                git_dir,
                 kind: RepositoryKind::Normal,
                 is_bare: false,
                 is_worktree: false,
@@ -846,10 +966,17 @@ fn read_worktree_gitdir(root: &Path, marker: &Path) -> Result<PathBuf, AppError>
     } else {
         root.join(git_dir)
     };
-    fs::canonicalize(git_dir).map_err(|_| invalid_repository())
+    let git_dir = fs::canonicalize(git_dir).map_err(|_| invalid_repository())?;
+    if !is_worktree_git_dir(&git_dir) {
+        return Err(invalid_repository());
+    }
+    Ok(git_dir)
 }
 
 fn is_bare_repository(path: &Path) -> bool {
+    if !is_standard_git_dir(path) {
+        return false;
+    }
     let config = path.join("config");
     if let Ok(bytes) = fs::read(config) {
         let text = String::from_utf8_lossy(&bytes).to_ascii_lowercase();
@@ -860,7 +987,30 @@ fn is_bare_repository(path: &Path) -> bool {
             return true;
         }
     }
-    path.join("HEAD").is_file() && path.join("objects").is_dir() && path.join("refs").is_dir()
+    false
+}
+
+fn is_standard_git_dir(path: &Path) -> bool {
+    path.join("HEAD").is_file()
+        && path.join("config").is_file()
+        && path.join("objects").is_dir()
+        && path.join("refs").is_dir()
+}
+
+fn is_worktree_git_dir(path: &Path) -> bool {
+    if !path.join("HEAD").is_file() {
+        return false;
+    }
+    let Some(commondir) = fs::read_to_string(path.join("commondir")).ok() else {
+        return is_standard_git_dir(path);
+    };
+    let common = Path::new(commondir.trim());
+    let common = if common.is_absolute() {
+        common.to_path_buf()
+    } else {
+        path.join(common)
+    };
+    is_standard_git_dir(&common)
 }
 
 fn invalid_repository() -> AppError {

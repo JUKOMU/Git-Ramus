@@ -168,15 +168,23 @@ fn detect_repository_recognizes_normal_bare_and_worktree() {
         ],
     );
 
+    let normal_info = detect_repository(&normal).unwrap();
+    assert_eq!(normal_info.kind, RepositoryKind::Normal);
     assert_eq!(
-        detect_repository(&normal).unwrap().kind,
-        RepositoryKind::Normal
+        normal_info.canonical_path,
+        fs::canonicalize(&normal).unwrap()
     );
-    assert_eq!(detect_repository(&bare).unwrap().kind, RepositoryKind::Bare);
     assert_eq!(
-        detect_repository(&worktree).unwrap().kind,
-        RepositoryKind::Worktree
+        normal_info.git_dir,
+        fs::canonicalize(normal.join(".git")).unwrap()
     );
+    let bare_info = detect_repository(&bare).unwrap();
+    assert_eq!(bare_info.kind, RepositoryKind::Bare);
+    assert_eq!(bare_info.canonical_path, fs::canonicalize(&bare).unwrap());
+    assert_eq!(bare_info.git_dir, fs::canonicalize(&bare).unwrap());
+    let worktree_info = detect_repository(&worktree).unwrap();
+    assert_eq!(worktree_info.kind, RepositoryKind::Worktree);
+    assert!(worktree_info.git_dir.is_absolute());
     assert!(matches!(
         detect_repository(temp.path().join("missing")),
         Err(AppError::InvalidInput(_))
@@ -187,6 +195,163 @@ fn detect_repository_recognizes_normal_bare_and_worktree() {
         detect_repository(&ordinary),
         Err(AppError::InvalidInput(_))
     ));
+}
+
+#[test]
+fn detect_repository_rejects_fake_git_markers() {
+    let temp = tempfile::tempdir().unwrap();
+    let fake_dir = temp.path().join("fake-dir");
+    fs::create_dir_all(fake_dir.join(".git")).unwrap();
+    assert!(matches!(
+        detect_repository(&fake_dir),
+        Err(AppError::InvalidInput(_))
+    ));
+
+    let fake_file = temp.path().join("fake-file");
+    fs::create_dir_all(&fake_file).unwrap();
+    fs::write(fake_file.join(".git"), "gitdir: nowhere\n").unwrap();
+    assert!(matches!(
+        detect_repository(&fake_file),
+        Err(AppError::InvalidInput(_))
+    ));
+}
+
+#[test]
+fn status_parser_rejects_interior_empty_nul_records() {
+    let fixture = b"? first.txt\0\0? second.txt\0";
+    assert!(matches!(
+        parse_status_v2(fixture),
+        Err(AppError::InvalidInput(_))
+    ));
+}
+
+#[test]
+fn status_parser_rejects_unknown_nonempty_records() {
+    assert!(matches!(
+        parse_status_v2(b"x unknown\0"),
+        Err(AppError::InvalidInput(_))
+    ));
+}
+
+#[test]
+fn diff_parser_rejects_interior_empty_nul_records() {
+    let fixture = b"1\t0\tfirst.txt\0\x00";
+    let fixture = [fixture.as_slice(), b"1\t1\tsecond.txt\0"].concat();
+    assert!(matches!(
+        parse_diff_summary(fixture),
+        Err(AppError::InvalidInput(_))
+    ));
+}
+
+#[test]
+fn diff_parser_keeps_name_status_nul_paths_after_double_dash() {
+    let fixture = b"A\0--added file.txt\0";
+    let summary = parse_diff_summary(fixture).expect("name-status NUL parses");
+    assert_eq!(summary.files.len(), 1);
+    assert_eq!(summary.files[0].path, "--added file.txt");
+}
+
+#[test]
+fn real_repository_status_and_diff_round_trip_through_runner() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git executable unavailable; skipping end-to-end integration test");
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    run_git(temp.path(), &["init", "--quiet"]);
+    run_git(temp.path(), &["config", "user.name", "Fixture User"]);
+    run_git(
+        temp.path(),
+        &["config", "user.email", "fixture@example.test"],
+    );
+
+    let tracked = "tracked file.txt";
+    fs::write(temp.path().join(tracked), "before\n").unwrap();
+    run_git(temp.path(), &["add", "--", tracked]);
+    run_git(temp.path(), &["commit", "--quiet", "-m", "seed"]);
+    fs::write(temp.path().join(tracked), "after\n").unwrap();
+    let untracked = "未跟踪 file;echo PWNED.txt";
+    fs::write(temp.path().join(untracked), "new\n").unwrap();
+
+    let runner = SystemGitRunner::default();
+    let status = runner
+        .run(GitCommand {
+            repo: temp.path().to_path_buf(),
+            args: [
+                "status",
+                "--porcelain=v2",
+                "-z",
+                "--branch",
+                "--untracked-files=all",
+            ]
+            .into_iter()
+            .map(OsString::from)
+            .collect(),
+            stdin: None,
+            timeout: Duration::from_secs(2),
+        })
+        .expect("status command runs");
+    assert!(status.status.success());
+    let snapshot = parse_status_v2(status.stdout).expect("status parses");
+    assert_eq!(snapshot.changes.len(), 2);
+    assert!(snapshot.changes.iter().any(|entry| entry.path == tracked));
+    assert!(snapshot.changes.iter().any(|entry| entry.path == untracked));
+
+    let diff = runner
+        .run(GitCommand {
+            repo: temp.path().to_path_buf(),
+            args: [
+                "diff",
+                "--no-ext-diff",
+                "--binary",
+                "--numstat",
+                "-z",
+                "--",
+                tracked,
+            ]
+            .into_iter()
+            .map(OsString::from)
+            .collect(),
+            stdin: None,
+            timeout: Duration::from_secs(2),
+        })
+        .expect("diff command runs");
+    assert!(diff.status.success());
+    let summary = parse_diff_summary(diff.stdout).expect("diff parses");
+    assert_eq!(summary.files.len(), 1);
+    assert_eq!(summary.files[0].path, tracked);
+
+    let raw = runner
+        .run(GitCommand {
+            repo: temp.path().to_path_buf(),
+            args: ["diff", "--raw", "-z", "--", tracked]
+                .into_iter()
+                .map(OsString::from)
+                .collect(),
+            stdin: None,
+            timeout: Duration::from_secs(2),
+        })
+        .expect("raw diff command runs");
+    assert!(raw.status.success());
+    let raw_summary = parse_diff_summary(raw.stdout).expect("raw diff parses");
+    assert_eq!(raw_summary.files.len(), 1);
+    assert_eq!(raw_summary.files[0].path, tracked);
+
+    let name_status = runner
+        .run(GitCommand {
+            repo: temp.path().to_path_buf(),
+            args: ["diff", "--name-status", "-z", "--", tracked]
+                .into_iter()
+                .map(OsString::from)
+                .collect(),
+            stdin: None,
+            timeout: Duration::from_secs(2),
+        })
+        .expect("name-status command runs");
+    assert!(name_status.status.success());
+    let name_summary = parse_diff_summary(name_status.stdout).expect("name-status parses");
+    assert_eq!(name_summary.files.len(), 1);
+    assert_eq!(name_summary.files[0].path, tracked);
 }
 
 #[test]
