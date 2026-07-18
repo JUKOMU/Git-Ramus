@@ -154,7 +154,10 @@ impl From<AppError> for ErrorEnvelope {
                 repository_id,
             } => {
                 let mut details = serde_json::Map::new();
-                details.insert("reason".to_owned(), Value::String(reason.clone()));
+                details.insert(
+                    "reason".to_owned(),
+                    Value::String(classify_signing_failure(reason).to_owned()),
+                );
                 (
                     Some("signCommit".to_owned()),
                     Some(repository_id.clone()),
@@ -183,6 +186,37 @@ impl From<AppError> for ErrorEnvelope {
     }
 }
 
+fn classify_signing_failure(reason: &str) -> &'static str {
+    let reason = reason.to_ascii_lowercase();
+    if [
+        "permission denied",
+        "access denied",
+        "access is denied",
+        "operation not permitted",
+    ]
+    .iter()
+    .any(|marker| reason.contains(marker))
+    {
+        return "signing access denied";
+    }
+    let unavailable = [
+        "not found",
+        "no such file",
+        "unavailable",
+        "invalid",
+        "could not load",
+    ]
+    .iter()
+    .any(|marker| reason.contains(marker));
+    if reason.contains("key") && unavailable {
+        return "signing key unavailable";
+    }
+    if reason.contains("program") && unavailable {
+        return "signing program unavailable";
+    }
+    "signing program failed"
+}
+
 #[cfg(test)]
 mod tests {
     use super::{AppError, ErrorCategory, ErrorEnvelope};
@@ -208,5 +242,37 @@ mod tests {
         assert!(!envelope.retryable);
         assert!(envelope.retry_after_ms.is_none());
         assert!(envelope.details.is_none());
+    }
+
+    #[test]
+    fn signing_error_details_classify_untrusted_stderr_without_exposing_it() {
+        let envelope = ErrorEnvelope::from(AppError::SigningFailed {
+            reason:
+                "signer exploded token=ghp_super_secret path=C:\\Users\\secret\\id key-id=DEADBEEF"
+                    .to_owned(),
+            repository_id: "repository-id".to_owned(),
+        });
+        let serialized = serde_json::to_string(&envelope).expect("envelope serializes");
+
+        assert_eq!(envelope.code, "git.signing-failed");
+        assert_eq!(envelope.category, ErrorCategory::UserActionRequired);
+        assert_eq!(envelope.resource_id.as_deref(), Some("repository-id"));
+        assert_eq!(envelope.failed_step.as_deref(), Some("signCommit"));
+        assert_eq!(
+            envelope
+                .details
+                .as_ref()
+                .and_then(|details| details.get("reason"))
+                .and_then(serde_json::Value::as_str),
+            Some("signing program failed")
+        );
+        for secret in [
+            "ghp_super_secret",
+            "C:\\\\Users",
+            "DEADBEEF",
+            "signer exploded",
+        ] {
+            assert!(!serialized.contains(secret), "leaked {secret}");
+        }
     }
 }

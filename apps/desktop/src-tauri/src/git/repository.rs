@@ -525,6 +525,15 @@ impl IdentityBindingRepository {
                 .map(|_| ())
         })
     }
+    pub fn count_for_profile(&self, identity_profile_id: &str) -> Result<i64, AppError> {
+        self.db.with_connection(|connection| {
+            connection.query_row(
+                "SELECT COUNT(*) FROM repository_identity_bindings WHERE identity_profile_id=?1",
+                [identity_profile_id],
+                |row| row.get(0),
+            )
+        })
+    }
 }
 impl TrustRepository {
     pub fn new(db: Database) -> Self {

@@ -613,6 +613,18 @@ impl IdentityService {
         let normalized = validate_profile_input(input)?;
         let _global_guard = self.lock_global()?;
         let mut profile = self.profiles.get(profile_id)?;
+        let managed_fields_changed = profile.user_name != normalized.user_name
+            || profile.user_email != normalized.user_email
+            || profile.gpg_format != normalized.gpg_format
+            || profile.signing_key != normalized.signing_key
+            || profile.sign_commits != normalized.sign_commits
+            || profile.sign_tags != normalized.sign_tags;
+        if managed_fields_changed && self.bindings.count_for_profile(profile_id)? > 0 {
+            return Err(AppError::UserActionRequired(
+                "cleanly unbind all repositories before changing managed identity fields"
+                    .to_owned(),
+            ));
+        }
         profile.display_name = normalized.display_name;
         profile.user_name = normalized.user_name;
         profile.user_email = normalized.user_email;
@@ -672,11 +684,12 @@ impl IdentityService {
     ) -> Result<IdentityBinding, AppError> {
         let repository = self.repositories.get(repository_id)?;
         self.require_repository_trust(repository_id)?;
-        let profile = self.profiles.get(profile_id)?;
+        let _profile_guard = self.lock_global()?;
         let lock = self.local_lock(repository_id);
         let _guard = lock
             .lock()
             .map_err(|_| AppError::Git("identity configuration lock failed".to_owned()))?;
+        let profile = self.profiles.get(profile_id)?;
         let target = ConfigTarget::Local(PathBuf::from(&repository.canonical_path));
         if let Some(existing) = self.bindings.get_optional(repository_id)? {
             let current_profile = self.profiles.get(&existing.identity_profile_id)?;
@@ -701,14 +714,15 @@ impl IdentityService {
     pub fn unbind_repository(&self, repository_id: &str) -> Result<(), AppError> {
         let repository = self.repositories.get(repository_id)?;
         self.require_repository_trust(repository_id)?;
-        let Some(binding) = self.bindings.get_optional(repository_id)? else {
-            return Ok(());
-        };
-        let profile = self.profiles.get(&binding.identity_profile_id)?;
+        let _profile_guard = self.lock_global()?;
         let lock = self.local_lock(repository_id);
         let _guard = lock
             .lock()
             .map_err(|_| AppError::Git("identity configuration lock failed".to_owned()))?;
+        let Some(binding) = self.bindings.get_optional(repository_id)? else {
+            return Ok(());
+        };
+        let profile = self.profiles.get(&binding.identity_profile_id)?;
         let target = ConfigTarget::Local(PathBuf::from(&repository.canonical_path));
         let actual = self.read_snapshot(&target)?;
         let drift = config_drift(&profile_config(&profile), &actual);
@@ -1550,9 +1564,11 @@ mod service_tests {
     use std::path::Path;
     use std::process::Command;
     use std::sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
+        mpsc::{self, RecvTimeoutError},
     };
+    use std::time::Duration;
 
     use crate::db::Database;
     use crate::error::AppError;
@@ -1619,6 +1635,59 @@ mod service_tests {
                 }
             }
             Ok(output)
+        }
+    }
+
+    struct BlockingBindRunner {
+        inner: SystemGitRunner,
+        blocked: AtomicBool,
+        entered: Mutex<Option<mpsc::Sender<()>>>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+
+    impl BlockingBindRunner {
+        fn new() -> (Self, mpsc::Receiver<()>, mpsc::Sender<()>) {
+            let (entered_tx, entered_rx) = mpsc::channel();
+            let (release_tx, release_rx) = mpsc::channel();
+            (
+                Self {
+                    inner: SystemGitRunner::default(),
+                    blocked: AtomicBool::new(false),
+                    entered: Mutex::new(Some(entered_tx)),
+                    release: Mutex::new(release_rx),
+                },
+                entered_rx,
+                release_tx,
+            )
+        }
+    }
+
+    impl GitRunner for BlockingBindRunner {
+        fn run(&self, command: GitCommand) -> Result<GitOutput, AppError> {
+            let args = command
+                .args
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            if FaultInjectingRunner::matches(&args, "--add", "user.name")
+                && args.iter().any(|arg| arg == "--local")
+                && !self.blocked.swap(true, Ordering::AcqRel)
+            {
+                if let Some(sender) = self
+                    .entered
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+                {
+                    let _ = sender.send(());
+                }
+                self.release
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .recv_timeout(Duration::from_secs(5))
+                    .map_err(|_| AppError::Git("blocking test release timed out".to_owned()))?;
+            }
+            self.inner.run(command)
         }
     }
 
@@ -2145,6 +2214,169 @@ mod service_tests {
         assert_eq!(
             run_local_config(&repository_path, &["--get", "user.email"]).as_deref(),
             Some("second@example.com")
+        );
+    }
+
+    #[test]
+    fn bound_profile_managed_update_is_rejected_without_database_or_git_changes() {
+        let directory = tempfile::tempdir().expect("temporary directory creates");
+        let repository_path = directory.path().join("repo");
+        init_repository(&repository_path);
+        let (database, service) = isolated_service_with_db(directory.path());
+        let repository = register_repository(&database, &repository_path, true);
+        let profile = service
+            .create(input("Profile", "Original User", "original@example.com"))
+            .expect("profile creates");
+        service
+            .bind_repository(&repository.id, &profile.id)
+            .expect("profile binds");
+
+        assert!(matches!(
+            service.update(
+                &profile.id,
+                input("Profile", "Changed User", "changed@example.com")
+            ),
+            Err(AppError::UserActionRequired(message)) if message.contains("unbind")
+        ));
+        let stored = service
+            .list()
+            .expect("profiles list")
+            .into_iter()
+            .find(|candidate| candidate.id == profile.id)
+            .expect("profile remains");
+        assert_eq!(stored.user_name, "Original User");
+        assert_eq!(stored.user_email, "original@example.com");
+        assert_eq!(
+            run_local_config(&repository_path, &["--get", "user.name"]).as_deref(),
+            Some("Original User")
+        );
+        assert_eq!(
+            run_local_config(&repository_path, &["--get", "user.email"]).as_deref(),
+            Some("original@example.com")
+        );
+    }
+
+    #[test]
+    fn bound_profile_display_only_update_is_allowed_and_unbind_then_managed_update_succeeds() {
+        let directory = tempfile::tempdir().expect("temporary directory creates");
+        let repository_path = directory.path().join("repo");
+        init_repository(&repository_path);
+        let (database, service) = isolated_service_with_db(directory.path());
+        let repository = register_repository(&database, &repository_path, true);
+        let profile = service
+            .create(input(
+                "Before Label",
+                "Original User",
+                "original@example.com",
+            ))
+            .expect("profile creates");
+        service
+            .bind_repository(&repository.id, &profile.id)
+            .expect("profile binds");
+
+        let display_only = service
+            .update(
+                &profile.id,
+                input("After Label", "Original User", "original@example.com"),
+            )
+            .expect("display-only update succeeds");
+        assert_eq!(display_only.display_name, "After Label");
+        assert_eq!(
+            run_local_config(&repository_path, &["--get", "user.name"]).as_deref(),
+            Some("Original User")
+        );
+
+        service
+            .unbind_repository(&repository.id)
+            .expect("clean profile unbinds");
+        let managed_update = service
+            .update(
+                &profile.id,
+                input("After Label", "Changed User", "changed@example.com"),
+            )
+            .expect("managed update succeeds after unbind");
+        assert_eq!(managed_update.user_name, "Changed User");
+        assert_eq!(managed_update.user_email, "changed@example.com");
+        assert_eq!(
+            run_local_config(&repository_path, &["--get", "user.name"]),
+            None
+        );
+    }
+
+    #[test]
+    fn concurrent_bind_serializes_profile_update_without_deadlock_or_stale_local_config() {
+        let directory = tempfile::tempdir().expect("temporary directory creates");
+        let repository_path = directory.path().join("repo");
+        init_repository(&repository_path);
+        let database = Database::open_in_memory().expect("database opens");
+        let repository = register_repository(&database, &repository_path, true);
+        let (runner, bind_entered, release_bind) = BlockingBindRunner::new();
+        let service = Arc::new(
+            IdentityService::with_runner_and_global_file(
+                database,
+                Arc::new(runner),
+                directory.path().join("global.gitconfig"),
+            )
+            .expect("identity service constructs"),
+        );
+        let profile = service
+            .create(input("Profile", "Original User", "original@example.com"))
+            .expect("profile creates");
+
+        let bind_service = Arc::clone(&service);
+        let repository_id = repository.id.clone();
+        let profile_id = profile.id.clone();
+        let bind =
+            std::thread::spawn(move || bind_service.bind_repository(&repository_id, &profile_id));
+        bind_entered
+            .recv_timeout(Duration::from_secs(5))
+            .expect("bind reaches blocked Local write");
+
+        let update_service = Arc::clone(&service);
+        let update_profile_id = profile.id.clone();
+        let (updated_tx, updated_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = update_service.update(
+                &update_profile_id,
+                input("Profile", "Changed User", "changed@example.com"),
+            );
+            let _ = updated_tx.send(result);
+        });
+        let early = match updated_rx.recv_timeout(Duration::from_millis(200)) {
+            Ok(result) => Some(result),
+            Err(RecvTimeoutError::Timeout) => None,
+            Err(RecvTimeoutError::Disconnected) => panic!("update thread disconnected"),
+        };
+        release_bind.send(()).expect("bind releases");
+        bind.join()
+            .expect("bind thread joins")
+            .expect("bind succeeds");
+        let completed_early = early.is_some();
+        let update_result = match early {
+            Some(result) => result,
+            None => updated_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("serialized update completes"),
+        };
+
+        assert!(
+            !completed_early,
+            "profile update escaped the bind lifecycle lock"
+        );
+        assert!(matches!(
+            update_result,
+            Err(AppError::UserActionRequired(_))
+        ));
+        let stored = service
+            .list()
+            .expect("profiles list")
+            .into_iter()
+            .find(|candidate| candidate.id == profile.id)
+            .expect("profile remains");
+        assert_eq!(stored.user_name, "Original User");
+        assert_eq!(
+            run_local_config(&repository_path, &["--get", "user.name"]).as_deref(),
+            Some("Original User")
         );
     }
 
