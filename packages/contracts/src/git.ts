@@ -8,23 +8,18 @@ export const projectSchema = z
   .object({
     id: uuid,
     name: z.string().min(1),
-    path: z.string().min(1).optional(),
-    rootPath: z.string().min(1).optional(),
-    scanDepth: z.number().int().nonnegative().optional(),
-    excludePatterns: z.array(z.string().min(1)).optional(),
+    rootPath: z.string().min(1),
+    scanDepth: z.number().int().nonnegative(),
+    excludePatterns: z.array(z.string().min(1)),
     createdAt: timestamp,
     updatedAt: timestamp
   })
-  .strict()
-  .refine((value) => value.path !== undefined || value.rootPath !== undefined, {
-    message: "project path is required"
-  });
+  .strict();
 
 export const workspaceSchema = z
   .object({
     id: uuid,
     name: z.string().min(1),
-    path: z.string().min(1).optional(),
     rootPath: z.string().min(1).optional(),
     projectIds: z.array(uuid).default([]),
     createdAt: timestamp,
@@ -35,13 +30,10 @@ export const workspaceSchema = z
 export const repositorySchema = z
   .object({
     id: uuid,
-    name: z.string().min(1),
-    path: z.string().min(1).optional(),
-    rootPath: z.string().min(1).optional(),
     workspaceIds: z.array(uuid).default([]),
-    canonicalPath: z.string().min(1).optional(),
-    displayName: z.string().min(1).optional(),
-    kind: z.enum(["normal", "bare", "worktree"]).optional(),
+    canonicalPath: z.string().min(1),
+    displayName: z.string().min(1),
+    kind: z.enum(["normal", "bare", "worktree"]),
     remoteUrl: z.string().min(1).nullable().optional(),
     defaultBranch: z.string().min(1).nullable().optional(),
     createdAt: timestamp,
@@ -77,8 +69,7 @@ export const repositorySnapshotSchema = z
         behind: z.number().int().nonnegative()
       })
       .strict()
-      .nullable()
-      .optional(),
+      .nullable(),
     summary: z
       .object({
         total: z.number().int().nonnegative(),
@@ -87,8 +78,7 @@ export const repositorySnapshotSchema = z
         deleted: z.number().int().nonnegative(),
         untracked: z.number().int().nonnegative()
       })
-      .strict()
-      .default({ total: 0, added: 0, modified: 0, deleted: 0, untracked: 0 }),
+      .strict(),
     capturedAt: timestamp
   })
   .strict();
@@ -96,21 +86,17 @@ export const repositorySnapshotSchema = z
 export const identityProfileSchema = z
   .object({
     id: uuid,
-    name: z.string().min(1).optional(),
-    displayName: z.string().min(1).optional(),
+    displayName: z.string().min(1),
     email: z.string().email(),
     gpgFormat: z.enum(["openpgp", "ssh", "x509", "none"]).nullable().optional(),
     signingKey: z.string().min(1).nullable().optional(),
     isGlobal: z.boolean().optional(),
-    signCommits: z.boolean().optional(),
-    signTags: z.boolean().optional(),
-    createdAt: timestamp.optional(),
-    updatedAt: timestamp.optional()
+    signCommits: z.boolean(),
+    signTags: z.boolean(),
+    createdAt: timestamp,
+    updatedAt: timestamp
   })
-  .strict()
-  .refine((value) => value.name !== undefined || value.displayName !== undefined, {
-    message: "identity display name is required"
-  });
+  .strict();
 
 export const effectiveIdentitySchema = z
   .object({

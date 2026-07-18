@@ -166,7 +166,6 @@ describe("shared contracts", () => {
     const project = projectSchema.parse({
       id: "87a31769-8aaa-47ca-bef3-47e66f0c62fc",
       name: "Demo",
-      path: "C:/demo",
       rootPath: "C:/demo",
       scanDepth: 3,
       excludePatterns: ["node_modules"],
@@ -189,8 +188,6 @@ describe("shared contracts", () => {
     expect(
       repositorySchema.parse({
         id: "e3d622f1-f1f7-4f7e-8f18-3db8a1e6ffbe",
-        name: "Repo",
-        path: "C:/repo",
         canonicalPath: "C:/repo",
         displayName: "Repo",
         kind: "normal",
@@ -231,6 +228,28 @@ describe("shared contracts", () => {
       updatedAt: "2026-07-17T00:00:00Z"
     });
     expect(identity.signCommits).toBe(true);
+  });
+
+  it("requires canonical Git DTO fields", () => {
+    expect(() =>
+      projectSchema.parse({
+        id: "87a31769-8aaa-47ca-bef3-47e66f0c62fc",
+        name: "Demo",
+        path: "C:/demo",
+        createdAt: "2026-07-17T00:00:00Z",
+        updatedAt: "2026-07-17T00:00:00Z"
+      })
+    ).toThrow();
+    expect(() =>
+      repositorySchema.parse({
+        id: "e3d622f1-f1f7-4f7e-8f18-3db8a1e6ffbe",
+        name: "Repo",
+        path: "C:/repo",
+        workspaceIds: [],
+        createdAt: "2026-07-17T00:00:00Z",
+        updatedAt: "2026-07-17T00:00:00Z"
+      })
+    ).toThrow();
   });
 
   it("requires stable job and error codes", () => {
