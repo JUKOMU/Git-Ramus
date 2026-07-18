@@ -1,0 +1,32 @@
+:root {
+  color: #e2e8f0;
+  background: #0b1220;
+  font-family: Inter, system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+}
+
+.welcome {
+  max-width: 620px;
+  margin: 32px;
+  padding: 28px;
+  border: 1px solid #263247;
+  border-radius: 14px;
+  background: #111827;
+}
+
+.eyebrow {
+  color: #7dd3fc;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+button {
+  padding: 10px 14px;
+  border: 0;
+  border-radius: 8px;
+  color: white;
+  background: #0284c7;
+}

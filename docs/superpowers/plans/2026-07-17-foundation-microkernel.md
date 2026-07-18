@@ -4,9 +4,9 @@
 
 **Goal:** Build a bootable Git-Ramus desktop foundation with a Tauri/Rust trusted kernel, React shell, SQLite and Keychain abstractions, task center, typed plugin contracts, sandboxed plugin UI, permission gateway, and one working built-in plugin.
 
-**Architecture:** The Rust process owns persistence, secrets, plugin discovery, permission decisions, and background job state. The trusted React shell renders navigation and hosts each plugin in a `sandbox="allow-scripts"` iframe; plugin messages cross a typed RPC bridge and are authorized by Rust before handlers run. This phase loads only bundled plugins, while later phases add Git/Release installation and upgrade hardening.
+**Architecture:** The Rust process owns persistence, secrets, plugin discovery, permission decisions, background job state, and a read-only custom protocol that serves verified plugin HTML with a network-denying response CSP. The trusted React shell renders navigation and hosts each plugin in a `sandbox="allow-scripts"` iframe; plugin messages cross a typed RPC bridge and are authorized by Rust before handlers run. This phase loads only bundled plugins, while later phases add Git/Release installation and upgrade hardening.
 
-**Tech Stack:** Tauri 2.11, Rust 1.88 (edition 2024), React 19.2, TypeScript 7, Vite 8, Zod 4, SQLite/rusqlite, keyring 4, Vitest/Testing Library, WebdriverIO Tauri service, npm workspaces.
+**Tech Stack:** Tauri 2.11, Rust 1.88 (edition 2024), React 19.2, TypeScript 6, Vite 8, Zod 4, SQLite/rusqlite, keyring 4, Vitest/Testing Library, WebdriverIO Tauri service, npm workspaces.
 
 ---
 
@@ -63,6 +63,7 @@ It does not implement repositories, Git commands, identity profiles, Provider AP
 - `apps/desktop/src-tauri/src/jobs/` — persistent jobs and transition rules.
 - `apps/desktop/src-tauri/src/plugins/manifest.rs` — Rust Manifest mirror and validation.
 - `apps/desktop/src-tauri/src/plugins/registry.rs` — bundled-plugin discovery and safe entrypoint loading.
+- `apps/desktop/src-tauri/src/plugins/protocol.rs` — fixed-route plugin HTML responses and per-plugin CSP boundary.
 - `apps/desktop/src-tauri/src/plugins/permissions.rs` — requested/granted permission checks.
 - `apps/desktop/src-tauri/src/app_state.rs` — composition root for kernel services.
 - `apps/desktop/src-tauri/src/commands.rs` — narrow Tauri command surface.
@@ -143,7 +144,7 @@ Create `package.json`:
     "eslint-plugin-react-refresh": "0.5.3",
     "globals": "17.7.0",
     "prettier": "3.9.5",
-    "typescript": "7.0.2",
+    "typescript": "6.0.3",
     "typescript-eslint": "8.64.0"
   }
 }
@@ -781,7 +782,7 @@ edition = "2024"
 rust-version = "1.88"
 
 [lib]
-name = "git_ramus_desktop"
+name = "git_ramus_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -791,7 +792,7 @@ tauri-build = { version = "2.6.3", features = [] }
 chrono = { version = "0.4.45", features = ["serde"] }
 keyring = "4.1.5"
 parking_lot = "0.12.5"
-rusqlite = { version = "0.40.1", features = ["bundled"] }
+rusqlite = { version = "0.39.0", features = ["bundled"] }
 semver = { version = "1.0.28", features = ["serde"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
@@ -1014,7 +1015,7 @@ Create `apps/desktop/src-tauri/src/main.rs`:
 
 ```rust
 fn main() {
-    git_ramus_desktop::run();
+    git_ramus_desktop_lib::run();
 }
 ```
 

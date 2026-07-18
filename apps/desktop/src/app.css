@@ -1,0 +1,99 @@
+:root {
+  font-family:
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  color: #e2e8f0;
+  background: #080d18;
+  font-synthesis: none;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-width: 960px;
+  min-height: 640px;
+  height: 100%;
+  margin: 0;
+}
+
+button {
+  color: inherit;
+  font: inherit;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr) 280px;
+  min-height: 100%;
+}
+
+.sidebar,
+.task-rail {
+  padding: 20px;
+  background: #111827;
+}
+
+.sidebar {
+  position: relative;
+  border-right: 1px solid #263247;
+}
+
+.task-rail {
+  border-left: 1px solid #263247;
+}
+
+.sidebar h1 {
+  margin: 0 0 24px;
+  font-size: 20px;
+}
+
+.nav-item,
+.task-rail button {
+  width: 100%;
+  margin: 3px 0;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  text-align: left;
+}
+
+.nav-item:hover,
+.task-rail button:hover {
+  background: #1e293b;
+}
+
+.host-version {
+  position: absolute;
+  bottom: 18px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.workspace {
+  padding: 28px;
+  background: #0b1220;
+}
+
+.workspace iframe {
+  width: 100%;
+  min-height: calc(100vh - 56px);
+  border: 0;
+}
+
+.empty-state {
+  max-width: 560px;
+  padding: 24px;
+  border: 1px solid #263247;
+  border-radius: 12px;
+  background: #111827;
+}
