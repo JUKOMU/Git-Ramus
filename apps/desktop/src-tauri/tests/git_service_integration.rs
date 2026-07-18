@@ -655,6 +655,118 @@ fn signed_git_failure_is_a_user_action_error_with_sanitized_context_and_no_commi
 }
 
 #[test]
+fn inline_ssh_public_key_without_an_agent_is_a_signing_failure() {
+    if !git_available() || Command::new("ssh-keygen").arg("-V").output().is_err() {
+        eprintln!("git or ssh-keygen unavailable; skipping SSH agent failure test");
+        return;
+    }
+    // The real regression requires Git to take the agent-backed `key::` path. An existing agent
+    // could legitimately sign with a loaded matching key, so keep the classifier unit regression
+    // deterministic and run this system integration path only when no agent socket is advertised.
+    if std::env::var_os("SSH_AUTH_SOCK").is_some() {
+        eprintln!("SSH_AUTH_SOCK is set; skipping unavailable-agent integration path");
+        return;
+    }
+    let root = tempdir().unwrap();
+    run_git(root.path(), &["init", "--quiet"]);
+    run_git(root.path(), &["config", "user.name", "Fixture"]);
+    run_git(
+        root.path(),
+        &["config", "user.email", "fixture@example.test"],
+    );
+    run_git(root.path(), &["config", "gpg.ssh.program", "ssh-keygen"]);
+    fs::write(root.path().join("tracked.txt"), "one\n").unwrap();
+    run_git(root.path(), &["add", "--", "tracked.txt"]);
+    run_git(root.path(), &["commit", "--quiet", "-m", "seed"]);
+    fs::write(root.path().join("tracked.txt"), "two\n").unwrap();
+    let key = root.path().join("agent-key");
+    let key_output = Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "", "-C", "agent-test", "-f"])
+        .arg(&key)
+        .output()
+        .expect("ssh-keygen starts");
+    assert!(
+        key_output.status.success(),
+        "ssh-keygen failed: {}",
+        String::from_utf8_lossy(&key_output.stderr)
+    );
+    let public_key = fs::read_to_string(key.with_extension("pub"))
+        .expect("public key reads")
+        .trim()
+        .to_owned();
+
+    let database = Database::open_in_memory().unwrap();
+    let runner = Arc::new(SystemGitRunner::default());
+    let write_locks = RepositoryWriteLocks::default();
+    let git = GitService::with_runner_concurrency_and_write_locks(
+        database.clone(),
+        runner.clone(),
+        4,
+        write_locks.clone(),
+    );
+    let identities = IdentityService::with_runner_global_file_and_write_locks(
+        database,
+        runner,
+        root.path().join("isolated-global.gitconfig"),
+        write_locks,
+    )
+    .unwrap();
+    let project = git
+        .create_project(ProjectCreateInput {
+            root_path: root.path().to_string_lossy().into_owned(),
+            name: "Fixture".to_owned(),
+            scan_depth: Some(0),
+            exclude_patterns: Vec::new(),
+        })
+        .unwrap();
+    let repository_id = git.scan_project(&project.id).unwrap().repositories[0]
+        .repository
+        .id
+        .clone();
+    let context = QueryContext::project(&project.id);
+    git.trust_repository_in_context(&context, &repository_id)
+        .unwrap();
+    git.stage(&context, &repository_id, &["tracked.txt".to_owned()], false)
+        .unwrap();
+    let profile = identities
+        .create(IdentityProfileInput {
+            display_name: "Agent Signed".to_owned(),
+            user_name: "Agent User".to_owned(),
+            user_email: "agent@example.com".to_owned(),
+            gpg_format: Some("ssh".to_owned()),
+            signing_key: Some(format!("key::{public_key}")),
+            sign_commits: true,
+            sign_tags: false,
+        })
+        .unwrap();
+
+    let error = git
+        .commit_with_identity(
+            &context,
+            &repository_id,
+            "agent unavailable",
+            &identities,
+            Some(&profile.id),
+        )
+        .expect_err("missing SSH agent must fail the signed Commit");
+    let envelope = ErrorEnvelope::from(error);
+
+    assert_eq!(envelope.code, "git.signing-failed");
+    assert_eq!(envelope.category, ErrorCategory::UserActionRequired);
+    assert_eq!(envelope.failed_step.as_deref(), Some("signCommit"));
+    assert_eq!(
+        envelope.resource_id.as_deref(),
+        Some(repository_id.as_str())
+    );
+    assert_eq!(
+        String::from_utf8_lossy(
+            &run_git_output(root.path(), &["rev-list", "--count", "HEAD"]).unwrap()
+        ),
+        "1\n"
+    );
+}
+
+#[test]
 fn rejecting_hook_on_a_signed_profile_remains_a_generic_git_failure() {
     if !git_available() || Command::new("ssh-keygen").arg("-V").output().is_err() {
         eprintln!("git or ssh-keygen unavailable; skipping signed hook failure test");

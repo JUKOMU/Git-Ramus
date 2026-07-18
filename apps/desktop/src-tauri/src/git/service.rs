@@ -1875,6 +1875,8 @@ fn is_signing_failure(stderr: &[u8]) -> bool {
         || stderr.contains("gpgsm: signing failed:")
         || stderr.contains("error: couldn't load public key")
         || stderr.contains("error: could not load public key")
+        || stderr.contains("error: couldn't get agent socket")
+        || stderr.contains("error: could not get agent socket")
         || (stderr.contains("error: load key \"")
             && [
                 "invalid format",
@@ -1981,12 +1983,21 @@ mod tests {
         assert!(is_signing_failure(
             b"error: Load key \"fixture\": invalid format\nfatal: failed to write commit object\n"
         ));
+        assert!(is_signing_failure(
+            b"error: Couldn't get agent socket?\nfatal: failed to write commit object\n"
+        ));
+        assert!(is_signing_failure(
+            b"error: Could not get agent socket\nfatal: failed to write commit object\n"
+        ));
         assert!(!is_signing_failure(b"policy hook rejected commit\n"));
         assert!(!is_signing_failure(
             b"fatal: Unable to create 'index.lock'\n"
         ));
         assert!(!is_signing_failure(
             b"nothing to commit, working tree clean\n"
+        ));
+        assert!(!is_signing_failure(
+            b"fatal: failed to write commit object\n"
         ));
     }
 
