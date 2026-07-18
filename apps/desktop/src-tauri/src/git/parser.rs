@@ -206,6 +206,12 @@ pub struct DiffSummary {
 }
 
 pub type GitConfig = BTreeMap<String, String>;
+/// Maximum number of key/value records accepted from one Git config stream.
+///
+/// Git config is untrusted process output.  Capping records prevents a malformed or hostile
+/// repository configuration from forcing an unbounded amount of map work even when each record
+/// itself is small.
+pub const MAX_CONFIG_ENTRIES: usize = 4096;
 type Numstat = (Option<u64>, Option<u64>, String);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1047,30 +1053,57 @@ pub fn parse_git_config(input: impl AsRef<[u8]>) -> Result<GitConfig, AppError> 
             "Git config stream is not NUL terminated".to_owned(),
         ));
     }
-    let mut records = input.split(|byte| *byte == 0).collect::<Vec<_>>();
-    // A trailing NUL contributes an empty sentinel; interior empty records are meaningful (for
-    // example, a config key with an explicitly empty value) and must be retained.
-    if records.last().is_some_and(|record| record.is_empty()) {
-        records.pop();
+
+    if input.is_empty() {
+        return Ok(BTreeMap::new());
     }
+
+    // Keep the split iterator streaming.  Besides avoiding a second allocation proportional to
+    // the number of records, the one-item lookahead lets us distinguish an empty value in
+    // `key\0\0` from the final NUL sentinel.
+    let mut records = input.split(|byte| *byte == 0).peekable();
     let mut config = BTreeMap::new();
-    let mut index = 0;
-    while index < records.len() {
-        let record = records[index];
+    let mut entries = 0_usize;
+    let mut saw_record = false;
+
+    while let Some(record) = records.next() {
+        if record.is_empty() {
+            // The final NUL creates one empty sentinel.  An empty first/interior record is an
+            // empty key and is malformed (an explicitly empty value is consumed below as part of
+            // its preceding key/value pair).
+            if saw_record && records.peek().is_none() {
+                break;
+            }
+            return Err(AppError::InvalidInput("empty Git config key".to_owned()));
+        }
+
         if let Some(separator) = record
             .iter()
             .position(|byte| *byte == b'\n' || *byte == b'\t' || *byte == b'=')
         {
+            if entries >= MAX_CONFIG_ENTRIES {
+                return Err(AppError::OutputLimit);
+            }
             let key = decode_config_key(&record[..separator])?;
             let value = decode_config_value(&record[separator + 1..])?;
             config.insert(key, value);
-            index += 1;
+            entries += 1;
+            saw_record = true;
         } else {
             let value = records
-                .get(index + 1)
+                .next()
                 .ok_or_else(|| AppError::InvalidInput("unpaired Git config key".to_owned()))?;
+            // A lone `key\0` has only the terminal empty sentinel and therefore no value.  With
+            // `key\0\0`, one empty record remains after consuming the empty value, so it is valid.
+            if value.is_empty() && records.peek().is_none() {
+                return Err(AppError::InvalidInput("unpaired Git config key".to_owned()));
+            }
+            if entries >= MAX_CONFIG_ENTRIES {
+                return Err(AppError::OutputLimit);
+            }
             config.insert(decode_config_key(record)?, decode_config_value(value)?);
-            index += 2;
+            entries += 1;
+            saw_record = true;
         }
     }
     Ok(config)

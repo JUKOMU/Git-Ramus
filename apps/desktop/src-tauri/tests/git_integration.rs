@@ -254,6 +254,11 @@ fn git_config_parser_returns_key_value_pairs() {
         parse_git_config(b"core.editor\nvim"),
         Err(AppError::InvalidInput(_))
     ));
+    let mut many = Vec::new();
+    for index in 0..5000 {
+        many.extend_from_slice(format!("key{index}\nvalue\0").as_bytes());
+    }
+    assert!(matches!(parse_git_config(many), Err(AppError::OutputLimit)));
 }
 
 #[test]

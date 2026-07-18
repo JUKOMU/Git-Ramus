@@ -47,13 +47,18 @@ pub struct SystemGitRunner {
 const IO_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 type StdinWriter = (Receiver<io::Result<()>>, Arc<Mutex<Option<ChildStdin>>>);
 
-enum ProcessTree {
+enum ProcessTreeKind {
     #[cfg(windows)]
     Windows(WindowsJob),
     #[cfg(unix)]
     Unix { pgid: libc::pid_t },
     #[cfg(not(any(unix, windows)))]
     Other,
+}
+
+struct ProcessTree {
+    kind: ProcessTreeKind,
+    reaped: AtomicBool,
 }
 
 impl ProcessTree {
@@ -73,27 +78,39 @@ impl ProcessTree {
     fn attach(child: &Child) -> Result<Self, AppError> {
         #[cfg(windows)]
         {
-            WindowsJob::attach(child).map(Self::Windows)
+            Ok(Self {
+                kind: ProcessTreeKind::Windows(WindowsJob::attach(child)?),
+                reaped: AtomicBool::new(false),
+            })
         }
         #[cfg(unix)]
         {
-            Ok(Self::Unix {
-                pgid: child.id() as libc::pid_t,
+            Ok(Self {
+                kind: ProcessTreeKind::Unix {
+                    pgid: child.id() as libc::pid_t,
+                },
+                reaped: AtomicBool::new(false),
             })
         }
         #[cfg(not(any(unix, windows)))]
         {
             let _ = child;
-            Ok(Self::Other)
+            Ok(Self {
+                kind: ProcessTreeKind::Other,
+                reaped: AtomicBool::new(false),
+            })
         }
     }
 
     fn terminate(&self) -> Result<(), AppError> {
-        match self {
+        if self.reaped.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
+        let result = match &self.kind {
             #[cfg(windows)]
-            Self::Windows(job) => job.terminate(),
+            ProcessTreeKind::Windows(job) => job.terminate(),
             #[cfg(unix)]
-            Self::Unix { pgid } => {
+            ProcessTreeKind::Unix { pgid } => {
                 let result = unsafe { libc::kill(-*pgid, libc::SIGKILL) };
                 if result == -1 {
                     let error = io::Error::last_os_error();
@@ -106,14 +123,62 @@ impl ProcessTree {
                 Ok(())
             }
             #[cfg(not(any(unix, windows)))]
-            Self::Other => Ok(()),
+            ProcessTreeKind::Other => Ok(()),
+        };
+        if result.is_err() {
+            self.reaped.store(false, Ordering::Release);
         }
+        result
+    }
+
+    fn finish_after_reap(&self) -> Result<(), AppError> {
+        self.reaped.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn fallback_command_for_pid(pid: u32) -> Result<Command, AppError> {
+        use std::os::windows::process::CommandExt;
+        use std::path::PathBuf;
+        let root = std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+        let program = root.join("System32").join("taskkill.exe");
+        let mut command = Command::new(program);
+        command
+            .env_clear()
+            .creation_flags(0x0800_0000)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .args(["/PID", &pid.to_string(), "/T", "/F"]);
+        Ok(command)
+    }
+
+    #[cfg(windows)]
+    fn fallback_terminate_pid(pid: u32) -> Result<(), AppError> {
+        let status = Self::fallback_command_for_pid(pid)?
+            .status()
+            .map_err(|_| AppError::Git("unable to invoke process cleanup".to_owned()))?;
+        if status.success() || status.code() == Some(128) {
+            Ok(())
+        } else {
+            Err(AppError::Git("process cleanup failed".to_owned()))
+        }
+    }
+}
+
+impl Drop for ProcessTree {
+    fn drop(&mut self) {
+        let _ = self.terminate();
     }
 }
 
 #[cfg(windows)]
 struct WindowsJob {
     handle: windows_sys::Win32::Foundation::HANDLE,
+    pid: u32,
 }
 
 #[cfg(windows)]
@@ -129,6 +194,7 @@ impl WindowsJob {
 
         let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
         if handle.is_null() {
+            let _ = ProcessTree::fallback_terminate_pid(child.id());
             return Err(AppError::Git("unable to create Git job".to_owned()));
         }
         let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
@@ -142,6 +208,7 @@ impl WindowsJob {
             )
         };
         if configured == 0 {
+            let _ = ProcessTree::fallback_terminate_pid(child.id());
             unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
             return Err(AppError::Git("unable to configure Git job".to_owned()));
         }
@@ -152,19 +219,23 @@ impl WindowsJob {
             )
         };
         if assigned == 0 {
+            let _ = ProcessTree::fallback_terminate_pid(child.id());
             unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
             return Err(AppError::Git(
                 "unable to assign Git process to job".to_owned(),
             ));
         }
-        Ok(Self { handle })
+        Ok(Self {
+            handle,
+            pid: child.id(),
+        })
     }
 
     fn terminate(&self) -> Result<(), AppError> {
         use windows_sys::Win32::System::JobObjects::TerminateJobObject;
         let terminated = unsafe { TerminateJobObject(self.handle, 1) };
         if terminated == 0 {
-            return Err(AppError::Git("unable to terminate Git job".to_owned()));
+            return ProcessTree::fallback_terminate_pid(self.pid);
         }
         Ok(())
     }
@@ -200,7 +271,7 @@ impl ChildGuard {
     }
 
     fn mark_reaped(&mut self) -> Result<(), AppError> {
-        let result = self.tree.terminate();
+        let result = self.tree.finish_after_reap();
         if result.is_ok() {
             self.reaped = true;
         }
@@ -338,7 +409,11 @@ impl GitRunner for SystemGitRunner {
         drop(guard.child_mut().stdin.take());
 
         let wait_result = wait_bounded(
-            guard.child_mut(),
+            guard
+                .child
+                .as_mut()
+                .expect("child guard must own a process"),
+            &guard.tree,
             request.timeout,
             self.poll_interval,
             &stdout_limited,
@@ -498,6 +573,7 @@ fn terminate_and_reap(child: &mut Child) -> Result<ExitStatus, AppError> {
 
 fn wait_bounded(
     child: &mut Child,
+    tree: &ProcessTree,
     timeout: Duration,
     poll_interval: Duration,
     stdout_limited: &AtomicBool,
@@ -507,6 +583,7 @@ fn wait_bounded(
     let mut timed_out = false;
     loop {
         if stdout_limited.load(Ordering::Acquire) || stderr_limited.load(Ordering::Acquire) {
+            tree.terminate()?;
             let status = terminate_and_reap(child)?;
             return Ok((status, false));
         }
@@ -518,6 +595,7 @@ fn wait_bounded(
         }
         if started.elapsed() >= timeout {
             timed_out = true;
+            tree.terminate()?;
             let status = terminate_and_reap(child)?;
             return Ok((status, timed_out));
         }
@@ -621,6 +699,37 @@ mod tests {
         tree.terminate().expect("tree terminates");
         let _ = child.wait().expect("direct child is reaped");
         assert!(child.try_wait().expect("try_wait succeeds").is_some());
+    }
+
+    #[test]
+    fn process_tree_marks_normal_reap_without_signaling_reused_group() {
+        let mut command = Command::new("git");
+        command
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        ProcessTree::configure(&mut command).expect("process tree configures");
+        let Ok(mut child) = command.spawn() else {
+            eprintln!("git executable unavailable; skipping reap safety test");
+            return;
+        };
+        let tree = ProcessTree::attach(&child).expect("process joins tree");
+        let _ = child.wait().expect("direct child is reaped");
+        tree.finish_after_reap().expect("reap state records");
+        tree.terminate().expect("reaped tree is inert");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_fallback_command_is_absolute_and_shell_free() {
+        let command = ProcessTree::fallback_command_for_pid(1234).expect("fallback command");
+        assert!(std::path::Path::new(command.get_program()).is_absolute());
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(args, vec!["/PID", "1234", "/T", "/F"]);
     }
 
     #[test]
