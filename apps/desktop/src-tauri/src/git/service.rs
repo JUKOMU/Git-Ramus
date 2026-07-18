@@ -4,7 +4,7 @@
 //! provide database identifiers and (for writes) a set of paths that must already be present in
 //! the latest status snapshot; no generic command execution API is exposed.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -19,8 +19,8 @@ use uuid::Uuid;
 use super::engine::{GitCommand, GitOutput, GitRunner, SystemGitRunner};
 use super::model::{Project, Repository, RepositorySnapshot, Trust, Workspace};
 use super::parser::{
-    ChangeEntry, DetectedRepository, DiffSummary, RepositorySnapshot as ParsedSnapshot,
-    detect_repository, parse_diff_summary, parse_status_v2,
+    ChangeEntry, ChangeKind, DetectedRepository, DiffFile, DiffSummary,
+    RepositorySnapshot as ParsedSnapshot, detect_repository, parse_diff_summary, parse_status_v2,
 };
 use super::repository::{
     ProjectRepository, RepositoryRepository, SnapshotRepository, TrustRepository,
@@ -35,6 +35,10 @@ const DEFAULT_GIT_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_SCAN_ENTRIES: usize = 100_000;
 const MAX_PATHS_PER_OPERATION: usize = 4_096;
 const MAX_COMMIT_MESSAGE_BYTES: usize = 128 * 1024;
+// Keep worst-case Windows CreateProcess command lines comfortably below 32 KiB after four
+// command-scope overrides per driver.
+const MAX_FILTER_DRIVERS: usize = 32;
+const MAX_FILTER_DRIVER_BYTES: usize = 64;
 const DEFAULT_EXCLUDES: &[&str] = &[
     ".git",
     "node_modules",
@@ -827,6 +831,18 @@ impl GitService {
         let repository = self.repositories.get(repository_id)?;
         let parsed = self.latest_or_refresh_status(&repository)?;
         let validated = validate_change_paths(paths, &parsed.changes)?;
+        if !self.trusts.is_trusted(repository_id)? {
+            // Git's worktree diff conversion executes filter.<driver>.clean/process even with
+            // --no-textconv. Until the user trusts this repository, return the bounded status-
+            // derived summary and never start a repo-context `git diff` process. Content-derived
+            // binary detection and line counts remain unknown because computing them would
+            // require reading and converting file content.
+            return Ok(DiffResult {
+                repository_id: repository_id.to_owned(),
+                staged,
+                summary: safe_diff_summary(&parsed.changes, &validated, staged),
+            });
+        }
         let mut args = vec![
             OsString::from("--no-optional-locks"),
             OsString::from("-c"),
@@ -1139,23 +1155,67 @@ impl GitService {
     }
 
     fn read_status(&self, repository: &Repository) -> Result<ParsedSnapshot, AppError> {
+        let trusted = self.trusts.is_trusted(&repository.id)?;
         let _permit = self.read_gate.acquire();
+        let mut args = vec![
+            OsString::from("--no-optional-locks"),
+            OsString::from("-c"),
+            OsString::from("core.fsmonitor=false"),
+        ];
+        if !trusted {
+            let filter_drivers = self.read_filter_driver_names(repository)?;
+            append_disabled_filter_overrides(&mut args, &filter_drivers);
+        }
+        args.extend([
+            OsString::from("status"),
+            OsString::from("--porcelain=v2"),
+            OsString::from("-z"),
+            OsString::from("--branch"),
+            OsString::from("--untracked-files=all"),
+        ]);
+        if !trusted {
+            args.push(OsString::from("--ignore-submodules=all"));
+        }
+        let output = self.run_git(repository, args, None)?;
+        ensure_success(&output)?;
+        parse_status_v2(output.stdout)
+    }
+
+    fn read_filter_driver_names(&self, repository: &Repository) -> Result<Vec<String>, AppError> {
+        // This query returns names only: it never exposes command values or secrets and Git's
+        // config reader does not execute hooks, filters, aliases, or a pager. `--includes`
+        // intentionally covers effective global/local/worktree include files. Command-scope
+        // overrides are applied immediately to status and outrank those sources.
+        //
+        // A same-user process racing config/.gitattributes changes between these two processes is
+        // outside the static repository trust boundary; GitService itself does not mutate filter
+        // config on this path. Any malformed/oversized query fails closed before status starts.
         let output = self.run_git(
             repository,
             vec![
+                OsString::from("--no-pager"),
                 OsString::from("--no-optional-locks"),
                 OsString::from("-c"),
                 OsString::from("core.fsmonitor=false"),
-                OsString::from("status"),
-                OsString::from("--porcelain=v2"),
-                OsString::from("-z"),
-                OsString::from("--branch"),
-                OsString::from("--untracked-files=all"),
+                OsString::from("config"),
+                OsString::from("--null"),
+                OsString::from("--name-only"),
+                OsString::from("--includes"),
+                OsString::from("--get-regexp"),
+                OsString::from("^filter\\..*\\.(clean|smudge|process|required)$"),
             ],
             None,
         )?;
-        ensure_success(&output)?;
-        parse_status_v2(output.stdout)
+        if !output.status.success() {
+            if output.status.code() == Some(1)
+                && output.stdout.is_empty()
+                && output.stderr.is_empty()
+            {
+                return Ok(Vec::new());
+            }
+            ensure_success(&output)?;
+        }
+        parse_filter_driver_names(&output.stdout)
     }
 
     fn latest_or_refresh_status(
@@ -1418,6 +1478,130 @@ fn validate_change_paths(
     Ok(result)
 }
 
+fn safe_diff_summary(
+    changes: &[ChangeEntry],
+    requested_paths: &[String],
+    staged: bool,
+) -> DiffSummary {
+    let requested = requested_paths
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    let files = changes
+        .iter()
+        .filter(|change| {
+            if staged {
+                change.staged
+            } else {
+                change.unstaged && change.kind != ChangeKind::Untracked
+            }
+        })
+        .filter(|change| {
+            requested.is_empty()
+                || requested.contains(change.path.as_str())
+                || change
+                    .original_path
+                    .as_deref()
+                    .is_some_and(|path| requested.contains(path))
+        })
+        .map(|change| {
+            let (old_path, new_path) = match change.kind {
+                ChangeKind::Added | ChangeKind::Untracked => (None, Some(change.path.clone())),
+                ChangeKind::Deleted => (
+                    Some(
+                        change
+                            .original_path
+                            .clone()
+                            .unwrap_or_else(|| change.path.clone()),
+                    ),
+                    None,
+                ),
+                ChangeKind::Renamed | ChangeKind::Copied => {
+                    (change.original_path.clone(), Some(change.path.clone()))
+                }
+                ChangeKind::Modified
+                | ChangeKind::TypeChanged
+                | ChangeKind::Conflicted
+                | ChangeKind::Unknown => (Some(change.path.clone()), Some(change.path.clone())),
+            };
+            DiffFile {
+                path: change.path.clone(),
+                old_path: old_path.clone(),
+                new_path: new_path.clone(),
+                binary: change.binary,
+                additions: change.additions,
+                deletions: change.deletions,
+                old: old_path,
+                new: new_path,
+            }
+        })
+        .collect::<Vec<_>>();
+    let binary = files.iter().any(|file| file.binary);
+    let additions = files.iter().filter_map(|file| file.additions).sum();
+    let deletions = files.iter().filter_map(|file| file.deletions).sum();
+    DiffSummary {
+        changes: files.clone(),
+        entries: files.clone(),
+        files,
+        binary,
+        additions,
+        deletions,
+    }
+}
+
+fn parse_filter_driver_names(input: &[u8]) -> Result<Vec<String>, AppError> {
+    if input.is_empty() {
+        return Ok(Vec::new());
+    }
+    if !input.ends_with(&[0]) {
+        return Err(AppError::Git(
+            "filter config query was malformed".to_owned(),
+        ));
+    }
+    let mut drivers = BTreeSet::new();
+    for record in input[..input.len() - 1].split(|byte| *byte == 0) {
+        let key = std::str::from_utf8(record)
+            .map_err(|_| AppError::Git("filter config query was malformed".to_owned()))?;
+        let Some(without_prefix) = key.strip_prefix("filter.") else {
+            return Err(AppError::Git(
+                "filter config query was malformed".to_owned(),
+            ));
+        };
+        let Some((driver, field)) = without_prefix.rsplit_once('.') else {
+            return Err(AppError::Git(
+                "filter config query was malformed".to_owned(),
+            ));
+        };
+        if !matches!(field, "clean" | "smudge" | "process" | "required")
+            || driver.is_empty()
+            || driver.len() > MAX_FILTER_DRIVER_BYTES
+            || !driver
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        {
+            return Err(AppError::Git(
+                "filter config query was malformed".to_owned(),
+            ));
+        }
+        drivers.insert(driver.to_owned());
+        if drivers.len() > MAX_FILTER_DRIVERS {
+            return Err(AppError::OutputLimit);
+        }
+    }
+    Ok(drivers.into_iter().collect())
+}
+
+fn append_disabled_filter_overrides(args: &mut Vec<OsString>, drivers: &[String]) {
+    for driver in drivers {
+        for field in ["clean", "smudge", "process"] {
+            args.push(OsString::from("-c"));
+            args.push(OsString::from(format!("filter.{driver}.{field}=")));
+        }
+        args.push(OsString::from("-c"));
+        args.push(OsString::from(format!("filter.{driver}.required=false")));
+    }
+}
+
 pub fn validate_relative_path(input: &str) -> Result<String, AppError> {
     if input.is_empty() || input.len() > 4 * 1024 || input.contains('\0') {
         return Err(AppError::InvalidInput("path is invalid".to_owned()));
@@ -1541,6 +1725,7 @@ fn is_candidate_error(error: &AppError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::parser::ChangeKind;
 
     #[test]
     fn glob_match_supports_simple_wildcards() {
@@ -1558,5 +1743,80 @@ mod tests {
         assert!(validate_relative_path("src/main.rs").is_ok());
         assert!(validate_relative_path("../secret").is_err());
         assert!(validate_relative_path("C:\\secret").is_err());
+    }
+
+    #[test]
+    fn safe_diff_summary_maps_added_deleted_and_renamed_aliases() {
+        let changes = vec![
+            change("added.txt", None, ChangeKind::Added, true, false),
+            change("deleted.txt", None, ChangeKind::Deleted, true, false),
+            change(
+                "new-name.txt",
+                Some("old-name.txt"),
+                ChangeKind::Renamed,
+                true,
+                false,
+            ),
+        ];
+        let summary = safe_diff_summary(&changes, &[], true);
+        assert_eq!(summary.files, summary.changes);
+        assert_eq!(summary.files, summary.entries);
+        assert_eq!(summary.files.len(), 3);
+        assert_eq!(summary.files[0].old_path, None);
+        assert_eq!(summary.files[0].new_path.as_deref(), Some("added.txt"));
+        assert_eq!(summary.files[1].old_path.as_deref(), Some("deleted.txt"));
+        assert_eq!(summary.files[1].new_path, None);
+        assert_eq!(summary.files[2].old_path.as_deref(), Some("old-name.txt"));
+        assert_eq!(summary.files[2].new_path.as_deref(), Some("new-name.txt"));
+    }
+
+    #[test]
+    fn filter_driver_name_parser_is_bounded_and_fail_closed() {
+        assert!(parse_filter_driver_names(b"").unwrap().is_empty());
+        assert_eq!(
+            parse_filter_driver_names(
+                b"filter.evil.clean\0filter.evil.process\0filter.other.required\0"
+            )
+            .unwrap(),
+            vec!["evil".to_owned(), "other".to_owned()]
+        );
+        assert!(parse_filter_driver_names(b"filter.bad=name.clean\0").is_err());
+        assert!(parse_filter_driver_names(b"filter.evil.clean").is_err());
+
+        let mut excessive = Vec::new();
+        for index in 0..=MAX_FILTER_DRIVERS {
+            excessive.extend_from_slice(format!("filter.driver{index}.clean\0").as_bytes());
+        }
+        assert!(matches!(
+            parse_filter_driver_names(&excessive),
+            Err(AppError::OutputLimit)
+        ));
+    }
+
+    fn change(
+        path: &str,
+        original_path: Option<&str>,
+        kind: ChangeKind,
+        staged: bool,
+        unstaged: bool,
+    ) -> ChangeEntry {
+        ChangeEntry {
+            path: path.to_owned(),
+            original_path: original_path.map(str::to_owned),
+            kind,
+            staged,
+            unstaged,
+            conflicted: false,
+            binary: false,
+            old: original_path.map(str::to_owned),
+            new: original_path.map(|_| path.to_owned()),
+            old_path: original_path.map(str::to_owned),
+            new_path: original_path.map(|_| path.to_owned()),
+            status: "M.".to_owned(),
+            index_status: Some('M'),
+            worktree_status: Some('.'),
+            additions: None,
+            deletions: None,
+        }
     }
 }

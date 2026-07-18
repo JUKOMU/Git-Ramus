@@ -382,7 +382,10 @@ fn first_refresh_failure_is_returned_as_an_error_snapshot() {
     let repo = root.path().join("repo");
     run_git(root.path(), &["init", "--quiet", repo.to_str().unwrap()]);
     let runner = RecordingRunner::new(Duration::ZERO, true);
-    let service = GitService::with_runner(Database::open_in_memory().unwrap(), Arc::new(runner));
+    let service = GitService::with_runner(
+        Database::open_in_memory().unwrap(),
+        Arc::new(runner.clone()),
+    );
     let project = service
         .create_project(ProjectCreateInput {
             root_path: root.path().to_string_lossy().into_owned(),
@@ -400,6 +403,18 @@ fn first_refresh_failure_is_returned_as_an_error_snapshot() {
         .expect("failure has an explicit snapshot");
     assert!(snapshot.refresh_error_summary.is_some());
     assert_eq!(result.failed, result.failures.len());
+    let calls = runner.calls();
+    assert!(
+        calls
+            .iter()
+            .any(|args| args.iter().any(|arg| arg == "config"))
+    );
+    assert!(
+        !calls
+            .iter()
+            .any(|args| args.iter().any(|arg| arg == "status")),
+        "status must not start after the filter-key query fails"
+    );
 }
 
 #[test]
@@ -429,21 +444,120 @@ fn read_commands_include_lock_and_textconv_safety_flags() {
     service
         .get_diff(&context, &repository_id, &[], false)
         .unwrap();
-    let calls = runner.calls();
-    let status = calls
+    let untrusted_calls = runner.calls();
+    let config = untrusted_calls
+        .iter()
+        .find(|args| args.iter().any(|arg| arg == "config"))
+        .expect("filter-key config call");
+    assert!(config.iter().any(|arg| arg == "--no-pager"));
+    assert!(config.iter().any(|arg| arg == "--name-only"));
+    let status = untrusted_calls
         .iter()
         .find(|args| args.iter().any(|arg| arg == "status"))
         .expect("status call");
     assert!(status.iter().any(|arg| arg == "--no-optional-locks"));
     assert!(has_disabled_fsmonitor_config(status));
-    let diff = calls
+    assert!(status.iter().any(|arg| arg == "--ignore-submodules=all"));
+    assert!(
+        !untrusted_calls
+            .iter()
+            .any(|args| args.iter().any(|arg| arg == "diff")),
+        "untrusted get_diff must not start git diff"
+    );
+
+    service
+        .trust_repository_in_context(&context, &repository_id)
+        .unwrap();
+    runner.clear_calls();
+    service
+        .get_diff(&context, &repository_id, &[], false)
+        .unwrap();
+    let trusted_calls = runner.calls();
+    let diff = trusted_calls
         .iter()
         .find(|args| args.iter().any(|arg| arg == "diff"))
-        .expect("diff call");
+        .expect("trusted diff call");
     assert!(diff.iter().any(|arg| arg == "--no-optional-locks"));
     assert!(has_disabled_fsmonitor_config(diff));
     assert!(diff.iter().any(|arg| arg == "--no-ext-diff"));
     assert!(diff.iter().any(|arg| arg == "--no-textconv"));
+}
+
+#[test]
+fn untrusted_status_disables_every_discovered_filter_driver() {
+    if !git_available() {
+        return;
+    }
+    let root = tempdir().unwrap();
+    let repo = root.path().join("repo");
+    run_git(root.path(), &["init", "--quiet", repo.to_str().unwrap()]);
+    let runner = RecordingRunner::new(Duration::ZERO, false).with_config_output(
+        b"filter.evil.clean\0filter.evil.process\0filter.other.smudge\0filter.other.required\0",
+    );
+    let service = GitService::with_runner(
+        Database::open_in_memory().unwrap(),
+        Arc::new(runner.clone()),
+    );
+    let project = service
+        .create_project(ProjectCreateInput {
+            root_path: root.path().to_string_lossy().into_owned(),
+            name: "filter overrides".to_owned(),
+            scan_depth: Some(1),
+            exclude_patterns: Vec::new(),
+        })
+        .unwrap();
+    let scan = service.scan_project(&project.id).unwrap();
+    let calls = runner.calls();
+    let status = calls
+        .iter()
+        .find(|args| args.iter().any(|arg| arg == "status"))
+        .expect("status call");
+    let status_index = status.iter().position(|arg| arg == "status").unwrap();
+    for driver in ["evil", "other"] {
+        for field in ["clean=", "smudge=", "process="] {
+            let value = format!("filter.{driver}.{field}");
+            let index = status.iter().position(|arg| arg == &value).unwrap();
+            assert!(index < status_index, "filter override must precede status");
+            assert_eq!(status[index - 1], "-c");
+        }
+        let value = format!("filter.{driver}.required=false");
+        let index = status.iter().position(|arg| arg == &value).unwrap();
+        assert!(
+            index < status_index,
+            "required override must precede status"
+        );
+        assert_eq!(status[index - 1], "-c");
+    }
+
+    let repository_id = scan.repositories[0].repository.id.clone();
+    service
+        .trust_repository_in_context(&QueryContext::project(&project.id), &repository_id)
+        .unwrap();
+    runner.clear_calls();
+    service
+        .get_changes(&QueryContext::project(&project.id), &repository_id)
+        .unwrap();
+    let trusted_calls = runner.calls();
+    assert!(
+        !trusted_calls
+            .iter()
+            .any(|args| args.iter().any(|arg| arg == "config")),
+        "trusted status should retain repository filter semantics"
+    );
+    let trusted_status = trusted_calls
+        .iter()
+        .find(|args| args.iter().any(|arg| arg == "status"))
+        .unwrap();
+    assert!(
+        !trusted_status
+            .iter()
+            .any(|arg| arg == "--ignore-submodules=all")
+    );
+    assert!(
+        !trusted_status
+            .iter()
+            .any(|arg| arg.starts_with("filter.evil."))
+    );
 }
 
 #[test]
@@ -501,6 +615,129 @@ fn untrusted_status_does_not_execute_repository_fsmonitor_hook() {
 }
 
 #[test]
+fn untrusted_unstaged_diff_does_not_execute_clean_filter() {
+    if !git_available() {
+        return;
+    }
+    let root = filtered_repository("clean");
+    let marker = root.path().join("clean-filter-marker");
+    let service = GitService::new(Database::open_in_memory().unwrap());
+    let project = service
+        .create_project(ProjectCreateInput {
+            root_path: root.path().to_string_lossy().into_owned(),
+            name: "untrusted clean filter".to_owned(),
+            scan_depth: Some(0),
+            exclude_patterns: Vec::new(),
+        })
+        .unwrap();
+    let scan = service.scan_project(&project.id).unwrap();
+    assert!(
+        !marker.exists(),
+        "status unexpectedly executed clean filter"
+    );
+    let repository_id = scan.repositories[0].repository.id.clone();
+
+    let diff = service
+        .get_diff(
+            &QueryContext::project(&project.id),
+            &repository_id,
+            &["tracked.txt".to_owned()],
+            false,
+        )
+        .expect("untrusted clean-filter diff returns a safe summary");
+    assert_eq!(diff.summary.files.len(), 1);
+    assert_eq!(diff.summary.files[0].path, "tracked.txt");
+    assert!(
+        !marker.exists(),
+        "untrusted unstaged diff executed repository clean filter"
+    );
+}
+
+#[test]
+fn untrusted_unstaged_diff_does_not_execute_process_filter() {
+    if !git_available() {
+        return;
+    }
+    let root = filtered_repository("process");
+    let marker = root.path().join("process-filter-marker");
+    let service = GitService::new(Database::open_in_memory().unwrap());
+    let project = service
+        .create_project(ProjectCreateInput {
+            root_path: root.path().to_string_lossy().into_owned(),
+            name: "untrusted process filter".to_owned(),
+            scan_depth: Some(0),
+            exclude_patterns: Vec::new(),
+        })
+        .unwrap();
+    let scan = service.scan_project(&project.id).unwrap();
+    assert!(
+        !marker.exists(),
+        "status unexpectedly executed process filter"
+    );
+    let repository_id = scan.repositories[0].repository.id.clone();
+
+    let diff = service
+        .get_diff(
+            &QueryContext::project(&project.id),
+            &repository_id,
+            &["tracked.txt".to_owned()],
+            false,
+        )
+        .expect("untrusted process-filter diff returns a safe summary");
+    assert_eq!(diff.summary.files.len(), 1);
+    assert_eq!(diff.summary.files[0].path, "tracked.txt");
+    assert!(
+        !marker.exists(),
+        "untrusted unstaged diff executed repository process filter"
+    );
+}
+
+#[test]
+fn untrusted_staged_diff_does_not_execute_clean_filter() {
+    if !git_available() {
+        return;
+    }
+    let root = filtered_repository("clean");
+    let marker = root.path().join("clean-filter-marker");
+    run_git(root.path(), &["add", "--", "tracked.txt"]);
+    assert!(
+        marker.exists(),
+        "clean filter fixture did not execute during add"
+    );
+    fs::remove_file(&marker).unwrap();
+    let service = GitService::new(Database::open_in_memory().unwrap());
+    let project = service
+        .create_project(ProjectCreateInput {
+            root_path: root.path().to_string_lossy().into_owned(),
+            name: "untrusted staged filter".to_owned(),
+            scan_depth: Some(0),
+            exclude_patterns: Vec::new(),
+        })
+        .unwrap();
+    let scan = service.scan_project(&project.id).unwrap();
+    assert!(
+        !marker.exists(),
+        "status unexpectedly executed clean filter"
+    );
+    let repository_id = scan.repositories[0].repository.id.clone();
+
+    let diff = service
+        .get_diff(
+            &QueryContext::project(&project.id),
+            &repository_id,
+            &["tracked.txt".to_owned()],
+            true,
+        )
+        .unwrap();
+    assert_eq!(diff.summary.files.len(), 1);
+    assert_eq!(diff.summary.files[0].path, "tracked.txt");
+    assert!(
+        !marker.exists(),
+        "untrusted staged diff executed repository clean filter"
+    );
+}
+
+#[test]
 fn concurrent_diff_processes_share_the_global_read_limit() {
     if !git_available() {
         return;
@@ -524,6 +761,9 @@ fn concurrent_diff_processes_share_the_global_read_limit() {
         .unwrap();
     let scan = service.scan_project(&project.id).unwrap();
     let repository_id = scan.repositories[0].repository.id.clone();
+    service
+        .trust_repository_in_context(&QueryContext::project(&project.id), &repository_id)
+        .unwrap();
     runner.reset_activity();
 
     let mut workers = Vec::new();
@@ -609,6 +849,7 @@ struct RecordingRunner {
     max_active: Arc<Mutex<usize>>,
     delay: Duration,
     fail: bool,
+    config_output: Arc<Vec<u8>>,
 }
 
 impl RecordingRunner {
@@ -619,7 +860,13 @@ impl RecordingRunner {
             max_active: Arc::new(Mutex::new(0)),
             delay,
             fail,
+            config_output: Arc::new(Vec::new()),
         }
+    }
+
+    fn with_config_output(mut self, output: &[u8]) -> Self {
+        self.config_output = Arc::new(output.to_vec());
+        self
     }
 
     fn calls(&self) -> Vec<Vec<String>> {
@@ -634,17 +881,20 @@ impl RecordingRunner {
         assert_eq!(*self.active.lock().unwrap(), 0);
         *self.max_active.lock().unwrap() = 0;
     }
+
+    fn clear_calls(&self) {
+        self.calls.lock().unwrap().clear();
+    }
 }
 
 impl GitRunner for RecordingRunner {
     fn run(&self, command: GitCommand) -> Result<GitOutput, AppError> {
-        self.calls.lock().unwrap().push(
-            command
-                .args
-                .iter()
-                .map(|arg| arg.to_string_lossy().into_owned())
-                .collect(),
-        );
+        let args = command
+            .args
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        self.calls.lock().unwrap().push(args.clone());
         {
             let mut active = self.active.lock().unwrap();
             *active += 1;
@@ -683,9 +933,12 @@ impl GitRunner for RecordingRunner {
                 Command::new("true").status().unwrap()
             }
         };
-        let is_diff = command.args.iter().any(|arg| arg.as_os_str() == "diff");
+        let is_config = args.iter().any(|arg| arg == "config");
+        let is_diff = args.iter().any(|arg| arg == "diff");
         let stdout = if self.fail || is_diff {
             Vec::new()
+        } else if is_config {
+            self.config_output.as_ref().clone()
         } else {
             b"# branch.oid (initial)\0# branch.head (unborn)\0".to_vec()
         };
@@ -703,6 +956,56 @@ impl GitRunner for RecordingRunner {
 
 fn git_available() -> bool {
     Command::new("git").arg("--version").output().is_ok()
+}
+
+fn filtered_repository(kind: &str) -> tempfile::TempDir {
+    let root = tempdir().unwrap();
+    run_git(root.path(), &["init", "--quiet"]);
+    run_git(root.path(), &["config", "user.name", "Fixture"]);
+    run_git(
+        root.path(),
+        &["config", "user.email", "fixture@example.test"],
+    );
+    fs::write(root.path().join("tracked.txt"), "before\n").unwrap();
+    fs::write(
+        root.path().join(".gitattributes"),
+        "tracked.txt filter=evil\n",
+    )
+    .unwrap();
+    run_git(root.path(), &["add", "--", "tracked.txt", ".gitattributes"]);
+    run_git(root.path(), &["commit", "--quiet", "-m", "seed"]);
+
+    let script = root.path().join(".git").join(format!("filter-{kind}"));
+    let contents = match kind {
+        "clean" => "#!/bin/sh\nprintf invoked > clean-filter-marker\ncat\n",
+        "process" => "#!/bin/sh\nprintf invoked > process-filter-marker\nexit 1\n",
+        _ => panic!("unknown filter fixture"),
+    };
+    fs::write(&script, contents).unwrap();
+    make_executable(&script);
+    run_git(
+        root.path(),
+        &[
+            "config",
+            &format!("filter.evil.{kind}"),
+            &format!(".git/filter-{kind}"),
+        ],
+    );
+    run_git(root.path(), &["config", "filter.evil.required", "true"]);
+    fs::write(root.path().join("tracked.txt"), "after\n").unwrap();
+    root
+}
+
+fn make_executable(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).unwrap();
+    }
+    #[cfg(windows)]
+    let _ = path;
 }
 
 fn has_disabled_fsmonitor_config(args: &[String]) -> bool {
