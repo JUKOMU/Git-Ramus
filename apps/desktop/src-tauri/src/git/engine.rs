@@ -457,16 +457,7 @@ impl GitRunner for SystemGitRunner {
             &stderr_limited,
         );
         let (status, timed_out) = match wait_result {
-            Ok(result) => {
-                if let Err(error) = guard.mark_reaped() {
-                    guard.terminate();
-                    let _ =
-                        collect_output_bounded(stdout_thread, stderr_thread, IO_CLEANUP_TIMEOUT);
-                    let _ = finish_stdin_writer(stdin_writer, IO_CLEANUP_TIMEOUT);
-                    return Err(error);
-                }
-                result
-            }
+            Ok(result) => result,
             Err(error) => {
                 // Ensure all process and pipe resources are closed before returning an error.
                 guard.terminate();
@@ -478,6 +469,7 @@ impl GitRunner for SystemGitRunner {
         let output_result =
             collect_output_bounded(stdout_thread, stderr_thread, IO_CLEANUP_TIMEOUT);
         let stdin_result = finish_stdin_writer(stdin_writer, IO_CLEANUP_TIMEOUT);
+        let (stdout, stderr) = finish_io_before_disarm(&mut guard, output_result, stdin_result)?;
 
         if timed_out {
             return Err(AppError::Timeout);
@@ -485,8 +477,6 @@ impl GitRunner for SystemGitRunner {
         if stdout_limited.load(Ordering::Acquire) || stderr_limited.load(Ordering::Acquire) {
             return Err(AppError::OutputLimit);
         }
-        let (stdout, stderr) = output_result?;
-        stdin_result?;
         guard.disarm();
         Ok(GitOutput {
             status,
@@ -494,6 +484,29 @@ impl GitRunner for SystemGitRunner {
             stderr,
         })
     }
+}
+
+fn finish_io_before_disarm<T>(
+    guard: &mut ChildGuard,
+    output_result: Result<T, AppError>,
+    stdin_result: Result<(), AppError>,
+) -> Result<T, AppError> {
+    let output = match output_result {
+        Ok(output) => output,
+        Err(error) => {
+            guard.terminate();
+            return Err(error);
+        }
+    };
+    if let Err(error) = stdin_result {
+        guard.terminate();
+        return Err(error);
+    }
+    if let Err(error) = guard.mark_reaped() {
+        guard.terminate();
+        return Err(error);
+    }
+    Ok(output)
 }
 
 fn spawn_reader<R>(
@@ -759,6 +772,115 @@ mod tests {
             Err(AppError::Timeout)
         ));
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn io_failure_terminates_and_reaps_before_process_tree_is_disarmed() {
+        let mut command = Command::new("git");
+        command
+            .args(["hash-object", "--stdin"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        ProcessTree::configure(&mut command).expect("process tree configures");
+        let Ok(child) = command.spawn() else {
+            eprintln!("git executable unavailable; skipping cleanup ordering test");
+            return;
+        };
+        let tree = ProcessTree::attach(&child).expect("process joins tree");
+        let mut guard = ChildGuard::new(child, tree);
+        assert!(!guard.reaped);
+        assert!(!guard.tree.reaped.load(Ordering::Acquire));
+        assert!(
+            guard
+                .child_mut()
+                .try_wait()
+                .expect("live child can be queried")
+                .is_none()
+        );
+
+        let result = finish_io_before_disarm::<(Vec<u8>, Vec<u8>)>(
+            &mut guard,
+            Err(AppError::Timeout),
+            Ok(()),
+        );
+
+        assert!(matches!(result, Err(AppError::Timeout)));
+        assert!(guard.reaped);
+        assert!(guard.tree.reaped.load(Ordering::Acquire));
+        assert!(
+            guard
+                .child_mut()
+                .try_wait()
+                .expect("cleaned child can be queried")
+                .is_some()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_io_timeout_kills_a_descendant_that_keeps_the_output_pipe_open() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().expect("temp directory creates");
+        let script = directory.path().join("hold-pipe.sh");
+        let pid_file = directory.path().join("descendant.pid");
+        fs::write(
+            &script,
+            "#!/bin/sh\ntrap '' HUP\nsleep 30 &\necho \"$!\" > \"$1\"\n",
+        )
+        .expect("helper script writes");
+        let mut permissions = fs::metadata(&script)
+            .expect("helper metadata reads")
+            .permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&script, permissions).expect("helper becomes executable");
+        let alias = format!(
+            "alias.hold=!\"{}\" \"{}\"",
+            script.display(),
+            pid_file.display()
+        );
+
+        let result = SystemGitRunner::new().run(GitCommand {
+            repo: directory.path().to_path_buf(),
+            args: [
+                OsString::from("-c"),
+                OsString::from(alias),
+                OsString::from("hold"),
+            ]
+            .into_iter()
+            .collect(),
+            stdin: None,
+            timeout: Duration::from_secs(5),
+        });
+        assert!(matches!(result, Err(AppError::Timeout)));
+
+        let pid: libc::pid_t = fs::read_to_string(&pid_file)
+            .expect("descendant pid reads")
+            .trim()
+            .parse()
+            .expect("descendant pid parses");
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while unix_process_exists(pid) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        let still_running = unix_process_exists(pid);
+        if still_running {
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
+        }
+        assert!(!still_running, "Git descendant survived output cleanup");
+    }
+
+    #[cfg(unix)]
+    fn unix_process_exists(pid: libc::pid_t) -> bool {
+        let result = unsafe { libc::kill(pid, 0) };
+        if result == 0 {
+            return true;
+        }
+        io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
     }
 
     #[test]
