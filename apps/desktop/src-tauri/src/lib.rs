@@ -1,6 +1,8 @@
 pub mod app_state;
 pub mod commands;
 pub mod db;
+#[cfg(all(feature = "e2e", debug_assertions))]
+pub mod e2e;
 pub mod error;
 pub mod git;
 pub mod identity;
@@ -15,28 +17,9 @@ use plugins::protocol::{
     PLUGIN_PROTOCOL_SCHEME, build_plugin_response, service_unavailable_response,
 };
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    let builder = tauri::Builder::default().register_uri_scheme_protocol(
-        PLUGIN_PROTOCOL_SCHEME,
-        |context, request| {
-            let Some(state) = context.app_handle().try_state::<app_state::AppState>() else {
-                return service_unavailable_response();
-            };
-            build_plugin_response(&state.plugins, &request)
-        },
-    );
-    // The WebDriver server is intentionally unavailable in release builds,
-    // even if a downstream build accidentally passes the e2e feature.
-    #[cfg(all(feature = "e2e", debug_assertions))]
-    let builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
-    builder
-        .setup(|app| {
-            let state = app_state::AppState::bootstrap(app.handle())?;
-            app.manage(state);
-            Ok(())
-        })
-        .invoke_handler(tauri::generate_handler![
+macro_rules! invoke_handlers {
+    ($($extra:path),* $(,)?) => {
+        tauri::generate_handler![
             commands::get_app_info,
             commands::list_plugins,
             commands::list_themes,
@@ -75,7 +58,51 @@ pub fn run() {
             commands::git_repository_bind_identity,
             commands::git_repository_unbind_identity,
             commands::git_repository_effective_identity
-        ])
+            $(, $extra)*
+        ]
+    };
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .register_uri_scheme_protocol(PLUGIN_PROTOCOL_SCHEME, |context, request| {
+            let Some(state) = context.app_handle().try_state::<app_state::AppState>() else {
+                return service_unavailable_response();
+            };
+            build_plugin_response(&state.plugins, &request)
+        });
+    // The WebDriver server is intentionally unavailable in release builds,
+    // even if a downstream build accidentally passes the e2e feature.
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    let builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
+    let builder = builder.setup(|app| {
+        let state = app_state::AppState::bootstrap(app.handle())?;
+        app.manage(state);
+        Ok(())
+    });
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    let builder = builder.invoke_handler(invoke_handlers![e2e::e2e_seed_fixture]);
+    #[cfg(not(all(feature = "e2e", debug_assertions)))]
+    let builder = builder.invoke_handler(invoke_handlers![]);
+    builder
         .run(tauri::generate_context!())
         .expect("Git-Ramus failed to start");
+}
+
+#[cfg(test)]
+const fn e2e_seed_fixture_handler_enabled() -> bool {
+    cfg!(all(feature = "e2e", debug_assertions))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn e2e_seed_fixture_handler_matches_the_debug_feature_boundary() {
+        assert_eq!(
+            super::e2e_seed_fixture_handler_enabled(),
+            cfg!(all(feature = "e2e", debug_assertions))
+        );
+    }
 }

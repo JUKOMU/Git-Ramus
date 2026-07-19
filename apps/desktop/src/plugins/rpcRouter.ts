@@ -3,6 +3,7 @@ import {
   identityCreateRequestSchema,
   identityProfileRequestSchema,
   identityUpdateRequestSchema,
+  projectCreateRequestSchema,
   projectScanRequestSchema,
   projectUpdateScanRulesRequestSchema,
   repositoryCommitRequestSchema,
@@ -93,6 +94,12 @@ const routes: Readonly<Record<string, Route>> = {
     RPC_RESOURCES.projects,
     emptyParamsSchema,
     (_params, hostApi) => hostApi.listProjects()
+  ),
+  "projects.create": defineRoute(
+    "projects:manage",
+    RPC_RESOURCES.projects,
+    projectCreateRequestSchema,
+    (_params, hostApi) => hostApi.createProject()
   ),
   "projects.updateScanRules": defineRoute(
     "projects:manage",
@@ -240,12 +247,16 @@ const routes: Readonly<Record<string, Route>> = {
   )
 };
 
+export function isKnownPluginRpcMethod(method: string): boolean {
+  return routeFor(method) !== undefined;
+}
+
 export async function dispatchPluginRpc(
   pluginId: string,
   request: RpcRequest,
   hostApi: HostApi
 ): Promise<unknown> {
-  const route = routes[request.method];
+  const route = routeFor(request.method);
   if (route === undefined) {
     throw rpcError(
       "rpc.unknown-method",
@@ -287,6 +298,10 @@ export async function dispatchPluginRpc(
     );
   }
   return execute();
+}
+
+function routeFor(method: string): Route | undefined {
+  return Object.prototype.hasOwnProperty.call(routes, method) ? routes[method] : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

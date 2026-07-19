@@ -5,7 +5,7 @@ import { normalizeError } from "../api";
 
 export type ProjectsApi = Pick<
   GitClientApi,
-  "listProjects" | "updateProjectScanRules" | "scanProject"
+  "listProjects" | "createProject" | "updateProjectScanRules" | "scanProject"
 >;
 
 interface ProjectsViewProps {
@@ -27,9 +27,11 @@ export function ProjectsView({ api, onOpenRepository }: ProjectsViewProps) {
     Record<string, Awaited<ReturnType<ProjectsApi["scanProject"]>> | undefined>
   >({});
   const [busyProjectIds, setBusyProjectIds] = useState<Set<string>>(new Set());
+  const [rootSelectionBusy, setRootSelectionBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const busyProjectIdsRef = useRef(new Set<string>());
+  const rootSelectionBusyRef = useRef(false);
 
   const beginProjectOperation = (projectId: string) => {
     if (busyProjectIdsRef.current.has(projectId)) return false;
@@ -64,6 +66,27 @@ export function ProjectsView({ api, onOpenRepository }: ProjectsViewProps) {
       active = false;
     };
   }, [api]);
+
+  const chooseRoot = async () => {
+    if (rootSelectionBusyRef.current) return;
+    rootSelectionBusyRef.current = true;
+    setRootSelectionBusy(true);
+    try {
+      const created = await api.createProject();
+      if (created === null) return;
+      const { projects: loadedProjects } = await api.listProjects();
+      setProjects(loadedProjects);
+      setDrafts(Object.fromEntries(loadedProjects.map((project) => [project.id, draft(project)])));
+      setError(null);
+      setNotice(`Project ${created.name} created.`);
+    } catch (reason: unknown) {
+      setNotice(null);
+      setError(normalizeError(reason, "Project root could not be selected.").message);
+    } finally {
+      rootSelectionBusyRef.current = false;
+      setRootSelectionBusy(false);
+    }
+  };
 
   const saveScanRules = async (projectId: string) => {
     const currentDraft = drafts[projectId];
@@ -114,10 +137,10 @@ export function ProjectsView({ api, onOpenRepository }: ProjectsViewProps) {
           <h2>Projects</h2>
         </div>
         <div className="host-picker-entry">
-          <button type="button" disabled>
-            Choose root folder
+          <button type="button" disabled={rootSelectionBusy} onClick={() => void chooseRoot()}>
+            {rootSelectionBusy ? "Choosing root folder…" : "Choose root folder"}
           </button>
-          <span>Host folder picker is not available yet.</span>
+          <span>The host selects and validates project roots.</span>
         </div>
       </header>
       {error ? <p className="error-notice">{error}</p> : null}

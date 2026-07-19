@@ -78,6 +78,7 @@ import type {
   WriteResult
 } from "@git-ramus/contracts";
 import { invoke } from "@tauri-apps/api/core";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
 export interface AppInfo {
   name: string;
@@ -105,6 +106,7 @@ export interface HostApi {
   startEchoJob(pluginId: string, message: string): Promise<Job>;
   cancelJob(jobId: string): Promise<void>;
   listProjects(): Promise<ProjectListResponse>;
+  createProject(): Promise<Project | null>;
   updateProjectScanRules(request: ProjectUpdateScanRulesRequest): Promise<Project>;
   scanProject(request: ProjectScanRequest): Promise<ScanProjectResult>;
   listWorkspaces(): Promise<WorkspaceListResponse>;
@@ -145,6 +147,23 @@ export const tauriHostApi: HostApi = {
     invoke<Job>("start_echo_job", { request: { pluginId, message } }),
   cancelJob: (jobId) => invoke<void>("cancel_job", { jobId }),
   listProjects: () => invokeParsed("git_project_list", projectListResponseSchema),
+  createProject: async () => {
+    const rootPath = await openDialog({
+      directory: true,
+      multiple: false,
+      title: "Choose project root"
+    });
+    if (rootPath === null) return null;
+    if (Array.isArray(rootPath) || rootPath.length === 0) {
+      throw new Error("Native directory selection returned an invalid path");
+    }
+    const name = projectNameFromRoot(rootPath);
+    return projectSchema.parse(
+      await invoke<unknown>("git_project_create", {
+        request: { rootPath, name, scanDepth: null, excludePatterns: [] }
+      })
+    );
+  },
   updateProjectScanRules: (request) =>
     invokeRequest(
       "git_project_update_scan_rules",
@@ -278,4 +297,10 @@ async function invokeVoidRequest<TRequest>(
 ): Promise<void> {
   const parsedRequest = requestSchema.parse(request);
   await invoke<unknown>(command, { request: parsedRequest });
+}
+
+function projectNameFromRoot(rootPath: string): string {
+  const withoutTrailingSeparators = rootPath.replace(/[\\/]+$/u, "");
+  const segments = withoutTrailingSeparators.split(/[\\/]/u);
+  return segments.at(-1) || withoutTrailingSeparators || "Root";
 }

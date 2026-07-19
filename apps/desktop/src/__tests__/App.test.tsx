@@ -111,6 +111,7 @@ function createHostApi(plugins: PluginDescriptor[] = []): HostApi {
     })),
     cancelJob: vi.fn(async () => undefined),
     listProjects: vi.fn(async () => ({ projects: [] })),
+    createProject: vi.fn(async () => null),
     updateProjectScanRules: vi.fn(),
     scanProject: vi.fn(),
     listWorkspaces: vi.fn(async () => ({ workspaces: [] })),

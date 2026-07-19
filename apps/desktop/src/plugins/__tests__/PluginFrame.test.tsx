@@ -56,6 +56,7 @@ const hostApi: HostApi = {
   })),
   cancelJob: vi.fn(async () => undefined),
   listProjects: vi.fn(),
+  createProject: vi.fn(),
   updateProjectScanRules: vi.fn(),
   scanProject: vi.fn(),
   listWorkspaces: vi.fn(),
@@ -89,6 +90,8 @@ describe("PluginFrame", () => {
     expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
     expect(frame.src).toBe("http://git-ramus-plugin.localhost/git-ramus.welcome/ui.html");
     expect(frame).toHaveAttribute("data-plugin-status", "loading");
+    expect(frame).toHaveAttribute("data-plugin-route", "/");
+    expect(frame).not.toHaveAttribute("data-plugin-session");
   });
 
   it("delivers the exact selected route and the current validated theme for the session", async () => {
@@ -109,6 +112,8 @@ describe("PluginFrame", () => {
       />
     );
     const frame = screen.getByTitle("Welcome plugin") as HTMLIFrameElement;
+    expect(frame).toHaveAttribute("data-plugin-route", "/projects");
+    expect(frame).toHaveAttribute("data-plugin-theme-id", "git-ramus.default");
     const frameWindow = frame.contentWindow;
     if (frameWindow === null) {
       throw new Error("expected an iframe window");
@@ -132,6 +137,8 @@ describe("PluginFrame", () => {
     rerender(
       <PluginFrame descriptor={descriptor} hostApi={hostApi} route="/projects" theme={nextTheme} />
     );
+    expect(frame).toHaveAttribute("data-plugin-theme-id", "git-ramus.compact");
+    expect(frame).toHaveAttribute("data-plugin-theme-density", "compact");
     await waitFor(() =>
       expect(postMessage).toHaveBeenLastCalledWith(
         {
@@ -168,6 +175,36 @@ describe("PluginFrame", () => {
     fireEvent.load(frame);
     expect(postMessage).toHaveBeenCalledTimes(1);
     expect(postMessage.mock.calls[0]?.[0]).toMatchObject({ type: "host:init", route: "/projects" });
+    expect(frame).not.toHaveAttribute("data-plugin-theme-id");
+    expect(frame).not.toHaveAttribute("data-plugin-theme-density");
+  });
+
+  it("never mirrors an unknown plugin-supplied RPC method into host data attributes", async () => {
+    render(<PluginFrame descriptor={descriptor} hostApi={hostApi} />);
+    const frame = screen.getByTitle("Welcome plugin") as HTMLIFrameElement;
+    const frameWindow = frame.contentWindow;
+    if (frameWindow === null) throw new Error("expected an iframe window");
+    const postMessage = vi.fn();
+    Object.defineProperty(frameWindow, "postMessage", { configurable: true, value: postMessage });
+    fireEvent.load(frame);
+    const init = postMessage.mock.calls[0]?.[0] as { sessionId: string };
+
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        data: {
+          type: "rpc:request",
+          requestId: "87a31769-8aaa-47ca-bef3-47e66f0c62fc",
+          sessionId: init.sessionId,
+          method: "credential.super-secret-value",
+          params: {}
+        },
+        source: frameWindow
+      })
+    );
+    await waitFor(() => expect(postMessage).toHaveBeenCalledTimes(2));
+    expect(frame).not.toHaveAttribute("data-plugin-last-rpc-method");
+    expect(frame).not.toHaveAttribute("data-plugin-rpc-methods");
+    expect(frame.outerHTML).not.toContain("super-secret-value");
   });
 
   it("reports the SDK handshake and completed RPC through the frame boundary", async () => {
@@ -210,6 +247,10 @@ describe("PluginFrame", () => {
       })
     );
     await waitFor(() => expect(frame).toHaveAttribute("data-plugin-status", "rpc-complete"));
+    expect(frame).toHaveAttribute("data-plugin-last-rpc-method", "app.getInfo");
+    expect(frame).toHaveAttribute("data-plugin-last-rpc-status", "complete");
+    expect(frame).toHaveAttribute("data-plugin-rpc-methods", "app.getInfo");
+    expect(frame.outerHTML).not.toContain("requestId");
     expect(postMessage).toHaveBeenLastCalledWith(
       {
         type: "rpc:result",

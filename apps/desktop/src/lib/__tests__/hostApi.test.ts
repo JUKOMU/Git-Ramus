@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { tauriHostApi } from "../hostApi";
 
-const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
+const { invoke, open } = vi.hoisted(() => ({ invoke: vi.fn(), open: vi.fn() }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open }));
 
 const projectId = "87a31769-8aaa-47ca-bef3-47e66f0c62fc";
 const workspaceId = "e3d622f1-f1f7-4f7e-8f18-3db8a1e6ffbe";
@@ -68,7 +69,33 @@ const repositoryRequest = { ...context, repositoryId };
 describe("tauriHostApi Git client commands", () => {
   beforeEach(() => {
     invoke.mockReset();
+    open.mockReset();
     invoke.mockImplementation(async (command: string) => responses[command]);
+  });
+
+  it("creates a project only from a directory selected by the native host dialog", async () => {
+    open.mockResolvedValue("C:\\work\\Demo\\");
+    await expect(tauriHostApi.createProject()).resolves.toEqual(project);
+
+    expect(open).toHaveBeenCalledWith({
+      directory: true,
+      multiple: false,
+      title: "Choose project root"
+    });
+    expect(invoke).toHaveBeenCalledWith("git_project_create", {
+      request: {
+        rootPath: "C:\\work\\Demo\\",
+        name: "Demo",
+        scanDepth: null,
+        excludePatterns: []
+      }
+    });
+  });
+
+  it("returns null without invoking Rust when native project selection is cancelled", async () => {
+    open.mockResolvedValue(null);
+    await expect(tauriHostApi.createProject()).resolves.toBeNull();
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it("uses exact Rust command names and wraps every typed command payload in request", async () => {
@@ -159,8 +186,8 @@ describe("tauriHostApi Git client commands", () => {
     ]);
   });
 
-  it("does not expose path-bearing project creation or root update methods", () => {
-    expect(tauriHostApi).not.toHaveProperty("createProject");
+  it("does not expose path-bearing project creation arguments or root update methods", () => {
+    expect(tauriHostApi.createProject).toHaveLength(0);
     expect(tauriHostApi).not.toHaveProperty("updateProject");
   });
 
@@ -191,6 +218,7 @@ const responses: Record<string, unknown> = {
     theme: { themeId: "git-ramus.theme.compact", density: "compact" }
   },
   git_project_list: { projects: [project] },
+  git_project_create: project,
   git_project_update_scan_rules: project,
   git_project_scan: {
     projectId,

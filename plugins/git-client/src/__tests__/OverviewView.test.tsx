@@ -138,19 +138,75 @@ describe("OverviewView", () => {
 });
 
 describe("ProjectsView", () => {
+  it("does nothing when native root selection is cancelled", async () => {
+    const user = userEvent.setup();
+    const api = {
+      listProjects: vi.fn(async () => ({ projects: [project] })),
+      createProject: vi.fn(async () => null),
+      updateProjectScanRules: vi.fn(),
+      scanProject: vi.fn()
+    };
+
+    render(<ProjectsView api={api} onOpenRepository={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "Choose root folder" }));
+
+    expect(api.createProject).toHaveBeenCalledWith();
+    expect(api.listProjects).toHaveBeenCalledOnce();
+    expect(screen.queryByText(/Project created/u)).not.toBeInTheDocument();
+  });
+
+  it("refreshes the project list after native root selection succeeds", async () => {
+    const user = userEvent.setup();
+    const api = {
+      listProjects: vi
+        .fn()
+        .mockResolvedValueOnce({ projects: [project] })
+        .mockResolvedValueOnce({ projects: [project, betaProject] }),
+      createProject: vi.fn(async () => betaProject),
+      updateProjectScanRules: vi.fn(),
+      scanProject: vi.fn()
+    };
+
+    render(<ProjectsView api={api} onOpenRepository={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "Choose root folder" }));
+
+    expect(await screen.findByText("Project Beta created.")).toBeInTheDocument();
+    expect(screen.getByText("D:/work/beta")).toBeInTheDocument();
+    expect(api.listProjects).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows the structured host error when native root selection fails", async () => {
+    const user = userEvent.setup();
+    const api = {
+      listProjects: vi.fn(async () => ({ projects: [project] })),
+      createProject: vi.fn(async () => {
+        throw errorEnvelope("project.root-unavailable", "Choose another folder");
+      }),
+      updateProjectScanRules: vi.fn(),
+      scanProject: vi.fn()
+    };
+
+    render(<ProjectsView api={api} onOpenRepository={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "Choose root folder" }));
+
+    expect(await screen.findByText("Membership could not be loaded.")).toBeInTheDocument();
+    expect(api.listProjects).toHaveBeenCalledOnce();
+  });
+
   it("keeps root selection host-controlled and persists scan rules by project ID", async () => {
     const user = userEvent.setup();
     const updated = deferred<typeof project>();
     const api: ProjectsApi = {
       listProjects: vi.fn(async () => ({ projects: [project] })),
+      createProject: vi.fn(async () => null),
       updateProjectScanRules: vi.fn(() => updated.promise),
       scanProject: vi.fn()
     };
 
     render(<ProjectsView api={api} onOpenRepository={vi.fn()} />);
     expect(await screen.findByText("C:/work/demo")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Choose root folder" })).toBeDisabled();
-    expect(screen.getByText("Host folder picker is not available yet.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Choose root folder" })).toBeEnabled();
+    expect(screen.getByText("The host selects and validates project roots.")).toBeInTheDocument();
 
     await user.clear(screen.getByLabelText("Scan depth for Demo"));
     await user.type(screen.getByLabelText("Scan depth for Demo"), "5");
@@ -182,6 +238,7 @@ describe("ProjectsView", () => {
     const scanned = deferred<Awaited<ReturnType<ProjectsApi["scanProject"]>>>();
     const api: ProjectsApi = {
       listProjects: vi.fn(async () => ({ projects: [project, betaProject] })),
+      createProject: vi.fn(async () => null),
       updateProjectScanRules: vi.fn(() => saved.promise),
       scanProject: vi.fn(() => scanned.promise)
     };
@@ -518,6 +575,7 @@ function errorEnvelope(code: string, recoveryLabel: string) {
 function routeApi(): GitClientApi {
   return {
     listProjects: vi.fn(async () => ({ projects: [] })),
+    createProject: vi.fn(async () => null),
     updateProjectScanRules: vi.fn(),
     scanProject: vi.fn(),
     listWorkspaces: vi.fn(async () => ({ workspaces: [] })),

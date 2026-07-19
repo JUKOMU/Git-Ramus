@@ -21,6 +21,7 @@ function createHostApi(): HostApi {
     startEchoJob: vi.fn(),
     cancelJob: vi.fn(),
     listProjects: vi.fn(),
+    createProject: vi.fn(),
     updateProjectScanRules: vi.fn(),
     scanProject: vi.fn(),
     listWorkspaces: vi.fn(),
@@ -88,6 +89,20 @@ describe("Git client RPC routes", () => {
     });
     expect(hostApi.listProjects).toHaveBeenCalledWith();
     expectAuthorizedBefore(hostApi, "projects:manage", "projects", vi.mocked(hostApi.listProjects));
+  });
+
+  it("dispatches a strict pathless projects.create only after authorization", async () => {
+    vi.mocked(hostApi.createProject).mockResolvedValue(null);
+    await expect(
+      dispatchPluginRpc(pluginId, request("projects.create", {}), hostApi)
+    ).resolves.toBeNull();
+    expect(hostApi.createProject).toHaveBeenCalledWith();
+    expectAuthorizedBefore(
+      hostApi,
+      "projects:manage",
+      "projects",
+      vi.mocked(hostApi.createProject)
+    );
   });
 
   it("dispatches repositories.getChanges through repositories:read/repositories", async () => {
@@ -407,16 +422,30 @@ describe("Git client RPC routes", () => {
     expect(hostApi[handler]).not.toHaveBeenCalled();
   });
 
-  it("does not expose the path-bearing projects.create RPC method", async () => {
+  it("rejects path-bearing projects.create before authorization or dialog opening", async () => {
     await expect(
       dispatchPluginRpc(
         pluginId,
         request("projects.create", { name: "Secret", rootPath: "C:/secret" }),
         hostApi
       )
-    ).rejects.toMatchObject({ code: "rpc.unknown-method" });
+    ).rejects.toMatchObject({ code: "rpc.invalid-params" });
     expect(hostApi.authorizePluginCall).not.toHaveBeenCalled();
+    expect(hostApi.createProject).not.toHaveBeenCalled();
   });
+
+  it.each(["toString", "constructor", "__proto__"])(
+    "treats inherited object key %s as an unknown RPC method",
+    async (method) => {
+      await expect(dispatchPluginRpc(pluginId, request(method, {}), hostApi)).rejects.toMatchObject(
+        {
+          code: "rpc.unknown-method",
+          category: "validation"
+        }
+      );
+      expect(hostApi.authorizePluginCall).not.toHaveBeenCalled();
+    }
+  );
 
   it("preserves structured unknown-repository and untrusted-write host errors", async () => {
     const unknownRepository = error("resource.not-found", "validation", "Repository not found");

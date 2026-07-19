@@ -39,6 +39,7 @@ import type { PluginClient } from "@git-ramus/plugin-sdk";
 
 export interface GitClientApi {
   listProjects(): Promise<ProjectListResponse>;
+  createProject(): Promise<Project | null>;
   updateProjectScanRules(request: ProjectUpdateScanRulesRequest): Promise<Project>;
   scanProject(request: ProjectScanRequest): Promise<ScanProjectResult>;
   listWorkspaces(): Promise<WorkspaceListResponse>;
@@ -68,6 +69,7 @@ export interface GitClientApi {
 export function createGitClientApi(client: PluginClient): GitClientApi {
   return {
     listProjects: () => client.request("projects.list", {}),
+    createProject: () => client.request("projects.create", {}),
     updateProjectScanRules: (request) => client.request("projects.updateScanRules", request),
     scanProject: (request) => client.request("projects.scan", request),
     listWorkspaces: () => client.request("workspaces.list", {}),

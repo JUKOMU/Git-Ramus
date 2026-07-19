@@ -9,7 +9,7 @@ import {
 } from "@git-ramus/contracts";
 import { useEffect, useRef, useState } from "react";
 import type { HostApi } from "../lib/hostApi";
-import { dispatchPluginRpc } from "./rpcRouter";
+import { dispatchPluginRpc, isKnownPluginRpcMethod } from "./rpcRouter";
 
 interface PluginFrameProps {
   descriptor: PluginDescriptor;
@@ -26,6 +26,13 @@ export function PluginFrame({ descriptor, hostApi, route = "/", theme = null }: 
   const [bridgeStatus, setBridgeStatus] = useState<
     "loading" | "ready" | "rpc-complete" | "rpc-failed"
   >("loading");
+  const [lastRpc, setLastRpc] = useState<{
+    method: string;
+    status: "pending" | "complete" | "failed";
+  } | null>(null);
+  const [rpcMethods, setRpcMethods] = useState<string[]>([]);
+  const parsedObservableTheme = themeDefinitionSchema.safeParse(theme);
+  const observableTheme = parsedObservableTheme.success ? parsedObservableTheme.data : null;
 
   useEffect(() => {
     const receive = (event: MessageEvent<unknown>) => {
@@ -43,9 +50,19 @@ export function PluginFrame({ descriptor, hostApi, route = "/", theme = null }: 
       }
       if (parsed.data.type === "rpc:request") {
         const request = parsed.data;
+        const observableMethod = isKnownPluginRpcMethod(request.method);
+        if (observableMethod) {
+          setLastRpc({ method: request.method, status: "pending" });
+          setRpcMethods((current) =>
+            current.includes(request.method) ? current : [...current, request.method].slice(-16)
+          );
+        }
         const isHandshakeRpc = readyRef.current && request.method === "app.getInfo";
         void dispatchPluginRpc(descriptor.manifest.id, request, hostApi)
           .then((result) => {
+            if (observableMethod) {
+              setLastRpc({ method: request.method, status: "complete" });
+            }
             if (isHandshakeRpc) {
               setBridgeStatus("rpc-complete");
             }
@@ -58,6 +75,9 @@ export function PluginFrame({ descriptor, hostApi, route = "/", theme = null }: 
             });
           })
           .catch((error: unknown) => {
+            if (observableMethod) {
+              setLastRpc({ method: request.method, status: "failed" });
+            }
             if (isHandshakeRpc) {
               setBridgeStatus("rpc-failed");
             }
@@ -106,6 +126,12 @@ export function PluginFrame({ descriptor, hostApi, route = "/", theme = null }: 
       sandbox="allow-scripts"
       src={descriptor.uiUrl}
       data-plugin-status={bridgeStatus}
+      data-plugin-route={route}
+      data-plugin-theme-id={observableTheme?.themeId}
+      data-plugin-theme-density={observableTheme?.density}
+      data-plugin-last-rpc-method={lastRpc?.method}
+      data-plugin-last-rpc-status={lastRpc?.status}
+      data-plugin-rpc-methods={rpcMethods.length === 0 ? undefined : rpcMethods.join(",")}
       onLoad={initialize}
     />
   );

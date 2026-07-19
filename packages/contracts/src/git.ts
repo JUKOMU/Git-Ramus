@@ -313,6 +313,10 @@ export const gitContextRequestSchema = z
 
 export const projectListResponseSchema = z.object({ projects: z.array(projectSchema) }).strict();
 
+// Project roots are selected by the trusted host. Plugins can request the picker, but can never
+// supply a path or project metadata across the RPC boundary.
+export const projectCreateRequestSchema = z.object({}).strict();
+
 export const projectUpdateScanRulesRequestSchema = z
   .object({
     projectId: uuid,
@@ -532,6 +536,7 @@ export type Trust = z.infer<typeof trustSchema>;
 export type IdentityBinding = z.infer<typeof identityBindingSchema>;
 export type GitContextRequest = z.infer<typeof gitContextRequestSchema>;
 export type ProjectListResponse = z.infer<typeof projectListResponseSchema>;
+export type ProjectCreateRequest = z.infer<typeof projectCreateRequestSchema>;
 export type ProjectUpdateScanRulesRequest = z.infer<typeof projectUpdateScanRulesRequestSchema>;
 export type ProjectScanRequest = z.infer<typeof projectScanRequestSchema>;
 export type WorkspaceListResponse = z.infer<typeof workspaceListResponseSchema>;

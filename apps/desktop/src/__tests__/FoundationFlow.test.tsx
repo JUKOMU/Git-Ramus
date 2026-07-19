@@ -132,6 +132,7 @@ function createHostApi(): HostApi {
     startEchoJob: vi.fn(),
     cancelJob: vi.fn(async () => undefined),
     listProjects: vi.fn(),
+    createProject: vi.fn(),
     updateProjectScanRules: vi.fn(),
     scanProject: vi.fn(),
     listWorkspaces: vi.fn(),

@@ -21,6 +21,7 @@ import {
   identityProfileSchema,
   effectiveIdentitySchema,
   gitContextRequestSchema,
+  projectCreateRequestSchema,
   projectListResponseSchema,
   projectUpdateScanRulesRequestSchema,
   workspaceRequestSchema,
@@ -492,6 +493,8 @@ describe("shared contracts", () => {
   });
 
   it("uses strict UUID request schemas and rejects arbitrary filesystem path keys", () => {
+    expect(projectCreateRequestSchema.parse({})).toEqual({});
+    expect(() => projectCreateRequestSchema.parse({ rootPath: "C:/secret" })).toThrow();
     expect(gitContextRequestSchema.parse({ projectId })).toEqual({ projectId });
     expect(() => gitContextRequestSchema.parse({ projectId, workspaceId })).toThrow();
     expect(() => gitContextRequestSchema.parse({ projectId: "project" })).toThrow();
