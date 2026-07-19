@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { themeDefinitionSchema } from "./theme";
 
 const uuid = z.string().uuid();
 
@@ -7,7 +8,11 @@ export const hostInitSchema = z
     type: z.literal("host:init"),
     sessionId: uuid,
     pluginId: z.string().min(1),
-    sdkVersion: z.string().min(1)
+    sdkVersion: z.string().min(1),
+    route: z
+      .string()
+      .regex(/^\/[a-z0-9/-]*$/u)
+      .default("/")
   })
   .strict();
 
@@ -49,11 +54,27 @@ export const rpcResultSchema = z.discriminatedUnion("ok", [
     .strict()
 ]);
 
-export const hostToPluginMessageSchema = z.union([hostInitSchema, rpcResultSchema]);
+export const hostThemeChangedSchema = z
+  .object({
+    type: z.literal("host:theme-changed"),
+    sessionId: uuid,
+    theme: themeDefinitionSchema
+  })
+  .strict();
+
+export const themeChangedSchema = hostThemeChangedSchema;
+
+export const hostToPluginMessageSchema = z.union([
+  hostInitSchema,
+  rpcResultSchema,
+  hostThemeChangedSchema
+]);
 export const pluginToHostMessageSchema = z.union([pluginReadySchema, rpcRequestSchema]);
 
-export type HostInit = z.infer<typeof hostInitSchema>;
+// Route is optional at the wire boundary for schema-v1 plugins; the SDK normalizes it to "/".
+export type HostInit = Omit<z.infer<typeof hostInitSchema>, "route"> & { route?: string };
+export type HostThemeChanged = z.infer<typeof hostThemeChangedSchema>;
 export type RpcRequest = z.infer<typeof rpcRequestSchema>;
 export type RpcResult = z.infer<typeof rpcResultSchema>;
-export type HostToPluginMessage = z.infer<typeof hostToPluginMessageSchema>;
+export type HostToPluginMessage = HostInit | HostThemeChanged | RpcResult;
 export type PluginToHostMessage = z.infer<typeof pluginToHostMessageSchema>;

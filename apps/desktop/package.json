@@ -6,7 +6,7 @@
   "scripts": {
     "dev:web": "vite --port 1420 --strictPort",
     "build:web": "tsc -p tsconfig.json && vite build",
-    "prepare:plugins": "npm run build --workspace @git-ramus/builtin-welcome && node ../../scripts/sync-builtin-plugins.mjs",
+    "prepare:plugins": "node ../../scripts/sync-builtin-plugins.mjs",
     "prepare:desktop": "npm run prepare:plugins && npm run build:web",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build --no-bundle",
@@ -18,6 +18,7 @@
   "dependencies": {
     "@git-ramus/contracts": "0.1.0",
     "@tauri-apps/api": "2.11.1",
+    "@tauri-apps/plugin-dialog": "2.7.1",
     "react": "19.2.7",
     "react-dom": "19.2.7"
   },

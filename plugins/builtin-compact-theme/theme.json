@@ -1,0 +1,53 @@
+{
+  "themeId": "git-ramus.theme.compact",
+  "name": "Compact",
+  "colors": {
+    "background": "#07111f",
+    "surface": "#0d1b2a",
+    "surfaceRaised": "#13283d",
+    "text": "#e6f2ff",
+    "textMuted": "#8aa4bd",
+    "border": "#27445f",
+    "primary": "#0369a1",
+    "secondary": "#0ea5e9",
+    "accent": "#22d3ee",
+    "success": "#34d399",
+    "warning": "#fbbf24",
+    "danger": "#fb7185",
+    "focusRing": "#7dd3fc"
+  },
+  "typography": {
+    "fontFamily": "Inter, system-ui, sans-serif",
+    "fontSize": 13,
+    "lineHeight": 1.35,
+    "fontWeight": 400,
+    "letterSpacing": 0
+  },
+  "spacing": {
+    "unit": 4,
+    "xs": 2,
+    "sm": 6,
+    "md": 10,
+    "lg": 14,
+    "xl": 20
+  },
+  "shape": {
+    "radius": 5,
+    "radiusSm": 3,
+    "radiusMd": 5,
+    "radiusLg": 8
+  },
+  "elevation": {
+    "none": "none",
+    "sm": "0 1px 2px #0003",
+    "md": "0 4px 12px #0004",
+    "lg": "0 10px 28px #0005"
+  },
+  "motion": {
+    "durationFast": "90ms",
+    "durationNormal": "140ms",
+    "durationSlow": "220ms",
+    "easing": "ease-out"
+  },
+  "density": "compact"
+}

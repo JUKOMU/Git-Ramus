@@ -2,8 +2,11 @@ import type {
   HostInit,
   HostToPluginMessage,
   PluginToHostMessage,
-  RpcResult
+  RpcResult,
+  ThemeDefinition
 } from "@git-ramus/contracts";
+import { themeDefinitionSchema } from "@git-ramus/contracts";
+import { applyThemeToDocument, clearAppliedTheme } from "./theme";
 
 export interface PluginTransport {
   send(message: PluginToHostMessage): void;
@@ -17,6 +20,9 @@ interface PendingRequest {
 
 export interface PluginClient {
   ready: Promise<HostInit>;
+  readonly currentTheme: ThemeDefinition | null;
+  readonly theme: ThemeDefinition | null;
+  onThemeChanged(listener: (theme: ThemeDefinition) => void): () => void;
   request<T>(method: string, params: unknown): Promise<T>;
   dispose(): void;
 }
@@ -45,17 +51,50 @@ export function createPluginClient(
   createId: () => string = () => createRequestId()
 ): PluginClient {
   let init: HostInit | null = null;
+  let currentTheme: ThemeDefinition | null = null;
+  const themeListeners = new Set<(theme: ThemeDefinition) => void>();
   let resolveReady: (message: HostInit) => void = () => undefined;
-  const ready = new Promise<HostInit>((resolve) => {
+  let rejectReady: (error: unknown) => void = () => undefined;
+  const ready = new Promise<HostInit>((resolve, reject) => {
     resolveReady = resolve;
+    rejectReady = reject;
   });
   const pending = new Map<string, PendingRequest>();
+  const themeOwner = {};
+  let disposed = false;
+
+  const rejectPending = (error: Error) => {
+    for (const request of pending.values()) request.reject(error);
+    pending.clear();
+  };
 
   const unsubscribe = transport.subscribe((message) => {
     if (message.type === "host:init") {
-      init = message;
+      if (disposed) return;
+      if (init?.sessionId === message.sessionId) return;
+      if (init !== null) {
+        rejectPending(new Error("plugin session replaced"));
+        currentTheme = null;
+        clearAppliedTheme(undefined, themeOwner);
+      }
+      init = { ...message, route: message.route ?? "/" };
       transport.send({ type: "plugin:ready", sessionId: message.sessionId });
-      resolveReady(message);
+      resolveReady(init);
+      return;
+    }
+    if (message.type === "host:theme-changed") {
+      if (init === null || message.sessionId !== init.sessionId) return;
+      const parsed = themeDefinitionSchema.safeParse(message.theme);
+      if (!parsed.success) return;
+      currentTheme = parsed.data;
+      applyThemeToDocument(currentTheme, undefined, themeOwner);
+      for (const listener of themeListeners) {
+        try {
+          void Promise.resolve(listener(currentTheme)).catch(() => undefined);
+        } catch {
+          // One plugin listener must not prevent the remaining listeners from running.
+        }
+      }
       return;
     }
     const request = pending.get(message.requestId);
@@ -68,8 +107,22 @@ export function createPluginClient(
 
   return {
     ready,
+    get currentTheme() {
+      return currentTheme;
+    },
+    get theme() {
+      return currentTheme;
+    },
+    onThemeChanged(listener) {
+      themeListeners.add(listener);
+      return () => themeListeners.delete(listener);
+    },
     async request<T>(method: string, params: unknown): Promise<T> {
-      const session = init ?? (await ready);
+      if (disposed) throw new Error("plugin client disposed");
+      if (init === null) await ready;
+      if (disposed) throw new Error("plugin client disposed");
+      const session = init;
+      if (session === null) throw new Error("plugin client not initialized");
       const requestId = createId();
       const response = new Promise<unknown>((resolve, reject) => {
         pending.set(requestId, { resolve, reject });
@@ -84,11 +137,15 @@ export function createPluginClient(
       return (await response) as T;
     },
     dispose() {
+      if (disposed) return;
+      disposed = true;
       unsubscribe();
-      for (const request of pending.values()) {
-        request.reject(new Error("plugin client disposed"));
-      }
-      pending.clear();
+      const error = new Error("plugin client disposed");
+      rejectReady(error);
+      rejectPending(error);
+      clearAppliedTheme(undefined, themeOwner);
+      currentTheme = null;
+      themeListeners.clear();
     }
   };
 }

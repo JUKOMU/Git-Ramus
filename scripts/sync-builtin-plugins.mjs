@@ -1,16 +1,40 @@
-import { cp, mkdir, readFile, rm } from "node:fs/promises";
-import { resolve } from "node:path";
+import { execFile } from "node:child_process";
+import { dirname, resolve } from "node:path";
+import { env, execPath, platform } from "node:process";
+import { promisify } from "node:util";
+import { syncBuiltinPlugins } from "./sync-builtin-plugins-lib.mjs";
 
 const root = resolve(import.meta.dirname, "..");
-const source = resolve(root, "plugins/builtin-welcome");
-const destination = resolve(root, "apps/desktop/src-tauri/resources/plugins/git-ramus.welcome");
-const manifest = JSON.parse(await readFile(resolve(source, "plugin.json"), "utf8"));
+const run = promisify(execFile);
+const npmCli =
+  env.npm_execpath ??
+  (platform === "win32" ? resolve(dirname(execPath), "node_modules/npm/bin/npm-cli.js") : null);
+const npmCommand = npmCli === null ? "npm" : execPath;
+const plugins = [
+  {
+    workspace: "@git-ramus/builtin-welcome",
+    source: resolve(root, "plugins/builtin-welcome"),
+    id: "git-ramus.welcome"
+  },
+  {
+    workspace: "@git-ramus/git-client",
+    source: resolve(root, "plugins/git-client"),
+    id: "git-ramus.git-client"
+  },
+  {
+    workspace: "@git-ramus/builtin-compact-theme",
+    source: resolve(root, "plugins/builtin-compact-theme"),
+    id: "git-ramus.compact-theme"
+  }
+];
 
-if (manifest.id !== "git-ramus.welcome" || manifest.entrypoints.ui !== "ui.html") {
-  throw new Error("Welcome manifest does not match its staged location");
-}
-
-await rm(destination, { recursive: true, force: true });
-await mkdir(destination, { recursive: true });
-await cp(resolve(source, "plugin.json"), resolve(destination, "plugin.json"));
-await cp(resolve(source, "dist/index.html"), resolve(destination, "ui.html"));
+await syncBuiltinPlugins({
+  plugins,
+  destinationRoot: resolve(root, "apps/desktop/src-tauri/resources/plugins"),
+  buildPlugin: async (plugin) => {
+    const npmArguments = ["run", "build", "--workspace", plugin.workspace];
+    await run(npmCommand, npmCli === null ? npmArguments : [npmCli, ...npmArguments], {
+      cwd: root
+    });
+  }
+});

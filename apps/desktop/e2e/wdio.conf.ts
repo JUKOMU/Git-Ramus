@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { acquireE2eAppDataProfile } from "./app-data-profile";
 
 const extension = process.platform === "win32" ? ".exe" : "";
 const binary = resolve(
@@ -6,10 +7,11 @@ const binary = resolve(
   `../src-tauri/target/debug/git-ramus-desktop${extension}`
 );
 const tauriService = resolve(import.meta.dirname, "basic-tauri-service.ts");
+const appDataProfile = acquireE2eAppDataProfile();
 
 export const config: WebdriverIO.Config = {
   runner: "local",
-  specs: ["./foundation.e2e.ts"],
+  specs: ["./foundation.e2e.ts", "./git-client.e2e.ts"],
   maxInstances: 1,
   injectGlobals: false,
   framework: "mocha",
@@ -29,7 +31,8 @@ export const config: WebdriverIO.Config = {
       {
         appBinaryPath: binary,
         driverProvider: "embedded",
-        embeddedPort: 4445
+        embeddedPort: 4445,
+        env: appDataProfile.env
       }
     ]
   ],

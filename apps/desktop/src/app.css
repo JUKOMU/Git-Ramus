@@ -34,21 +34,29 @@ button {
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr) 280px;
   min-height: 100%;
+  color: var(--gr-colors-text, #e2e8f0);
+  background: var(--gr-colors-background, #080d18);
+  font-family: var(--gr-typography-fontFamily, Inter, system-ui, sans-serif);
+  font-size: var(--gr-typography-fontSize, 16px);
+  line-height: var(--gr-typography-lineHeight, 1.5);
+  transition:
+    color var(--gr-motion-durationFast, 120ms) var(--gr-motion-easing, ease-out),
+    background var(--gr-motion-durationFast, 120ms) var(--gr-motion-easing, ease-out);
 }
 
 .sidebar,
 .task-rail {
-  padding: 20px;
-  background: #111827;
+  padding: var(--gr-spacing-lg, 20px);
+  background: var(--gr-colors-surface, #111827);
 }
 
 .sidebar {
   position: relative;
-  border-right: 1px solid #263247;
+  border-right: 1px solid var(--gr-colors-border, #263247);
 }
 
 .task-rail {
-  border-left: 1px solid #263247;
+  border-left: 1px solid var(--gr-colors-border, #263247);
 }
 
 .sidebar h1 {
@@ -62,26 +70,48 @@ button {
   margin: 3px 0;
   padding: 10px 12px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--gr-shape-radius, 8px);
   background: transparent;
   text-align: left;
 }
 
 .nav-item:hover,
 .task-rail button:hover {
-  background: #1e293b;
+  background: var(--gr-colors-surfaceRaised, #1e293b);
+}
+
+.nav-item[aria-pressed="true"] {
+  color: var(--gr-colors-focusRing, #bae6fd);
+  background: var(--gr-colors-primary, #0c4a6e);
+}
+
+.theme-control {
+  display: grid;
+  gap: var(--gr-spacing-xs, 4px);
+  margin-top: var(--gr-spacing-lg, 20px);
+  color: var(--gr-colors-textMuted, #64748b);
+  font-size: 12px;
+}
+
+.theme-control select {
+  width: 100%;
+  padding: var(--gr-spacing-sm, 8px);
+  border: 1px solid var(--gr-colors-border, #263247);
+  border-radius: var(--gr-shape-radiusSm, 6px);
+  color: var(--gr-colors-text, #e2e8f0);
+  background: var(--gr-colors-background, #080d18);
 }
 
 .host-version {
   position: absolute;
   bottom: 18px;
-  color: #64748b;
+  color: var(--gr-colors-textMuted, #64748b);
   font-size: 12px;
 }
 
 .workspace {
-  padding: 28px;
-  background: #0b1220;
+  padding: var(--gr-spacing-xl, 28px);
+  background: var(--gr-colors-background, #0b1220);
 }
 
 .workspace iframe {
@@ -93,7 +123,17 @@ button {
 .empty-state {
   max-width: 560px;
   padding: 24px;
-  border: 1px solid #263247;
-  border-radius: 12px;
-  background: #111827;
+  border: 1px solid var(--gr-colors-border, #263247);
+  border-radius: var(--gr-shape-radiusLg, 12px);
+  background: var(--gr-colors-surface, #111827);
+  box-shadow: var(--gr-elevation-md, none);
+}
+
+.app-shell.density-compact {
+  grid-template-columns: 200px minmax(0, 1fr) 250px;
+}
+
+.app-shell.density-compact .nav-item,
+.app-shell.density-compact .task-rail button {
+  margin: 2px 0;
 }

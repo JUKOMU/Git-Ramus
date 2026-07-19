@@ -29,7 +29,7 @@
     "format:check": "prettier --check .",
     "lint": "eslint .",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "test": "npm run test --workspaces --if-present",
+    "test": "node --test scripts/*.test.mjs && npm run test --workspaces --if-present",
     "desktop:dev": "npm run tauri:dev --workspace @git-ramus/desktop",
     "desktop:build": "npm run tauri:build --workspace @git-ramus/desktop"
   },

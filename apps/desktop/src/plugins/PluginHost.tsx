@@ -1,13 +1,15 @@
-import type { PluginDescriptor } from "@git-ramus/contracts";
+import type { PluginDescriptor, ThemeDefinition } from "@git-ramus/contracts";
 import type { HostApi } from "../lib/hostApi";
 import { PluginFrame } from "./PluginFrame";
 
 interface PluginHostProps {
   descriptor: PluginDescriptor | null;
   hostApi: HostApi;
+  route?: string;
+  theme?: ThemeDefinition | null;
 }
 
-export function PluginHost({ descriptor, hostApi }: PluginHostProps) {
+export function PluginHost({ descriptor, hostApi, route = "/", theme = null }: PluginHostProps) {
   if (descriptor === null) {
     return (
       <section className="empty-state">
@@ -16,5 +18,13 @@ export function PluginHost({ descriptor, hostApi }: PluginHostProps) {
       </section>
     );
   }
-  return <PluginFrame key={descriptor.manifest.id} descriptor={descriptor} hostApi={hostApi} />;
+  return (
+    <PluginFrame
+      key={`${descriptor.manifest.id}:${route}`}
+      descriptor={descriptor}
+      hostApi={hostApi}
+      route={route}
+      theme={theme}
+    />
+  );
 }
