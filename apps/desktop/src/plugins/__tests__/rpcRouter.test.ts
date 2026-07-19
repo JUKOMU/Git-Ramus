@@ -29,6 +29,7 @@ function createHostApi(): HostApi {
     getRepositorySnapshot: vi.fn(),
     getRepositoryChanges: vi.fn(),
     getRepositoryDiff: vi.fn(),
+    getRepositoryTrustStatus: vi.fn(),
     stageRepository: vi.fn(),
     unstageRepository: vi.fn(),
     commitRepository: vi.fn(),
@@ -266,6 +267,14 @@ describe("Git client RPC routes", () => {
       argument: { projectId, repositoryId, paths: [], staged: false }
     },
     {
+      method: "repositories.getTrustStatus",
+      params: { projectId, repositoryId },
+      capability: "repositories:read",
+      resource: "repositories",
+      hostMethod: "getRepositoryTrustStatus",
+      argument: { projectId, repositoryId }
+    },
+    {
       method: "repositories.unstage",
       params: { projectId, repositoryId, paths: ["src/main.ts"] },
       capability: "repositories:write",
@@ -379,6 +388,11 @@ describe("Git client RPC routes", () => {
       "repositories.stage",
       { projectId, repositoryId, paths: [], all: true, path: "C:/secret" },
       "stageRepository"
+    ],
+    [
+      "repositories.getTrustStatus",
+      { projectId, repositoryId, rootPath: "C:/secret" },
+      "getRepositoryTrustStatus"
     ]
   ] as const)("rejects arbitrary rootPath/path fields for %s", async (method, params, handler) => {
     await expect(

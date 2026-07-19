@@ -322,6 +322,63 @@ fn scan_surfaces_refresh_snapshot_persistence_failure() {
 }
 
 #[test]
+fn trust_status_requires_context_membership_and_survives_service_reopen() {
+    if !git_available() {
+        return;
+    }
+    let root = tempdir().unwrap();
+    run_git(root.path(), &["init", "--quiet"]);
+    let other_root = tempdir().unwrap();
+    let database = Database::open_in_memory().unwrap();
+    let service = GitService::new(database.clone());
+    let project = service
+        .create_project(ProjectCreateInput {
+            root_path: root.path().to_string_lossy().into_owned(),
+            name: "Trusted repository".to_owned(),
+            scan_depth: Some(0),
+            exclude_patterns: Vec::new(),
+        })
+        .unwrap();
+    let other_project = service
+        .create_project(ProjectCreateInput {
+            root_path: other_root.path().to_string_lossy().into_owned(),
+            name: "Other project".to_owned(),
+            scan_depth: Some(0),
+            exclude_patterns: Vec::new(),
+        })
+        .unwrap();
+    let repository_id = service.scan_project(&project.id).unwrap().repositories[0]
+        .repository
+        .id
+        .clone();
+    let context = QueryContext::project(&project.id);
+
+    assert!(
+        !service
+            .is_repository_trusted_in_context(&context, &repository_id)
+            .unwrap()
+    );
+    service
+        .trust_repository_in_context(&context, &repository_id)
+        .unwrap();
+    drop(service);
+
+    let reopened = GitService::new(database);
+    assert!(
+        reopened
+            .is_repository_trusted_in_context(&context, &repository_id)
+            .unwrap()
+    );
+    assert!(matches!(
+        reopened.is_repository_trusted_in_context(
+            &QueryContext::project(&other_project.id),
+            &repository_id
+        ),
+        Err(AppError::NotFound(_))
+    ));
+}
+
+#[test]
 fn trust_stage_unstage_and_commit_use_safe_paths_and_stdin_message() {
     if !git_available() {
         return;

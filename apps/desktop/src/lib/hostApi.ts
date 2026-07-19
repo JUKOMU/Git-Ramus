@@ -24,6 +24,7 @@ import {
   repositoryUnstageRequestSchema,
   scanProjectResultSchema,
   trustResponseSchema,
+  trustStatusResponseSchema,
   workspaceCreateRequestSchema,
   workspaceDeleteRequestSchema,
   workspaceListResponseSchema,
@@ -61,6 +62,7 @@ import type {
   RepositoryUnstageRequest,
   ScanProjectResult,
   TrustResponse,
+  TrustStatusResponse,
   Workspace,
   WorkspaceCreateRequest,
   WorkspaceDeleteRequest,
@@ -105,6 +107,7 @@ export interface HostApi {
   getRepositorySnapshot(request: RepositoryRequest): Promise<RepositoryScanRecord>;
   getRepositoryChanges(request: RepositoryRequest): Promise<ChangesResult>;
   getRepositoryDiff(request: RepositoryDiffRequest): Promise<DiffResult>;
+  getRepositoryTrustStatus(request: RepositoryRequest): Promise<TrustStatusResponse>;
   stageRepository(request: RepositoryStageRequest): Promise<WriteResult>;
   unstageRepository(request: RepositoryUnstageRequest): Promise<WriteResult>;
   commitRepository(request: RepositoryCommitRequest): Promise<WriteResult>;
@@ -170,6 +173,13 @@ export const tauriHostApi: HostApi = {
     invokeRequest("git_repository_changes", repositoryRequestSchema, changesResultSchema, request),
   getRepositoryDiff: (request) =>
     invokeRequest("git_repository_diff", repositoryDiffRequestSchema, diffResultSchema, request),
+  getRepositoryTrustStatus: (request) =>
+    invokeRequest(
+      "git_repository_trust_status",
+      repositoryRequestSchema,
+      trustStatusResponseSchema,
+      request
+    ),
   stageRepository: (request) =>
     invokeRequest("git_repository_stage", repositoryStageRequestSchema, writeResultSchema, request),
   unstageRepository: (request) =>

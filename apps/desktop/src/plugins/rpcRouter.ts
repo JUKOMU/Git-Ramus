@@ -160,6 +160,12 @@ const routes: Readonly<Record<string, Route>> = {
     repositoryDiffRequestSchema,
     (params, hostApi) => hostApi.getRepositoryDiff(params)
   ),
+  "repositories.getTrustStatus": defineRoute(
+    "repositories:read",
+    RPC_RESOURCES.repositories,
+    repositoryRequestSchema,
+    (params, hostApi) => hostApi.getRepositoryTrustStatus(params)
+  ),
   "repositories.stage": defineRoute(
     "repositories:write",
     RPC_RESOURCES.repositories,

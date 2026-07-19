@@ -950,6 +950,15 @@ impl GitService {
         self.trusts.is_trusted(repository_id)
     }
 
+    pub fn is_repository_trusted_in_context(
+        &self,
+        context: &QueryContext,
+        repository_id: &str,
+    ) -> Result<bool, AppError> {
+        self.ensure_context_membership(context, repository_id)?;
+        self.is_repository_trusted(repository_id)
+    }
+
     pub fn trust_repository_in_context(
         &self,
         context: &QueryContext,

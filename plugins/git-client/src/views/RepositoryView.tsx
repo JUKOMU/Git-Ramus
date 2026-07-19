@@ -16,6 +16,7 @@ export type RepositoryApi = Pick<
   | "getRepositorySnapshot"
   | "getRepositoryChanges"
   | "getRepositoryDiff"
+  | "getRepositoryTrustStatus"
   | "stageRepository"
   | "unstageRepository"
   | "commitRepository"
@@ -57,17 +58,19 @@ export function RepositoryView({ api, context, repository, onBack }: RepositoryV
   const [unstagedSelection, setUnstagedSelection] = useState<string[]>([]);
   const [untrackedSelection, setUntrackedSelection] = useState<string[]>([]);
   const [conflictSelection, setConflictSelection] = useState<string[]>([]);
-  const [trusted, setTrusted] = useState(false);
+  const [trusted, setTrusted] = useState<boolean | null>(null);
   const [confirmingTrust, setConfirmingTrust] = useState(false);
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [refreshError, setRefreshError] = useState<ErrorEnvelope | null>(null);
+  const [trustStatusError, setTrustStatusError] = useState<ErrorEnvelope | null>(null);
   const [actionError, setActionError] = useState<ErrorEnvelope | null>(null);
   const [diff, setDiff] = useState<DiffResult | null>(null);
   const [diffError, setDiffError] = useState<ErrorEnvelope | null>(null);
   const [diffRequest, setDiffRequest] = useState<DiffRequestState | null>(null);
   const diffGeneration = useRef(0);
+  const trustStatusGeneration = useRef(0);
 
   const groupedChanges = useMemo(() => groupChanges(changes), [changes]);
 
@@ -95,6 +98,29 @@ export function RepositoryView({ api, context, repository, onBack }: RepositoryV
   useEffect(() => {
     void Promise.resolve().then(refresh);
   }, [refresh]);
+
+  const loadTrustStatus = useCallback(async () => {
+    const generation = ++trustStatusGeneration.current;
+    setTrusted(null);
+    setTrustStatusError(null);
+    try {
+      const result = await api.getRepositoryTrustStatus(request);
+      if (generation === trustStatusGeneration.current) {
+        setTrusted(result.trusted);
+      }
+    } catch (reason: unknown) {
+      if (generation === trustStatusGeneration.current) {
+        setTrustStatusError(normalizeError(reason, "Repository Trust status could not be loaded."));
+      }
+    }
+  }, [api, request]);
+
+  useEffect(() => {
+    void Promise.resolve().then(loadTrustStatus);
+    return () => {
+      trustStatusGeneration.current += 1;
+    };
+  }, [loadTrustStatus]);
 
   useEffect(() => {
     let active = true;
@@ -144,12 +170,20 @@ export function RepositoryView({ api, context, repository, onBack }: RepositoryV
     if (change !== undefined) void showDiff(change, diffRequest.staged);
   };
 
+  const invalidateDiff = () => {
+    diffGeneration.current += 1;
+    setDiff(null);
+    setDiffError(null);
+    setDiffRequest(null);
+  };
+
   const confirmTrust = async () => {
     setBusy(true);
     setActionError(null);
     try {
       await api.trustRepository(request);
       setTrusted(true);
+      setTrustStatusError(null);
       setConfirmingTrust(false);
     } catch (reason: unknown) {
       setActionError(normalizeError(reason, "Repository Trust could not be recorded."));
@@ -169,12 +203,14 @@ export function RepositoryView({ api, context, repository, onBack }: RepositoryV
   };
 
   const stage = async (paths: string[], all: boolean) => {
-    if (!trusted || (!all && paths.length === 0)) return;
+    if (trusted !== true || (!all && paths.length === 0)) return;
     setBusy(true);
     setActionError(null);
     try {
       await api.stageRepository({ ...request, paths, all });
+      invalidateDiff();
       await refresh();
+      invalidateDiff();
     } catch (reason: unknown) {
       await recoverWriteFailure(reason, "Changes could not be staged.");
     } finally {
@@ -183,12 +219,14 @@ export function RepositoryView({ api, context, repository, onBack }: RepositoryV
   };
 
   const unstage = async () => {
-    if (!trusted || stagedSelection.length === 0) return;
+    if (trusted !== true || stagedSelection.length === 0) return;
     setBusy(true);
     setActionError(null);
     try {
       await api.unstageRepository({ ...request, paths: stagedSelection });
+      invalidateDiff();
       await refresh();
+      invalidateDiff();
     } catch (reason: unknown) {
       await recoverWriteFailure(reason, "Changes could not be unstaged.");
     } finally {
@@ -198,7 +236,7 @@ export function RepositoryView({ api, context, repository, onBack }: RepositoryV
 
   const commit = async () => {
     const commitMessage = message.trim();
-    if (!trusted || groupedChanges.staged.length === 0 || !commitMessage) return;
+    if (trusted !== true || groupedChanges.staged.length === 0 || !commitMessage) return;
     setBusy(true);
     setActionError(null);
     try {
@@ -208,7 +246,9 @@ export function RepositoryView({ api, context, repository, onBack }: RepositoryV
         identityProfileId: selectedIdentityProfileId
       });
       setMessage("");
+      invalidateDiff();
       await refresh();
+      invalidateDiff();
     } catch (reason: unknown) {
       await recoverWriteFailure(reason, "Commit could not be created.");
     } finally {
@@ -220,7 +260,7 @@ export function RepositoryView({ api, context, repository, onBack }: RepositoryV
     new Set([...unstagedSelection, ...untrackedSelection, ...conflictSelection])
   );
   const canCommit =
-    trusted && !busy && message.trim().length > 0 && groupedChanges.staged.length > 0;
+    trusted === true && !busy && message.trim().length > 0 && groupedChanges.staged.length > 0;
 
   return (
     <section className="view repository-view">
@@ -237,17 +277,19 @@ export function RepositoryView({ api, context, repository, onBack }: RepositoryV
         </div>
         <div className="repository-status">
           <span>{record?.snapshot?.branch ?? "Branch unknown"}</span>
-          {trusted ? (
+          {trusted === true ? (
             <span className="success-notice">Trusted for this session</span>
-          ) : (
+          ) : trusted === false ? (
             <button type="button" disabled={busy} onClick={() => setConfirmingTrust(true)}>
               Trust repository
             </button>
-          )}
+          ) : trustStatusError === null ? (
+            <span>Checking repository Trust…</span>
+          ) : null}
         </div>
       </header>
 
-      {confirmingTrust && !trusted ? (
+      {confirmingTrust && trusted === false ? (
         <div
           className="trust-confirmation"
           role="alertdialog"
@@ -265,6 +307,9 @@ export function RepositoryView({ api, context, repository, onBack }: RepositoryV
       {refreshError === null ? null : (
         <ErrorNotice error={refreshError} onRetry={() => void refresh()} />
       )}
+      {trustStatusError === null ? null : (
+        <ErrorNotice error={trustStatusError} onRetry={() => void loadTrustStatus()} />
+      )}
       {actionError === null ? null : (
         <ErrorNotice error={actionError} onRetry={() => void refresh()} />
       )}
@@ -278,7 +323,7 @@ export function RepositoryView({ api, context, repository, onBack }: RepositoryV
               <button
                 type="button"
                 disabled={
-                  !trusted ||
+                  trusted !== true ||
                   busy ||
                   groupedChanges.unstaged.length +
                     groupedChanges.untracked.length +
@@ -291,14 +336,14 @@ export function RepositoryView({ api, context, repository, onBack }: RepositoryV
               </button>
               <button
                 type="button"
-                disabled={!trusted || busy || stageSelected.length === 0}
+                disabled={trusted !== true || busy || stageSelected.length === 0}
                 onClick={() => void stage(stageSelected, false)}
               >
                 Stage selected
               </button>
               <button
                 type="button"
-                disabled={!trusted || busy || stagedSelection.length === 0}
+                disabled={trusted !== true || busy || stagedSelection.length === 0}
                 onClick={() => void unstage()}
               >
                 Unstage selected

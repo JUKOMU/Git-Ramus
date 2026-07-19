@@ -110,6 +110,7 @@ describe("tauriHostApi Git client commands", () => {
     await tauriHostApi.getRepositorySnapshot(repositoryRequest);
     await tauriHostApi.getRepositoryChanges(repositoryRequest);
     await tauriHostApi.getRepositoryDiff(diff);
+    await tauriHostApi.getRepositoryTrustStatus(repositoryRequest);
     await tauriHostApi.stageRepository(stage);
     await tauriHostApi.unstageRepository(unstage);
     await tauriHostApi.commitRepository(commit);
@@ -136,6 +137,7 @@ describe("tauriHostApi Git client commands", () => {
       ["git_repository_snapshot", { request: repositoryRequest }],
       ["git_repository_changes", { request: repositoryRequest }],
       ["git_repository_diff", { request: diff }],
+      ["git_repository_trust_status", { request: repositoryRequest }],
       ["git_repository_stage", { request: stage }],
       ["git_repository_unstage", { request: unstage }],
       ["git_repository_commit", { request: commit }],
@@ -205,6 +207,7 @@ const responses: Record<string, unknown> = {
       deletions: 0
     }
   },
+  git_repository_trust_status: { trusted: true },
   git_repository_stage: { repositoryId, snapshot, output: null },
   git_repository_unstage: { repositoryId, snapshot, output: null },
   git_repository_commit: { repositoryId, snapshot, output: "abc123" },

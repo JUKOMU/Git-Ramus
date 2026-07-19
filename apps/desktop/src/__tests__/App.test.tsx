@@ -32,6 +32,7 @@ const hostApi: HostApi = {
   getRepositorySnapshot: async () => Promise.reject(new Error("not used")),
   getRepositoryChanges: async () => Promise.reject(new Error("not used")),
   getRepositoryDiff: async () => Promise.reject(new Error("not used")),
+  getRepositoryTrustStatus: async () => Promise.reject(new Error("not used")),
   stageRepository: async () => Promise.reject(new Error("not used")),
   unstageRepository: async () => Promise.reject(new Error("not used")),
   commitRepository: async () => Promise.reject(new Error("not used")),

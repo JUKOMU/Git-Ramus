@@ -26,6 +26,7 @@ import {
   type RepositoryUnstageRequest,
   type ScanProjectResult,
   type TrustResponse,
+  type TrustStatusResponse,
   type Workspace,
   type WorkspaceCreateRequest,
   type WorkspaceDeleteRequest,
@@ -49,6 +50,7 @@ export interface GitClientApi {
   getRepositorySnapshot(request: RepositoryRequest): Promise<RepositoryScanRecord>;
   getRepositoryChanges(request: RepositoryRequest): Promise<ChangesResult>;
   getRepositoryDiff(request: RepositoryDiffRequest): Promise<DiffResult>;
+  getRepositoryTrustStatus(request: RepositoryRequest): Promise<TrustStatusResponse>;
   stageRepository(request: RepositoryStageRequest): Promise<WriteResult>;
   unstageRepository(request: RepositoryUnstageRequest): Promise<WriteResult>;
   commitRepository(request: RepositoryCommitRequest): Promise<WriteResult>;
@@ -77,6 +79,7 @@ export function createGitClientApi(client: PluginClient): GitClientApi {
     getRepositorySnapshot: (request) => client.request("repositories.getSnapshot", request),
     getRepositoryChanges: (request) => client.request("repositories.getChanges", request),
     getRepositoryDiff: (request) => client.request("repositories.getDiff", request),
+    getRepositoryTrustStatus: (request) => client.request("repositories.getTrustStatus", request),
     stageRepository: (request) => client.request("repositories.stage", request),
     unstageRepository: (request) => client.request("repositories.unstage", request),
     commitRepository: (request) => client.request("repositories.commit", request),

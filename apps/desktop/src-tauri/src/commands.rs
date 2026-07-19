@@ -251,6 +251,12 @@ pub struct GitTrustResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitRepositoryTrustStatusResponse {
+    pub trusted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GitIdentityListResponse {
     pub identities: Vec<IdentityProfile>,
     pub global_identity_profile_id: Option<String>,
@@ -541,6 +547,18 @@ pub fn git_repository_diff(
             &request.paths,
             request.staged,
         )
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn git_repository_trust_status(
+    state: State<'_, AppState>,
+    request: GitRepositoryRequest,
+) -> CommandResult<GitRepositoryTrustStatusResponse> {
+    state
+        .git
+        .is_repository_trusted_in_context(&context_from_request(&request)?, &request.repository_id)
+        .map(|trusted| GitRepositoryTrustStatusResponse { trusted })
         .map_err(command_error)
 }
 

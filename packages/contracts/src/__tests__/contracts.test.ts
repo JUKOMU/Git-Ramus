@@ -23,7 +23,9 @@ import {
   projectUpdateScanRulesRequestSchema,
   workspaceRequestSchema,
   workspaceMembershipResponseSchema,
+  repositoryRequestSchema,
   repositoryStageRequestSchema,
+  trustStatusResponseSchema,
   scanProjectResultSchema,
   overviewSchema,
   changesResultSchema,
@@ -265,6 +267,20 @@ describe("shared contracts", () => {
     expect(workspaceMembershipResponseSchema.parse([projectId])).toEqual([projectId]);
     expect(() =>
       workspaceRequestSchema.parse({ workspaceId, rootPath: "C:/must-not-cross-boundary" })
+    ).toThrow();
+  });
+
+  it("reads repository Trust status through a strict ID-only contract", () => {
+    expect(repositoryRequestSchema.parse({ projectId, repositoryId })).toEqual({
+      projectId,
+      repositoryId
+    });
+    expect(trustStatusResponseSchema.parse({ trusted: true })).toEqual({ trusted: true });
+    expect(() =>
+      trustStatusResponseSchema.parse({ trusted: true, trustedAt: "2026-07-17T00:00:00Z" })
+    ).toThrow();
+    expect(() =>
+      repositoryRequestSchema.parse({ projectId, repositoryId, rootPath: "C:/secret" })
     ).toThrow();
   });
 

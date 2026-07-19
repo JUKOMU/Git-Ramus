@@ -127,6 +127,57 @@ describe("RepositoryView", () => {
     expect(await screen.findByText(diffTextMatcher)).toBeInTheDocument();
   });
 
+  it("loads persisted Trust before enabling writes and does not request Trust again", async () => {
+    const user = userEvent.setup();
+    const trustStatus = deferred<{ trusted: boolean }>();
+    const api = Object.assign(createApi({ changes: [unstaged] }), {
+      getRepositoryTrustStatus: vi.fn(() => trustStatus.promise)
+    });
+    render(<RepositoryView api={api} context={{ projectId }} repository={repository} />);
+
+    expect(await screen.findByRole("heading", { name: "Unstaged" })).toBeInTheDocument();
+    expect(screen.getByText("Checking repository Trust…")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Stage all" })).toBeDisabled();
+
+    await act(async () => {
+      trustStatus.resolve({ trusted: true });
+      await trustStatus.promise;
+    });
+
+    expect(await screen.findByText("Trusted for this session")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Trust repository" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Stage all" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Stage all" }));
+    expect(api.trustRepository).not.toHaveBeenCalled();
+    expect(api.stageRepository).toHaveBeenCalledOnce();
+  });
+
+  it("keeps Trust unknown after a status load failure and retries the host read", async () => {
+    const user = userEvent.setup();
+    const trustError = {
+      ...errorEnvelope(),
+      code: "repository.trust-status-unavailable",
+      message: "Trust status temporarily unavailable.",
+      failedStep: "repositories.getTrustStatus",
+      recoveryActions: [{ id: "retry", label: "Retry Trust status", kind: "retry" as const }]
+    };
+    const api = Object.assign(createApi({ changes: [unstaged] }), {
+      getRepositoryTrustStatus: vi
+        .fn()
+        .mockRejectedValueOnce(trustError)
+        .mockResolvedValueOnce({ trusted: true })
+    });
+    render(<RepositoryView api={api} context={{ projectId }} repository={repository} />);
+
+    expect(await screen.findByText("Trust status temporarily unavailable.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Stage all" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Trust repository" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Retry Trust status" }));
+    expect(await screen.findByText("Trusted for this session")).toBeInTheDocument();
+    expect(api.getRepositoryTrustStatus).toHaveBeenCalledTimes(2);
+  });
+
   it("requires explicit Trust and commits the complete staged index without path parameters", async () => {
     const user = userEvent.setup();
     const api = createApi({ changes: [staged] });
@@ -196,6 +247,84 @@ describe("RepositoryView", () => {
       all: true
     });
     expect(api.getRepositoryChanges).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears a displayed diff after Stage succeeds", async () => {
+    const user = userEvent.setup();
+    const api = createApi({ changes: [unstaged] });
+    render(<RepositoryView api={api} context={{ projectId }} repository={repository} />);
+    await screen.findByRole("heading", { name: "Unstaged" });
+    await user.click(screen.getByRole("button", { name: "View diff for src/unstaged.ts" }));
+    expect(await screen.findByText(diffTextMatcher)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Trust repository" }));
+    await user.click(screen.getByRole("button", { name: "Confirm trust" }));
+
+    await user.click(screen.getByRole("button", { name: "Stage all" }));
+
+    expect(
+      await screen.findByText("Select a changed path to inspect its diff.")
+    ).toBeInTheDocument();
+    expect(screen.queryByText(diffTextMatcher)).not.toBeInTheDocument();
+  });
+
+  it("clears a displayed diff after Unstage succeeds", async () => {
+    const user = userEvent.setup();
+    const api = createApi({ changes: [staged] });
+    render(<RepositoryView api={api} context={{ projectId }} repository={repository} />);
+    const selectedPath = await screen.findByRole("checkbox", { name: "Select src/staged.ts" });
+    await user.click(screen.getByRole("button", { name: "View diff for src/staged.ts" }));
+    expect(await screen.findByText(diffTextMatcher)).toBeInTheDocument();
+    await user.click(selectedPath);
+    await user.click(screen.getByRole("button", { name: "Trust repository" }));
+    await user.click(screen.getByRole("button", { name: "Confirm trust" }));
+
+    await user.click(screen.getByRole("button", { name: "Unstage selected" }));
+
+    expect(
+      await screen.findByText("Select a changed path to inspect its diff.")
+    ).toBeInTheDocument();
+    expect(screen.queryByText(diffTextMatcher)).not.toBeInTheDocument();
+  });
+
+  it("clears a displayed diff after Commit succeeds", async () => {
+    const user = userEvent.setup();
+    const api = createApi({ changes: [staged] });
+    render(<RepositoryView api={api} context={{ projectId }} repository={repository} />);
+    await screen.findByRole("heading", { name: "Staged" });
+    await user.click(screen.getByRole("button", { name: "View diff for src/staged.ts" }));
+    expect(await screen.findByText(diffTextMatcher)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Trust repository" }));
+    await user.click(screen.getByRole("button", { name: "Confirm trust" }));
+    await user.type(screen.getByLabelText("Commit message"), "Invalidate the old diff");
+
+    await user.click(screen.getByRole("button", { name: "Commit staged changes" }));
+
+    expect(
+      await screen.findByText("Select a changed path to inspect its diff.")
+    ).toBeInTheDocument();
+    expect(screen.queryByText(diffTextMatcher)).not.toBeInTheDocument();
+  });
+
+  it("does not restore an in-flight diff that resolves after a successful write", async () => {
+    const user = userEvent.setup();
+    const pendingDiff = deferred<Awaited<ReturnType<RepositoryApi["getRepositoryDiff"]>>>();
+    const api = createApi({ changes: [unstaged] });
+    vi.mocked(api.getRepositoryDiff).mockReturnValueOnce(pendingDiff.promise);
+    render(<RepositoryView api={api} context={{ projectId }} repository={repository} />);
+    await screen.findByRole("heading", { name: "Unstaged" });
+    await user.click(screen.getByRole("button", { name: "Trust repository" }));
+    await user.click(screen.getByRole("button", { name: "Confirm trust" }));
+    await user.click(screen.getByRole("button", { name: "View diff for src/unstaged.ts" }));
+
+    await user.click(screen.getByRole("button", { name: "Stage all" }));
+    await vi.waitFor(() => expect(api.getRepositoryChanges).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      pendingDiff.resolve(diffResult(unstaged.path, false));
+      await pendingDiff.promise;
+    });
+
+    expect(screen.getByText("Select a changed path to inspect its diff.")).toBeInTheDocument();
+    expect(screen.queryByText(diffTextMatcher)).not.toBeInTheDocument();
   });
 
   it("keeps a write ErrorEnvelope visible after refreshing repository status", async () => {
@@ -297,8 +426,7 @@ describe("RepositoryView", () => {
       ]
     });
     render(<RepositoryView api={api} context={{ projectId }} repository={repository} />);
-    await screen.findByRole("heading", { name: "Unstaged" });
-    await user.click(screen.getByRole("button", { name: "View diff for src/unstaged.ts" }));
+    await user.click(await screen.findByRole("button", { name: "View diff for src/unstaged.ts" }));
 
     const unsupportedAction = await screen.findByRole("button", { name: "Open identity settings" });
     expect(unsupportedAction).toBeDisabled();
@@ -345,6 +473,7 @@ function createApi({ changes }: { changes: ParsedChangeEntry[] }): RepositoryApi
     getRepositoryDiff: vi.fn(async (request) =>
       diffResult(request.paths[0] ?? "all", request.staged)
     ),
+    getRepositoryTrustStatus: vi.fn(async () => ({ trusted: false })),
     stageRepository: vi.fn(async () => ({
       repositoryId,
       snapshot: persistedSnapshot,

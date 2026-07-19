@@ -488,6 +488,7 @@ export const writeResultSchema = z
   .strict();
 
 export const trustResponseSchema = z.object({ trust: trustSchema }).strict();
+export const trustStatusResponseSchema = z.object({ trusted: z.boolean() }).strict();
 
 export const identityListResponseSchema = z
   .object({ identities: z.array(identityProfileSchema), globalIdentityProfileId: nullableUuid })
@@ -557,6 +558,7 @@ export type ChangesResult = z.infer<typeof changesResultSchema>;
 export type DiffResult = z.infer<typeof diffResultSchema>;
 export type WriteResult = z.infer<typeof writeResultSchema>;
 export type TrustResponse = z.infer<typeof trustResponseSchema>;
+export type TrustStatusResponse = z.infer<typeof trustStatusResponseSchema>;
 export type IdentityListResponse = z.infer<typeof identityListResponseSchema>;
 export type OperationResponse = z.infer<typeof operationResponseSchema>;
 export type RepositoryOperationResponse = z.infer<typeof repositoryOperationResponseSchema>;

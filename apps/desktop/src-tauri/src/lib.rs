@@ -58,6 +58,7 @@ pub fn run() {
             commands::git_repository_snapshot,
             commands::git_repository_changes,
             commands::git_repository_diff,
+            commands::git_repository_trust_status,
             commands::git_repository_stage,
             commands::git_repository_unstage,
             commands::git_repository_commit,

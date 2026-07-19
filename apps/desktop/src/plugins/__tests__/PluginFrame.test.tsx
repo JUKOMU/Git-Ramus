@@ -64,6 +64,7 @@ const hostApi: HostApi = {
   getRepositorySnapshot: vi.fn(),
   getRepositoryChanges: vi.fn(),
   getRepositoryDiff: vi.fn(),
+  getRepositoryTrustStatus: vi.fn(),
   stageRepository: vi.fn(),
   unstageRepository: vi.fn(),
   commitRepository: vi.fn(),
