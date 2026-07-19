@@ -5,9 +5,16 @@ use crate::providers::model::{ProviderKind, RemoteRepositoryIdentity};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NormalizedRemoteUrl {
+    pub transport: RemoteTransport,
     pub host: String,
     pub port: Option<u16>,
     pub path: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteTransport {
+    Https,
+    Ssh,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,6 +99,11 @@ pub fn normalize_remote_url(input: &str) -> Result<NormalizedRemoteUrl, AppError
         .ok_or_else(invalid_remote)?;
     let path = normalize_repository_path(parsed.path())?;
     Ok(NormalizedRemoteUrl {
+        transport: if parsed.scheme() == "https" {
+            RemoteTransport::Https
+        } else {
+            RemoteTransport::Ssh
+        },
         host,
         port: canonical_port(parsed.scheme(), parsed.port()),
         path,
@@ -140,6 +152,7 @@ fn normalize_scp_remote(value: &str) -> Result<NormalizedRemoteUrl, AppError> {
         .map(str::to_ascii_lowercase)
         .ok_or_else(invalid_remote)?;
     Ok(NormalizedRemoteUrl {
+        transport: RemoteTransport::Ssh,
         host: parsed_host,
         port: None,
         path: normalize_repository_path(path)?,
@@ -206,8 +219,8 @@ mod tests {
     use crate::providers::model::{ProviderKind, RemoteRepositoryIdentity};
 
     use super::{
-        NormalizedInstance, NormalizedRemoteUrl, detect_remote, normalize_instance_base,
-        normalize_remote_url,
+        NormalizedInstance, NormalizedRemoteUrl, RemoteTransport, detect_remote,
+        normalize_instance_base, normalize_remote_url,
     };
 
     #[test]
@@ -215,6 +228,7 @@ mod tests {
         assert_eq!(
             normalize_remote_url("git@GitLab.Example:group/repo.git").unwrap(),
             NormalizedRemoteUrl {
+                transport: RemoteTransport::Ssh,
                 host: "gitlab.example".to_owned(),
                 port: None,
                 path: "group/repo".to_owned(),
@@ -223,6 +237,7 @@ mod tests {
         assert_eq!(
             normalize_remote_url("ssh://git@gitlab.example:22/group/Repo.git/").unwrap(),
             NormalizedRemoteUrl {
+                transport: RemoteTransport::Ssh,
                 host: "gitlab.example".to_owned(),
                 port: None,
                 path: "group/Repo".to_owned(),

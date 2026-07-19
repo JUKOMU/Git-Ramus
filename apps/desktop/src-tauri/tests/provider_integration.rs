@@ -8,6 +8,7 @@ use git_ramus_desktop_lib::providers::adapter::{
     AdapterAccountContext, RepositoryDiscoveryProvider,
 };
 use git_ramus_desktop_lib::providers::github::GithubProvider;
+use git_ramus_desktop_lib::providers::gitlab::GitlabProvider;
 use git_ramus_desktop_lib::providers::http::ScopedHttpClient;
 use git_ramus_desktop_lib::providers::model::{
     AdapterCursor, AdapterListRequest, ProviderArchivedFilter, ProviderInstance, ProviderKind,
@@ -787,4 +788,401 @@ async fn github_rejects_cross_origin_pagination_links() {
 
     assert_eq!(error_code(error), "provider.response-invalid");
     target_mock.assert_calls_async(0).await;
+}
+
+fn gitlab_project_fixture(
+    root_url: &str,
+    id: u64,
+    full_name: &str,
+    visibility: &str,
+    archived: bool,
+    fork: bool,
+    access: (Option<u64>, Option<u64>),
+) -> serde_json::Value {
+    let path = full_name
+        .rsplit_once('/')
+        .map_or(full_name, |(_, path)| path);
+    let project_access = access
+        .0
+        .map(|access_level| serde_json::json!({ "access_level": access_level }));
+    let group_access = access
+        .1
+        .map(|access_level| serde_json::json!({ "access_level": access_level }));
+    let host = reqwest::Url::parse(root_url)
+        .expect("fixture root URL parses")
+        .host_str()
+        .expect("fixture has host")
+        .to_owned();
+    serde_json::json!({
+        "id": id,
+        "name": if path == "skill-set" { "Skill Set" } else { path },
+        "path": path,
+        "path_with_namespace": full_name,
+        "default_branch": "main",
+        "visibility": visibility,
+        "ssh_url_to_repo": format!("git@{host}:{full_name}.git"),
+        "http_url_to_repo": format!("{root_url}/{full_name}.git"),
+        "web_url": format!("{root_url}/{full_name}"),
+        "archived": archived,
+        "forked_from_project": if fork { serde_json::json!({ "id": 1 }) } else { serde_json::Value::Null },
+        "permissions": { "project_access": project_access, "group_access": group_access },
+        "last_activity_at": "2026-07-19T00:00:00Z",
+        "unknown_future_field": [1, 2, 3]
+    })
+}
+
+#[tokio::test]
+async fn gitlab_validates_relative_root_and_authenticates_with_a_pat() {
+    let server = MockServer::start_async().await;
+    let version = server
+        .mock_async(|when, then| {
+            when.method(GET)
+                .path("/gitlab/api/v4/version")
+                .header("accept", "application/json")
+                .header("user-agent", "Git-Ramus/0.1")
+                .header_missing("private-token");
+            then.status(200).json_body(serde_json::json!({
+                "version": "18.2.0-ee",
+                "revision": "ignored"
+            }));
+        })
+        .await;
+    let user = server
+        .mock_async(|when, then| {
+            when.method(GET)
+                .path("/gitlab/api/v4/user")
+                .header("private-token", "gitlab-test-token")
+                .header("accept", "application/json");
+            then.status(200).json_body(serde_json::json!({
+                "id": 17,
+                "username": "tempest",
+                "name": "Yozora Tempest",
+                "avatar_url": server.url("/gitlab/uploads/avatar.png"),
+                "email": "must-not-leave-adapter@example.test"
+            }));
+        })
+        .await;
+    let client = ScopedHttpClient::for_test_http(&server.url("/gitlab/api/v4"))
+        .expect("relative-root client builds");
+    let provider = GitlabProvider;
+
+    let metadata = provider
+        .validate_instance(&client)
+        .await
+        .expect("instance validates");
+    assert_eq!(metadata.server_version.as_deref(), Some("18.2.0-ee"));
+    let identity = provider
+        .authenticate_account(&client, "gitlab-test-token")
+        .await
+        .expect("account authenticates");
+    assert_eq!(identity.provider_user_id, "17");
+    assert_eq!(identity.username, "tempest");
+    version.assert_calls_async(1).await;
+    user.assert_calls_async(1).await;
+}
+
+#[tokio::test]
+async fn gitlab_lists_only_membership_projects_across_relative_root_pages() {
+    let server = MockServer::start_async().await;
+    let root_url = server.url("/gitlab");
+    let page_one_link = format!(
+        "<{}>; rel=\"next\"",
+        server.url("/gitlab/api/v4/projects?membership=true&page=2")
+    );
+    let first_page = server
+        .mock_async(|when, then| {
+            when.method(GET)
+                .path("/gitlab/api/v4/projects")
+                .header("private-token", "gitlab-test-token")
+                .query_param("membership", "true")
+                .query_param("simple", "true")
+                .query_param("per_page", "100")
+                .query_param("page", "1")
+                .query_param("order_by", "last_activity_at")
+                .query_param("sort", "asc")
+                .query_param("search", "skill");
+            then.status(200)
+                .header("link", page_one_link)
+                .header("x-next-page", "2")
+                .header("ratelimit-limit", "2000")
+                .header("ratelimit-remaining", "1999")
+                .header("ratelimit-reset", "1784419200")
+                .json_body(serde_json::json!([
+                    gitlab_project_fixture(
+                        &root_url,
+                        42,
+                        "group/subgroup/skill-set",
+                        "internal",
+                        false,
+                        false,
+                        (Some(30), None)
+                    ),
+                    gitlab_project_fixture(
+                        &root_url,
+                        43,
+                        "tempest/private-skill",
+                        "private",
+                        false,
+                        false,
+                        (Some(20), Some(40))
+                    )
+                ]));
+        })
+        .await;
+    let second_page = server
+        .mock_async(|when, then| {
+            when.method(GET)
+                .path("/gitlab/api/v4/projects")
+                .query_param("membership", "true")
+                .query_param("simple", "true")
+                .query_param("per_page", "100")
+                .query_param("page", "2")
+                .query_param("order_by", "last_activity_at")
+                .query_param("sort", "asc")
+                .query_param("search", "skill");
+            then.status(200)
+                .header("x-next-page", "")
+                .json_body(serde_json::json!([
+                    gitlab_project_fixture(
+                        &root_url,
+                        44,
+                        "group/archived-skill",
+                        "public",
+                        true,
+                        false,
+                        (Some(10), None)
+                    ),
+                    gitlab_project_fixture(
+                        &root_url,
+                        45,
+                        "group/forked-skill",
+                        "private",
+                        false,
+                        true,
+                        (Some(20), None)
+                    )
+                ]));
+        })
+        .await;
+    let unrelated = server
+        .mock_async(|when, then| {
+            when.method(GET)
+                .path("/gitlab/api/v4/projects")
+                .query_param("membership", "false");
+            then.status(200)
+                .json_body(serde_json::json!([gitlab_project_fixture(
+                    &root_url,
+                    999,
+                    "unrelated/public-skill",
+                    "public",
+                    false,
+                    false,
+                    (Some(10), None)
+                )]));
+        })
+        .await;
+    let client = ScopedHttpClient::for_test_http(&server.url("/gitlab/api/v4"))
+        .expect("relative-root client builds");
+    let provider = GitlabProvider;
+    let cancellation = CancellationToken::new();
+    let mut query = github_query();
+    query.search = "skill".to_owned();
+    query.sort = ProviderRepositorySort::Updated;
+    query.direction = ProviderRepositoryDirection::Asc;
+
+    let first = provider
+        .list_repositories(
+            AdapterAccountContext {
+                client: &client,
+                secret: "gitlab-test-token",
+                cancellation: &cancellation,
+            },
+            AdapterListRequest {
+                query: query.clone(),
+                cursor: None,
+            },
+        )
+        .await
+        .expect("first page maps");
+    assert_eq!(first.items[0].full_name, "group/subgroup/skill-set");
+    assert_eq!(first.items[0].namespace, "group/subgroup");
+    assert_eq!(first.items[0].name, "Skill Set");
+    assert_eq!(first.items[0].visibility, ProviderVisibility::Internal);
+    assert_eq!(first.items[0].permission, ProviderPermission::Write);
+    assert_eq!(first.items[1].permission, ProviderPermission::Admin);
+    assert_eq!(first.next_cursor, Some(AdapterCursor::Page(2)));
+    assert_eq!(first.rate_limit.expect("rate limit").remaining, Some(1999));
+    assert!(first.items[0].web_url.starts_with(&root_url));
+
+    let second = provider
+        .list_repositories(
+            AdapterAccountContext {
+                client: &client,
+                secret: "gitlab-test-token",
+                cancellation: &cancellation,
+            },
+            AdapterListRequest {
+                query,
+                cursor: Some(AdapterCursor::Page(2)),
+            },
+        )
+        .await
+        .expect("second page maps");
+    assert!(second.items[0].archived);
+    assert!(second.items[1].fork);
+    assert!(second.next_cursor.is_none());
+    first_page.assert_calls_async(1).await;
+    second_page.assert_calls_async(1).await;
+    unrelated.assert_calls_async(0).await;
+}
+
+#[tokio::test]
+async fn gitlab_get_project_and_errors_use_stable_privacy_preserving_codes() {
+    let server = MockServer::start_async().await;
+    let root_url = server.url("/gitlab");
+    let success = server
+        .mock_async(|when, then| {
+            when.method(GET)
+                .path("/gitlab/api/v4/projects/group%2Fsubgroup%2Fskill-set")
+                .header("private-token", "gitlab-test-token");
+            then.status(200).json_body(gitlab_project_fixture(
+                &root_url,
+                42,
+                "group/subgroup/skill-set",
+                "internal",
+                false,
+                false,
+                (Some(30), None),
+            ));
+        })
+        .await;
+    for (project_id, status) in [(403_u64, 403), (404, 404)] {
+        server
+            .mock_async(move |when, then| {
+                when.method(GET)
+                    .path(format!("/gitlab/api/v4/projects/{project_id}"));
+                then.status(status);
+            })
+            .await;
+    }
+    server
+        .mock_async(|when, then| {
+            when.method(GET).path("/gitlab/api/v4/projects/429");
+            then.status(429).header("retry-after", "4");
+        })
+        .await;
+    let client =
+        ScopedHttpClient::for_test_http(&server.url("/gitlab/api/v4")).expect("client builds");
+    let cancellation = CancellationToken::new();
+    let provider = GitlabProvider;
+
+    let repository = provider
+        .get_repository(
+            AdapterAccountContext {
+                client: &client,
+                secret: "gitlab-test-token",
+                cancellation: &cancellation,
+            },
+            RemoteRepositoryIdentity::Path {
+                path: "group/subgroup/skill-set".to_owned(),
+            },
+        )
+        .await
+        .expect("nested project verifies");
+    assert_eq!(repository.repository_id, "42");
+    success.assert_calls_async(1).await;
+
+    for (repository_id, expected) in [
+        ("403", "provider.permission-insufficient"),
+        ("404", "provider.permission-insufficient"),
+        ("429", "provider.rate-limited"),
+    ] {
+        let error = provider
+            .get_repository(
+                AdapterAccountContext {
+                    client: &client,
+                    secret: "gitlab-test-token",
+                    cancellation: &cancellation,
+                },
+                RemoteRepositoryIdentity::Id {
+                    repository_id: repository_id.to_owned(),
+                },
+            )
+            .await
+            .expect_err("error is normalized");
+        assert_eq!(error_code(error), expected);
+    }
+}
+
+#[tokio::test]
+async fn gitlab_maps_authentication_malformed_json_and_cross_origin_links() {
+    let unauthorized = MockServer::start_async().await;
+    unauthorized
+        .mock_async(|when, then| {
+            when.method(GET).path("/api/v4/user");
+            then.status(401);
+        })
+        .await;
+    let client =
+        ScopedHttpClient::for_test_http(&unauthorized.url("/api/v4")).expect("client builds");
+    let error = GitlabProvider
+        .authenticate_account(&client, "bad-token")
+        .await
+        .expect_err("401 rejects the PAT");
+    assert_eq!(error_code(error), "provider.authentication-required");
+
+    let target = MockServer::start_async().await;
+    let source = MockServer::start_async().await;
+    source
+        .mock_async(|when, then| {
+            when.method(GET).path("/api/v4/projects");
+            then.status(200)
+                .header(
+                    "link",
+                    format!("<{}>; rel=\"next\"", target.url("/capture?page=2")),
+                )
+                .json_body(serde_json::json!([]));
+        })
+        .await;
+    let client = ScopedHttpClient::for_test_http(&source.url("/api/v4")).expect("client builds");
+    let cancellation = CancellationToken::new();
+    let error = GitlabProvider
+        .list_repositories(
+            AdapterAccountContext {
+                client: &client,
+                secret: "gitlab-test-token",
+                cancellation: &cancellation,
+            },
+            AdapterListRequest {
+                query: github_query(),
+                cursor: None,
+            },
+        )
+        .await
+        .expect_err("cross-origin pagination is rejected");
+    assert_eq!(error_code(error), "provider.response-invalid");
+
+    let malformed = MockServer::start_async().await;
+    malformed
+        .mock_async(|when, then| {
+            when.method(GET).path("/api/v4/projects");
+            then.status(200).body("{");
+        })
+        .await;
+    let client = ScopedHttpClient::for_test_http(&malformed.url("/api/v4")).expect("client builds");
+    let error = GitlabProvider
+        .list_repositories(
+            AdapterAccountContext {
+                client: &client,
+                secret: "gitlab-test-token",
+                cancellation: &cancellation,
+            },
+            AdapterListRequest {
+                query: github_query(),
+                cursor: None,
+            },
+        )
+        .await
+        .expect_err("malformed JSON is normalized");
+    assert_eq!(error_code(error), "provider.response-invalid");
 }

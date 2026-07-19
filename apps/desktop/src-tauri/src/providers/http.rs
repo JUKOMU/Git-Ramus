@@ -197,6 +197,10 @@ impl ScopedHttpClient {
         same_origin(&self.origin, url)
     }
 
+    pub(crate) fn api_origin(&self) -> &Url {
+        &self.origin
+    }
+
     pub async fn get(
         &self,
         relative_path: &str,

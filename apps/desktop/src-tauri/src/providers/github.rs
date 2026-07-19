@@ -470,7 +470,7 @@ struct GithubPermissions {
 mod tests {
     use super::{GithubProvider, RepositoryDiscoveryProvider};
     use crate::providers::model::{ProviderKind, RemoteRepositoryIdentity};
-    use crate::providers::url::{NormalizedInstance, NormalizedRemoteUrl};
+    use crate::providers::url::{NormalizedInstance, NormalizedRemoteUrl, RemoteTransport};
 
     #[test]
     fn detects_only_github_repository_remotes() {
@@ -482,6 +482,7 @@ mod tests {
             root_path: String::new(),
         };
         let remote = NormalizedRemoteUrl {
+            transport: RemoteTransport::Https,
             host: "github.com".to_owned(),
             port: None,
             path: "octo/private-skill".to_owned(),
