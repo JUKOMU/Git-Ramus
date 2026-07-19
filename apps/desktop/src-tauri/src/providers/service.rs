@@ -19,10 +19,11 @@ use crate::providers::cursor::{CursorEntry, CursorStore, OperationRegistry};
 use crate::providers::http::ScopedHttpClient;
 use crate::providers::model::{
     AccountDeletionImpact, AccountDeletionResolution, BindingSource, NewProviderAccount,
-    ProviderAccount, ProviderAccountSummary, ProviderArchivedFilter, ProviderBinding,
-    ProviderBindingSuggestion, ProviderBindingSuggestionStatus, ProviderConnectionStatus,
-    ProviderInstance, ProviderInstanceSummary, ProviderKind, ProviderRateLimitState,
-    ProviderRepositoryPage, ProviderRepositoryQuery, RemoteRepository, RemoteRepositoryIdentity,
+    ProviderAccount, ProviderAccountSummary, ProviderArchivedFilter, ProviderAuthorizedAccount,
+    ProviderBinding, ProviderBindingSuggestion, ProviderBindingSuggestionStatus,
+    ProviderConnectionStatus, ProviderInstance, ProviderInstanceSummary, ProviderKind,
+    ProviderRateLimitState, ProviderRepositoryPage, ProviderRepositoryQuery, RemoteRepository,
+    RemoteRepositoryIdentity,
 };
 use crate::providers::store::ProviderStore;
 use crate::providers::url::{
@@ -248,6 +249,19 @@ impl ProviderService {
             .into_iter()
             .map(|account| self.account_summary(account, enabled))
             .collect())
+    }
+
+    pub fn authorized_account(
+        &self,
+        account_id: &str,
+    ) -> Result<ProviderAuthorizedAccount, AppError> {
+        let account = self.store.get_account(account_id)?;
+        let instance = self.store.get_instance(&account.instance_id)?;
+        let enabled = self.adapters.is_enabled(instance.provider_kind)?;
+        Ok(ProviderAuthorizedAccount {
+            instance: self.instance_summary(instance)?,
+            account: self.account_summary(account, enabled),
+        })
     }
 
     pub async fn connect_account(

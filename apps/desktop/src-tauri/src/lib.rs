@@ -58,7 +58,29 @@ macro_rules! invoke_handlers {
             commands::git_identity_set_global,
             commands::git_repository_bind_identity,
             commands::git_repository_unbind_identity,
-            commands::git_repository_effective_identity
+            commands::git_repository_effective_identity,
+            commands::provider_instance_list,
+            commands::provider_instance_create,
+            commands::provider_instance_update,
+            commands::provider_instance_validate,
+            commands::provider_instance_delete,
+            commands::provider_account_list,
+            commands::provider_account_connect,
+            commands::provider_account_rotate,
+            commands::provider_account_validate,
+            commands::provider_account_set_default,
+            commands::provider_account_deletion_impact,
+            commands::provider_account_delete,
+            commands::provider_repository_list,
+            commands::provider_operation_cancel,
+            commands::provider_local_remote_match,
+            commands::provider_binding_list,
+            commands::provider_binding_set,
+            commands::provider_binding_delete,
+            commands::provider_permission_is_declared,
+            commands::provider_permission_list_authorized_accounts,
+            commands::provider_permission_grant_accounts,
+            commands::provider_permission_revoke_account
             $(, $extra)*
         ]
     };

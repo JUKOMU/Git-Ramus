@@ -11,7 +11,19 @@ use crate::git::service::{
 use crate::identity::{EffectiveIdentity, IdentityProfile, IdentityProfileInput};
 use crate::jobs::model::Job;
 use crate::plugins::PluginDescriptor;
+use crate::plugins::permissions::PermissionGateway;
+use crate::providers::model::{
+    AccountDeletionImpact, AccountDeletionResolution, ProviderAccountSummary,
+    ProviderAuthorizedAccount, ProviderBinding, ProviderBindingSuggestion, ProviderInstanceSummary,
+    ProviderKind, ProviderRepositoryPage, ProviderRepositoryQuery,
+};
+use crate::providers::service::{
+    BindRemoteInput, CreateInstanceInput, CustomCaUpdate, DeleteAccountInput,
+    ListRepositoriesInput, ProviderService, UpdateInstanceInput,
+};
+use crate::secrets::SensitiveString;
 use crate::themes::{ThemeMetadata, ThemeState};
+use uuid::Uuid;
 
 pub type CommandResult<T> = Result<T, Box<ErrorEnvelope>>;
 
@@ -273,6 +285,171 @@ pub struct ThemeActivateRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ThemeCatalogResponse {
     pub themes: Vec<ThemeMetadata>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderInstanceCreateCommandRequest {
+    pub provider_kind: ProviderKind,
+    pub display_name: String,
+    pub base_url: String,
+    pub custom_ca_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderInstanceUpdateCommandRequest {
+    pub instance_id: String,
+    pub display_name: String,
+    pub base_url: String,
+    pub custom_ca: CustomCaUpdate,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderInstanceRequest {
+    pub instance_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderAccountListRequest {
+    pub instance_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderAccountConnectRequest {
+    pub instance_id: String,
+    pub pat: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderAccountRotateRequest {
+    pub account_id: String,
+    pub pat: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderAccountRequest {
+    pub account_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderAccountSetDefaultRequest {
+    pub instance_id: String,
+    pub account_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderAccountDeleteRequest {
+    pub account_id: String,
+    pub resolution: AccountDeletionResolution,
+    pub new_default_account_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderRepositoryListRequest {
+    pub plugin_id: String,
+    pub account_id: String,
+    pub query: ProviderRepositoryQuery,
+    pub cursor: Option<String>,
+    pub operation_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderOperationCancelRequest {
+    pub plugin_id: String,
+    pub account_id: String,
+    pub operation_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderLocalRemoteMatchCommandRequest {
+    pub plugin_id: String,
+    pub instance_id: String,
+    pub account_id: String,
+    pub operation_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderBindingListRequest {
+    pub account_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderBindingSetRequest {
+    pub repository_id: String,
+    pub remote_name: String,
+    pub instance_id: String,
+    pub account_id: Option<String>,
+    pub provider_repository_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderBindingDeleteRequest {
+    pub repository_id: String,
+    pub remote_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderPermissionPluginRequest {
+    pub plugin_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderPermissionGrantAccountsRequest {
+    pub plugin_id: String,
+    pub account_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderPermissionAccountRequest {
+    pub plugin_id: String,
+    pub account_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderInstanceListResponse {
+    pub items: Vec<ProviderInstanceSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderAccountListResponse {
+    pub items: Vec<ProviderAccountSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderAuthorizedAccountListResponse {
+    pub items: Vec<ProviderAuthorizedAccount>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderBindingSuggestionListResponse {
+    pub items: Vec<ProviderBindingSuggestion>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderBindingListResponse {
+    pub items: Vec<ProviderBinding>,
 }
 
 #[tauri::command]
@@ -806,6 +983,423 @@ pub fn git_repository_effective_identity(
         .map_err(command_error)
 }
 
+#[tauri::command]
+pub fn provider_instance_list(
+    state: State<'_, AppState>,
+) -> CommandResult<ProviderInstanceListResponse> {
+    state
+        .providers
+        .list_instances()
+        .map(|items| ProviderInstanceListResponse { items })
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn provider_instance_create(
+    state: State<'_, AppState>,
+    request: ProviderInstanceCreateCommandRequest,
+) -> CommandResult<ProviderInstanceSummary> {
+    state
+        .providers
+        .create_instance(CreateInstanceInput {
+            provider_kind: request.provider_kind,
+            display_name: request.display_name,
+            base_url: request.base_url,
+            custom_ca_path: request.custom_ca_path,
+        })
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn provider_instance_update(
+    state: State<'_, AppState>,
+    request: ProviderInstanceUpdateCommandRequest,
+) -> CommandResult<ProviderInstanceSummary> {
+    state
+        .providers
+        .update_instance(UpdateInstanceInput {
+            instance_id: request.instance_id,
+            display_name: request.display_name,
+            base_url: request.base_url,
+            custom_ca: request.custom_ca,
+        })
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn provider_instance_validate(
+    state: State<'_, AppState>,
+    request: ProviderInstanceRequest,
+) -> CommandResult<ProviderInstanceSummary> {
+    state
+        .providers
+        .validate_instance(&request.instance_id)
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn provider_instance_delete(
+    state: State<'_, AppState>,
+    request: ProviderInstanceRequest,
+) -> CommandResult<()> {
+    state
+        .providers
+        .delete_instance(&request.instance_id)
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn provider_account_list(
+    state: State<'_, AppState>,
+    request: ProviderAccountListRequest,
+) -> CommandResult<ProviderAccountListResponse> {
+    state
+        .providers
+        .list_accounts(&request.instance_id)
+        .map(|items| ProviderAccountListResponse { items })
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn provider_account_connect(
+    state: State<'_, AppState>,
+    request: ProviderAccountConnectRequest,
+) -> CommandResult<ProviderAccountSummary> {
+    let ProviderAccountConnectRequest { instance_id, pat } = request;
+    let pat = SensitiveString::new(pat);
+    state
+        .providers
+        .connect_account(&instance_id, pat)
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn provider_account_rotate(
+    state: State<'_, AppState>,
+    request: ProviderAccountRotateRequest,
+) -> CommandResult<ProviderAccountSummary> {
+    let ProviderAccountRotateRequest { account_id, pat } = request;
+    let pat = SensitiveString::new(pat);
+    state
+        .providers
+        .rotate_account(&account_id, pat)
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn provider_account_validate(
+    state: State<'_, AppState>,
+    request: ProviderAccountRequest,
+) -> CommandResult<ProviderAccountSummary> {
+    state
+        .providers
+        .validate_account(&request.account_id)
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn provider_account_set_default(
+    state: State<'_, AppState>,
+    request: ProviderAccountSetDefaultRequest,
+) -> CommandResult<ProviderAccountSummary> {
+    state
+        .providers
+        .set_default_account(&request.instance_id, &request.account_id)
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn provider_account_deletion_impact(
+    state: State<'_, AppState>,
+    request: ProviderAccountRequest,
+) -> CommandResult<AccountDeletionImpact> {
+    state
+        .providers
+        .account_deletion_impact(&request.account_id)
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn provider_account_delete(
+    state: State<'_, AppState>,
+    request: ProviderAccountDeleteRequest,
+) -> CommandResult<()> {
+    state
+        .providers
+        .delete_account(DeleteAccountInput {
+            account_id: request.account_id,
+            resolution: request.resolution,
+            new_default_account_id: request.new_default_account_id,
+        })
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn provider_repository_list(
+    state: State<'_, AppState>,
+    request: ProviderRepositoryListRequest,
+) -> CommandResult<ProviderRepositoryPage> {
+    provider_repository_list_core(&state.permissions, &state.providers, request)
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn provider_operation_cancel(
+    state: State<'_, AppState>,
+    request: ProviderOperationCancelRequest,
+) -> CommandResult<()> {
+    ensure_provider_account_read(&state.permissions, &request.plugin_id, &request.account_id)
+        .map_err(command_error)?;
+    state
+        .providers
+        .cancel_operation(
+            &request.plugin_id,
+            &request.account_id,
+            &request.operation_id,
+        )
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn provider_local_remote_match(
+    state: State<'_, AppState>,
+    request: ProviderLocalRemoteMatchCommandRequest,
+) -> CommandResult<ProviderBindingSuggestionListResponse> {
+    ensure_provider_account_read(&state.permissions, &request.plugin_id, &request.account_id)
+        .map_err(command_error)?;
+    state
+        .providers
+        .match_local_remotes(
+            &request.plugin_id,
+            &request.instance_id,
+            &request.account_id,
+            &request.operation_id,
+        )
+        .await
+        .map(|items| ProviderBindingSuggestionListResponse { items })
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn provider_binding_list(
+    state: State<'_, AppState>,
+    request: ProviderBindingListRequest,
+) -> CommandResult<ProviderBindingListResponse> {
+    state
+        .providers
+        .list_bindings_for_account(&request.account_id)
+        .map(|items| ProviderBindingListResponse { items })
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn provider_binding_set(
+    state: State<'_, AppState>,
+    request: ProviderBindingSetRequest,
+) -> CommandResult<ProviderBinding> {
+    state
+        .providers
+        .bind_remote(BindRemoteInput {
+            repository_id: request.repository_id,
+            remote_name: request.remote_name,
+            instance_id: request.instance_id,
+            account_id: request.account_id,
+            provider_repository_id: request.provider_repository_id,
+        })
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn provider_binding_delete(
+    state: State<'_, AppState>,
+    request: ProviderBindingDeleteRequest,
+) -> CommandResult<()> {
+    state
+        .providers
+        .unbind_remote(&request.repository_id, &request.remote_name)
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn provider_permission_is_declared(
+    state: State<'_, AppState>,
+    request: AuthorizationRequest,
+) -> AuthorizationDecision {
+    AuthorizationDecision {
+        allowed: state.plugins.manifest_requests(
+            &request.plugin_id,
+            &request.capability,
+            &request.resource,
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn provider_permission_list_authorized_accounts(
+    state: State<'_, AppState>,
+    request: ProviderPermissionPluginRequest,
+) -> CommandResult<ProviderAuthorizedAccountListResponse> {
+    list_authorized_provider_accounts(
+        &state.plugins,
+        &state.permissions,
+        &state.providers,
+        &request.plugin_id,
+    )
+    .map(|items| ProviderAuthorizedAccountListResponse { items })
+    .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn provider_permission_grant_accounts(
+    state: State<'_, AppState>,
+    request: ProviderPermissionGrantAccountsRequest,
+) -> CommandResult<ProviderAuthorizedAccountListResponse> {
+    if !state
+        .plugins
+        .manifest_requests(&request.plugin_id, "providers:read", "providers")
+    {
+        return Err(command_error(AppError::PermissionDenied));
+    }
+    if request.account_ids.is_empty() {
+        return Err(command_error(AppError::InvalidInput(
+            "at least one Provider account is required".to_owned(),
+        )));
+    }
+
+    let mut resources = Vec::with_capacity(request.account_ids.len());
+    let mut items = Vec::with_capacity(request.account_ids.len());
+    for account_id in request.account_ids {
+        let resource = provider_account_resource(&account_id).map_err(command_error)?;
+        if resources.iter().any(|current| current == &resource) {
+            continue;
+        }
+        items.push(
+            state
+                .providers
+                .authorized_account(&account_id)
+                .map_err(command_error)?,
+        );
+        resources.push(resource);
+    }
+    for resource in resources {
+        state
+            .permissions
+            .grant_dynamic(&request.plugin_id, "providers:read", &resource)
+            .map_err(command_error)?;
+    }
+    Ok(ProviderAuthorizedAccountListResponse { items })
+}
+
+#[tauri::command]
+pub async fn provider_permission_revoke_account(
+    state: State<'_, AppState>,
+    request: ProviderPermissionAccountRequest,
+) -> CommandResult<()> {
+    if !state
+        .plugins
+        .manifest_requests(&request.plugin_id, "providers:read", "providers")
+    {
+        return Err(command_error(AppError::PermissionDenied));
+    }
+    revoke_provider_account_permission(
+        &state.permissions,
+        &state.providers,
+        &request.plugin_id,
+        &request.account_id,
+    )
+    .await
+    .map_err(command_error)
+}
+
+async fn provider_repository_list_core(
+    permissions: &PermissionGateway,
+    providers: &ProviderService,
+    request: ProviderRepositoryListRequest,
+) -> Result<ProviderRepositoryPage, AppError> {
+    ensure_provider_account_read(permissions, &request.plugin_id, &request.account_id)?;
+    providers
+        .list_repositories(
+            &request.plugin_id,
+            ListRepositoriesInput {
+                account_id: request.account_id,
+                query: request.query,
+                cursor: request.cursor,
+                operation_id: request.operation_id,
+            },
+        )
+        .await
+}
+
+async fn revoke_provider_account_permission(
+    permissions: &PermissionGateway,
+    providers: &ProviderService,
+    plugin_id: &str,
+    account_id: &str,
+) -> Result<(), AppError> {
+    let resource = provider_account_resource(account_id)?;
+    permissions.revoke_dynamic(plugin_id, "providers:read", &resource)?;
+    providers
+        .cancel_plugin_account_operations(plugin_id, account_id)
+        .await
+}
+
+fn list_authorized_provider_accounts(
+    plugins: &crate::plugins::PluginRegistry,
+    permissions: &PermissionGateway,
+    providers: &ProviderService,
+    plugin_id: &str,
+) -> Result<Vec<ProviderAuthorizedAccount>, AppError> {
+    if !plugins.manifest_requests(plugin_id, "providers:read", "providers") {
+        return Err(AppError::PermissionDenied);
+    }
+    permissions
+        .list_active_resources(plugin_id, "providers:read", "provider-account/")?
+        .into_iter()
+        .map(|resource| {
+            let account_id = resource.strip_prefix("provider-account/").ok_or_else(|| {
+                AppError::InvalidInput("Provider account resource is invalid".to_owned())
+            })?;
+            provider_account_resource(account_id)?;
+            providers.authorized_account(account_id)
+        })
+        .collect()
+}
+
+fn ensure_provider_account_read(
+    permissions: &PermissionGateway,
+    plugin_id: &str,
+    account_id: &str,
+) -> Result<(), AppError> {
+    let resource = provider_account_resource(account_id)?;
+    let exact = permissions.is_allowed(plugin_id, "providers:read", &resource)?;
+    let family = permissions.is_allowed(plugin_id, "providers:read", "providers")?;
+    if exact || family {
+        Ok(())
+    } else {
+        Err(AppError::PermissionDenied)
+    }
+}
+
+fn provider_account_resource(account_id: &str) -> Result<String, AppError> {
+    let parsed = Uuid::parse_str(account_id)
+        .map_err(|_| AppError::InvalidInput("Provider account ID is invalid".to_owned()))?;
+    if parsed.hyphenated().to_string() != account_id {
+        return Err(AppError::InvalidInput(
+            "Provider account ID is not canonical".to_owned(),
+        ));
+    }
+    Ok(format!("provider-account/{account_id}"))
+}
+
 fn context_from(request: GitContextRequest) -> Result<QueryContext, Box<ErrorEnvelope>> {
     let context = QueryContext {
         project_id: request.project_id,
@@ -836,10 +1430,39 @@ mod tests {
     use super::{
         GitIdentityCreateRequest, GitProjectCreateRequest, GitProjectDeleteRequest,
         GitRepositoryCommitRequest, GitRepositoryIdentityBindRequest, GitWorkspaceRequest,
-        GitWorkspaceUpdateRequest, ThemeActivateRequest, ThemeCatalogResponse,
+        GitWorkspaceUpdateRequest, ProviderAccountConnectRequest,
+        ProviderInstanceCreateCommandRequest, ProviderRepositoryListRequest, ThemeActivateRequest,
+        ThemeCatalogResponse, provider_account_resource, provider_repository_list_core,
+        revoke_provider_account_permission,
     };
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use chrono::Utc;
+    use futures_util::future::BoxFuture;
+    use tokio::sync::Notify;
+
+    use crate::db::Database;
+    use crate::error::{AppError, ErrorEnvelope, ProviderFailure};
+    use crate::plugins::permissions::PermissionGateway;
+    use crate::providers::adapter::{
+        AdapterAccountContext, ProviderAdapterRegistry, RepositoryDiscoveryProvider,
+    };
+    use crate::providers::model::{
+        AccountIdentity, AdapterListRequest, AdapterPage, InstanceMetadata, NewProviderAccount,
+        ProviderArchivedFilter, ProviderAuthorizedAccount, ProviderBinding, ProviderInstance,
+        ProviderInstanceSummary, ProviderKind, ProviderRepositoryDirection, ProviderRepositoryPage,
+        ProviderRepositoryQuery, ProviderRepositorySort, RemoteRepository,
+        RemoteRepositoryIdentity,
+    };
+    use crate::providers::service::ProviderService;
+    use crate::providers::store::ProviderStore;
+    use crate::providers::url::{NormalizedInstance, NormalizedRemoteUrl};
+    use crate::secrets::{MemorySecretStore, SecretStore, SensitiveString};
     use crate::themes::{ThemeDensity, ThemeMetadata};
-    use serde_json::json;
+    use serde::Serialize;
+    use serde::de::DeserializeOwned;
+    use serde_json::{Value, json};
 
     #[test]
     fn app_info_uses_compile_time_package_metadata() {
@@ -974,5 +1597,274 @@ mod tests {
                 }]
             })
         );
+    }
+
+    #[test]
+    fn provider_secret_and_instance_requests_are_strict_host_only_boundaries() {
+        let account: ProviderAccountConnectRequest = serde_json::from_value(json!({
+            "instanceId": "6da75ccf-f7df-4bf2-92b7-2c158765726f",
+            "pat": "glpat-never-serialize"
+        }))
+        .expect("secret request parses");
+        assert_eq!(account.instance_id, "6da75ccf-f7df-4bf2-92b7-2c158765726f");
+        let instance: ProviderInstanceCreateCommandRequest = serde_json::from_value(json!({
+            "providerKind": "gitlab",
+            "displayName": "GitLab",
+            "baseUrl": "https://gitlab.example",
+            "customCaPath": null
+        }))
+        .expect("instance request parses");
+        assert!(instance.custom_ca_path.is_none());
+        assert!(
+            serde_json::from_value::<ProviderInstanceCreateCommandRequest>(json!({
+                "providerKind": "gitlab",
+                "displayName": "GitLab",
+                "baseUrl": "https://gitlab.example",
+                "customCaPath": null,
+                "pat": "must-not-cross"
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn provider_secret_requests_and_failures_never_expose_the_pat() {
+        let request: ProviderAccountConnectRequest = serde_json::from_value(json!({
+            "instanceId": "6da75ccf-f7df-4bf2-92b7-2c158765726f",
+            "pat": "glpat-never-serialize"
+        }))
+        .expect("secret request parses");
+        let ProviderAccountConnectRequest { pat, .. } = request;
+        let secret = SensitiveString::new(pat);
+        let error = ErrorEnvelope::from(AppError::Provider(ProviderFailure::authentication()));
+        let json = serde_json::to_string(&error).expect("error serializes");
+        let diagnostics = format!("{secret:?} {error:?}");
+
+        assert!(!json.contains("glpat-never-serialize"));
+        assert!(!diagnostics.contains("glpat-never-serialize"));
+        assert!(diagnostics.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn provider_canonical_contract_fixture_round_trips_exactly() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../packages/contracts/src/__fixtures__/provider-contracts.json"
+        ))
+        .expect("canonical fixture parses");
+
+        assert_round_trip::<ProviderInstanceSummary>(&fixture["instance"]);
+        assert_round_trip::<ProviderAuthorizedAccount>(&fixture["authorizedAccount"]);
+        assert_round_trip::<ProviderRepositoryPage>(&fixture["repositoryPage"]);
+        assert_round_trip::<ProviderBinding>(&fixture["binding"]);
+        assert_round_trip::<ErrorEnvelope>(&fixture["error"]);
+
+        let account_json = serde_json::to_string(&fixture["authorizedAccount"])
+            .expect("authorized account serializes");
+        assert!(!account_json.contains("secretRef"));
+        assert!(!account_json.contains("customCaPath"));
+    }
+
+    fn assert_round_trip<T>(value: &Value)
+    where
+        T: DeserializeOwned + Serialize,
+    {
+        let parsed: T = serde_json::from_value(value.clone()).expect("fixture DTO parses");
+        assert_eq!(
+            serde_json::to_value(parsed).expect("fixture DTO serializes"),
+            *value
+        );
+    }
+
+    struct BlockingCommandProvider {
+        calls: AtomicUsize,
+        started: Notify,
+    }
+
+    impl BlockingCommandProvider {
+        fn new() -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+                started: Notify::new(),
+            }
+        }
+    }
+
+    impl RepositoryDiscoveryProvider for BlockingCommandProvider {
+        fn kind(&self) -> ProviderKind {
+            ProviderKind::Gitlab
+        }
+
+        fn validate_instance<'a>(
+            &'a self,
+            _client: &'a crate::providers::http::ScopedHttpClient,
+        ) -> BoxFuture<'a, Result<InstanceMetadata, AppError>> {
+            Box::pin(async {
+                Ok(InstanceMetadata {
+                    server_version: None,
+                })
+            })
+        }
+
+        fn authenticate_account<'a>(
+            &'a self,
+            _client: &'a crate::providers::http::ScopedHttpClient,
+            _secret: &'a str,
+        ) -> BoxFuture<'a, Result<AccountIdentity, AppError>> {
+            Box::pin(async {
+                Ok(AccountIdentity {
+                    provider_user_id: "user-1".to_owned(),
+                    username: "creator".to_owned(),
+                    display_name: None,
+                    avatar_url: None,
+                })
+            })
+        }
+
+        fn list_repositories<'a>(
+            &'a self,
+            context: AdapterAccountContext<'a>,
+            _request: AdapterListRequest,
+        ) -> BoxFuture<'a, Result<AdapterPage, AppError>> {
+            Box::pin(async move {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                self.started.notify_one();
+                context.cancellation.cancelled().await;
+                Err(AppError::Provider(ProviderFailure::canceled()))
+            })
+        }
+
+        fn get_repository<'a>(
+            &'a self,
+            _context: AdapterAccountContext<'a>,
+            _identity: RemoteRepositoryIdentity,
+        ) -> BoxFuture<'a, Result<RemoteRepository, AppError>> {
+            Box::pin(async { Err(AppError::Provider(ProviderFailure::invalid_response())) })
+        }
+
+        fn detect_remote(
+            &self,
+            _instance: &NormalizedInstance,
+            _remote: &NormalizedRemoteUrl,
+        ) -> Option<RemoteRepositoryIdentity> {
+            None
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_revocation_cancels_in_flight_work_and_denies_before_the_next_adapter_call() {
+        const PLUGIN_ID: &str = "example.reader";
+        const INSTANCE_ID: &str = "6da75ccf-f7df-4bf2-92b7-2c158765726f";
+        const ACCOUNT_ID: &str = "7f3c0214-373c-4d43-b0c7-cdaed1cbcc50";
+        const SECRET_REF: &str = "provider/account/test";
+
+        let database = Database::open_in_memory().expect("database opens");
+        database
+            .with_connection(|connection| {
+                let now = Utc::now().to_rfc3339();
+                connection.execute(
+                    "INSERT INTO plugin_installations(plugin_id,version,kind,root_path,enabled,installed_at,updated_at) VALUES(?1,'0.1.0','external','/external/reader',1,?3,?3),('git-ramus.provider.gitlab','0.1.0','builtin','/builtin/gitlab',1,?3,?3)",
+                    rusqlite::params![PLUGIN_ID, "unused", now],
+                )?;
+                Ok(())
+            })
+            .expect("plugin installations seed");
+        let store = ProviderStore::new(database.clone());
+        let now = Utc::now();
+        store
+            .insert_instance(ProviderInstance {
+                id: INSTANCE_ID.to_owned(),
+                provider_kind: ProviderKind::Gitlab,
+                display_name: "GitLab Example".to_owned(),
+                base_url: "https://gitlab.example".to_owned(),
+                api_base_url: "https://gitlab.example/api/v4".to_owned(),
+                custom_ca_path: None,
+                last_validated_at: Some(now),
+                server_version: None,
+                created_at: now,
+                updated_at: now,
+            })
+            .expect("instance seeds");
+        store
+            .insert_account(NewProviderAccount {
+                id: ACCOUNT_ID.to_owned(),
+                instance_id: INSTANCE_ID.to_owned(),
+                provider_user_id: "user-1".to_owned(),
+                username: "creator".to_owned(),
+                display_name: None,
+                avatar_url: None,
+                secret_ref: SECRET_REF.to_owned(),
+                last_validated_at: now,
+                created_at: now,
+                updated_at: now,
+            })
+            .expect("account seeds");
+        let secrets: Arc<dyn SecretStore> = Arc::new(MemorySecretStore::default());
+        secrets
+            .set(SECRET_REF, "glpat-test-only")
+            .expect("secret seeds");
+        let adapter = Arc::new(BlockingCommandProvider::new());
+        let registry = ProviderAdapterRegistry::for_test(
+            database.clone(),
+            ProviderKind::Gitlab,
+            adapter.clone(),
+        );
+        let providers = Arc::new(ProviderService::new(store, secrets, registry));
+        let permissions = PermissionGateway::new(database);
+        let resource = provider_account_resource(ACCOUNT_ID).expect("resource is canonical");
+        permissions
+            .grant_dynamic(PLUGIN_ID, "providers:read", &resource)
+            .expect("account grant succeeds");
+
+        let request = provider_list_request(PLUGIN_ID, ACCOUNT_ID, "operation-1");
+        let task_permissions = permissions.clone();
+        let task_providers = Arc::clone(&providers);
+        let started = adapter.started.notified();
+        let request_task = tokio::spawn(async move {
+            provider_repository_list_core(&task_permissions, &task_providers, request).await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(2), started)
+            .await
+            .expect("adapter request starts");
+
+        revoke_provider_account_permission(&permissions, &providers, PLUGIN_ID, ACCOUNT_ID)
+            .await
+            .expect("revocation cancels and drains work");
+        let canceled = request_task.await.expect("request task joins");
+        assert!(matches!(
+            canceled,
+            Err(AppError::Provider(ref failure))
+                if failure.code() == "provider.request-canceled"
+        ));
+
+        let denied = provider_repository_list_core(
+            &permissions,
+            &providers,
+            provider_list_request(PLUGIN_ID, ACCOUNT_ID, "operation-2"),
+        )
+        .await;
+        assert!(matches!(denied, Err(AppError::PermissionDenied)));
+        assert_eq!(adapter.calls.load(Ordering::SeqCst), 1);
+    }
+
+    fn provider_list_request(
+        plugin_id: &str,
+        account_id: &str,
+        operation_id: &str,
+    ) -> ProviderRepositoryListRequest {
+        ProviderRepositoryListRequest {
+            plugin_id: plugin_id.to_owned(),
+            account_id: account_id.to_owned(),
+            query: ProviderRepositoryQuery {
+                search: String::new(),
+                visibility: None,
+                namespace: None,
+                archived: ProviderArchivedFilter::All,
+                sort: ProviderRepositorySort::Name,
+                direction: ProviderRepositoryDirection::Asc,
+                page_size: 30,
+            },
+            cursor: None,
+            operation_id: operation_id.to_owned(),
+        }
     }
 }

@@ -102,6 +102,18 @@ impl PluginRegistry {
             .iter()
             .find(|descriptor| descriptor.manifest.id == plugin_id)
     }
+
+    pub fn manifest_requests(&self, plugin_id: &str, capability: &str, resource: &str) -> bool {
+        self.get(plugin_id).is_some_and(|descriptor| {
+            descriptor.manifest.permissions.iter().any(|permission| {
+                permission.capability == capability
+                    && permission
+                        .resources
+                        .iter()
+                        .any(|declared| declared == resource)
+            })
+        })
+    }
 }
 
 impl PluginDescriptor {
