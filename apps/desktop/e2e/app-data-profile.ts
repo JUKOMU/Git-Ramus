@@ -1,4 +1,4 @@
-import { lstat, rm } from "node:fs/promises";
+import { lstat, realpath, rm } from "node:fs/promises";
 import { lstatSync, mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -89,6 +89,10 @@ export function normalizeE2eFsPath(path: string): string {
   return process.platform === "win32" && normalized.startsWith("\\\\?\\")
     ? normalized.slice(4)
     : normalized;
+}
+
+export async function canonicalizeExistingE2eFsPath(path: string): Promise<string> {
+  return normalizeE2eFsPath(await realpath(path));
 }
 
 function appDataEnvironment(rootPath: string): Record<string, string> {
