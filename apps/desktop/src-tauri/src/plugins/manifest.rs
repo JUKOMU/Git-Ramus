@@ -92,6 +92,16 @@ impl PluginManifest {
                 "plugin id is invalid".to_owned(),
             ));
         }
+        if !is_safe_text(&self.name, 64) {
+            return Err(crate::error::AppError::InvalidInput(
+                "plugin name is invalid".to_owned(),
+            ));
+        }
+        if !is_safe_text(&self.description, 256) {
+            return Err(crate::error::AppError::InvalidInput(
+                "plugin description is invalid".to_owned(),
+            ));
+        }
         semver::Version::parse(&self.version).map_err(|error| {
             crate::error::AppError::InvalidInput(format!("plugin version is invalid: {error}"))
         })?;
@@ -176,6 +186,21 @@ fn is_safe_relative_path(value: &str) -> bool {
         && !has_url_scheme(value)
         && !value.chars().any(char::is_control)
         && !value.split(['/', '\\']).any(|component| component == "..")
+}
+
+fn is_safe_text(value: &str, maximum: usize) -> bool {
+    let lowered = value.to_ascii_lowercase();
+    let compact = lowered
+        .chars()
+        .filter(|character| !character.is_ascii_whitespace())
+        .collect::<String>();
+    !value.trim().is_empty()
+        && value.encode_utf16().count() <= maximum
+        && !value.chars().any(char::is_control)
+        && !value.contains(['<', '>', ';', '{', '}'])
+        && !["url(", "@import", "javascript:", "expression("]
+            .iter()
+            .any(|marker| compact.contains(marker))
 }
 
 fn has_url_scheme(value: &str) -> bool {
@@ -338,5 +363,41 @@ mod tests {
         let theme = &compact_json["contributions"]["theme"];
         assert_eq!(theme["definition"], "theme.json");
         assert!(theme.get("definitionPath").is_none());
+    }
+
+    #[test]
+    fn manifest_rejects_unsafe_names_and_descriptions() {
+        let original: PluginManifest =
+            serde_json::from_str(WELCOME_MANIFEST).expect("manifest parses");
+        for name in [
+            String::new(),
+            "<style>body{color:red}</style>".to_owned(),
+            "x".repeat(65),
+            "😀".repeat(33),
+            "unsafe\0name".to_owned(),
+            "url (https://evil.test)".to_owned(),
+            "javascript :alert(1)".to_owned(),
+        ] {
+            let mut manifest = original.clone();
+            manifest.name = name;
+            assert!(
+                manifest.validate().is_err(),
+                "unsafe manifest name accepted"
+            );
+        }
+        for description in [
+            String::new(),
+            "<script>alert(1)</script>".to_owned(),
+            "x".repeat(257),
+            "😀".repeat(129),
+            "unsafe\ndescription".to_owned(),
+        ] {
+            let mut manifest = original.clone();
+            manifest.description = description;
+            assert!(
+                manifest.validate().is_err(),
+                "unsafe manifest description accepted"
+            );
+        }
     }
 }

@@ -90,6 +90,20 @@ describe("shared contracts", () => {
     expect(pluginManifestSchema.parse(manifest).id).toBe("git-ramus.welcome");
   });
 
+  it.each(["", "<style>body{color:red}</style>", "x".repeat(65), "unsafe\u0000name"])(
+    "rejects unsafe manifest name %s",
+    (name) => {
+      expect(() => pluginManifestSchema.parse({ ...manifest, name })).toThrow();
+    }
+  );
+
+  it.each(["", "<script>alert(1)</script>", "x".repeat(257), "unsafe\ndescription"])(
+    "rejects unsafe manifest description %s",
+    (description) => {
+      expect(() => pluginManifestSchema.parse({ ...manifest, description })).toThrow();
+    }
+  );
+
   it("accepts the built-in Git Client routes and scoped permissions", () => {
     const parsed = pluginManifestSchema.parse(gitClientManifest);
     expect(parsed.id).toBe("git-ramus.git-client");

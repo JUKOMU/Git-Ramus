@@ -1,5 +1,22 @@
 import { z } from "zod";
 
+const unsafeManifestText = /[<>;{}]|url\s*\(|@import|javascript\s*:|expression\s*\(/iu;
+const safeManifestText = (maximum: number) =>
+  z
+    .string()
+    .min(1)
+    .max(maximum)
+    .refine((value) => value.trim().length > 0, "text must not be blank")
+    .refine(
+      (value) =>
+        !unsafeManifestText.test(value) &&
+        !Array.from(value).some((character) => {
+          const code = character.charCodeAt(0);
+          return code < 0x20 || code === 0x7f;
+        }),
+      "unsafe manifest text"
+    );
+
 export const safeRelativePath = z
   .string()
   .min(1)
@@ -56,10 +73,10 @@ export const pluginManifestSchema = z
   .object({
     schemaVersion: z.literal(1),
     id: z.string().regex(/^[a-z0-9]+(?:[.-][a-z0-9]+)+$/u),
-    name: z.string().min(1).max(64),
+    name: safeManifestText(64),
     version: z.string().regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u),
     publisher: z.string().regex(/^[a-z0-9-]+$/u),
-    description: z.string().min(1).max(256),
+    description: safeManifestText(256),
     kind: z.enum(["builtin", "external"]),
     sdkVersion: z.string().min(1),
     entrypoints: z

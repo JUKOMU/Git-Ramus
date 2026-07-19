@@ -170,10 +170,108 @@ fn rejects_unknown_executable_and_out_of_range_theme_tokens() {
             .expect("invalid metadata is recorded");
         assert_eq!(
             stored,
-            ("{}".to_owned(), false),
+            (
+                r#"{"invalidReason":"theme.definition.invalid-schema"}"#.to_owned(),
+                false
+            ),
             "unsafe case persisted: {name}"
         );
     }
+}
+
+#[test]
+fn records_stable_redacted_reason_codes_for_invalid_theme_definitions() {
+    let cases = [
+        ("missing", "theme.definition.read-failed"),
+        ("invalid-json", "theme.definition.invalid-json"),
+        ("invalid-schema", "theme.definition.invalid-schema"),
+        ("id-mismatch", "theme.definition.id-mismatch"),
+    ];
+
+    for (case, expected_reason) in cases {
+        let directory = tempdir().expect("temp directory creates");
+        write_theme_plugin(directory.path(), &compact_theme());
+        let definition_path = directory.path().join(COMPACT_PLUGIN_ID).join("theme.json");
+        match case {
+            "missing" => fs::remove_file(&definition_path).expect("definition removes"),
+            "invalid-json" => fs::write(&definition_path, r#"{"themeId":"raw-secret""#)
+                .expect("invalid JSON writes"),
+            "invalid-schema" => fs::write(
+                &definition_path,
+                format!(
+                    r#"{{"themeId":"{COMPACT_THEME_ID}","colors":{{"background":"url(https://evil.test/raw-secret.png)"}}}}"#
+                ),
+            )
+            .expect("unsafe schema writes"),
+            "id-mismatch" => fs::write(
+                &definition_path,
+                r#"{"themeId":"git-ramus.theme.raw-secret","name":"Mismatch"}"#,
+            )
+            .expect("mismatched definition writes"),
+            _ => unreachable!("covered fixture"),
+        }
+        let database = Database::open_in_memory().expect("database opens");
+        let registry = PluginRegistry::discover(directory.path()).expect("plugins discover");
+
+        let manager = ThemeManager::discover(database.clone(), &registry).expect("host survives");
+        let stored: (String, String, String, bool) = database
+            .with_connection(|connection| {
+                connection.query_row(
+                    "SELECT plugin_id,version,definition_json,is_valid FROM themes WHERE theme_id=?1",
+                    [COMPACT_THEME_ID],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+            })
+            .expect("invalid theme metadata reads");
+        let diagnostic: Value = serde_json::from_str(&stored.2).expect("diagnostic JSON parses");
+
+        assert_eq!(
+            manager.list().len(),
+            1,
+            "invalid theme entered catalog: {case}"
+        );
+        assert_eq!(stored.0, COMPACT_PLUGIN_ID);
+        assert_eq!(stored.1, "0.1.0");
+        assert!(!stored.3);
+        assert_eq!(diagnostic, json!({ "invalidReason": expected_reason }));
+        assert_eq!(diagnostic.as_object().map(serde_json::Map::len), Some(1));
+        assert!(!stored.2.contains("raw-secret"));
+        assert!(!stored.2.contains("evil.test"));
+        assert!(
+            !stored
+                .2
+                .contains(&directory.path().to_string_lossy().to_string())
+        );
+    }
+}
+
+#[test]
+fn marks_disappeared_plugin_themes_with_a_stable_stale_reason() {
+    let directory = tempdir().expect("temp directory creates");
+    write_theme_plugin(directory.path(), &compact_theme());
+    let database = Database::open_in_memory().expect("database opens");
+    let registry = PluginRegistry::discover(directory.path()).expect("plugins discover");
+    ThemeManager::discover(database.clone(), &registry).expect("themes discover");
+    let empty = tempdir().expect("empty plugin root creates");
+    let empty_registry = PluginRegistry::discover(empty.path()).expect("empty registry discovers");
+
+    ThemeManager::discover(database.clone(), &empty_registry).expect("stale themes invalidate");
+    let stored: (String, String, bool) = database
+        .with_connection(|connection| {
+            connection.query_row(
+                "SELECT plugin_id,definition_json,is_valid FROM themes WHERE theme_id=?1",
+                [COMPACT_THEME_ID],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+        })
+        .expect("stale theme reads");
+
+    assert_eq!(stored.0, COMPACT_PLUGIN_ID);
+    assert_eq!(
+        serde_json::from_str::<Value>(&stored.1).expect("stale diagnostic parses"),
+        json!({ "invalidReason": "theme.plugin.stale" })
+    );
+    assert!(!stored.2);
 }
 
 #[test]

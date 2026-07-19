@@ -11,6 +11,8 @@ use crate::plugins::{PluginDescriptor, PluginRegistry};
 pub const DEFAULT_THEME_ID: &str = "git-ramus.theme.default";
 const HOST_THEME_PLUGIN_ID: &str = "git-ramus.host";
 const MAX_THEME_BYTES: u64 = 64 * 1024;
+const UNNAMED_THEME_NAME: &str = "Unnamed theme";
+const STALE_THEME_REASON: &str = "theme.plugin.stale";
 const DEFAULT_THEME_JSON: &str = r##"{
   "themeId":"git-ramus.theme.default",
   "name":"Git-Ramus Default",
@@ -211,6 +213,25 @@ struct ThemeRecord {
     definition: ThemeDefinition,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ThemeLoadError {
+    ReadFailed,
+    InvalidJson,
+    InvalidSchema,
+    IdMismatch,
+}
+
+impl ThemeLoadError {
+    const fn reason_code(self) -> &'static str {
+        match self {
+            Self::ReadFailed => "theme.definition.read-failed",
+            Self::InvalidJson => "theme.definition.invalid-json",
+            Self::InvalidSchema => "theme.definition.invalid-schema",
+            Self::IdMismatch => "theme.definition.id-mismatch",
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct ThemeManager {
     database: Database,
@@ -224,10 +245,7 @@ impl ThemeManager {
         let default = ThemeRecord {
             metadata: ThemeMetadata {
                 theme_id: DEFAULT_THEME_ID.to_owned(),
-                name: default_definition
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| "Git-Ramus Default".to_owned()),
+                name: catalog_name(default_definition.name.as_deref(), "Git-Ramus Default"),
                 plugin_id: HOST_THEME_PLUGIN_ID.to_owned(),
                 version: env!("CARGO_PKG_VERSION").to_owned(),
                 density: default_definition
@@ -253,10 +271,7 @@ impl ThemeManager {
                 Ok(definition) if definition.theme_id == contribution.theme_id => {
                     let metadata = ThemeMetadata {
                         theme_id: definition.theme_id.clone(),
-                        name: definition
-                            .name
-                            .clone()
-                            .unwrap_or_else(|| descriptor.manifest.name.clone()),
+                        name: catalog_name(definition.name.as_deref(), &descriptor.manifest.name),
                         plugin_id: descriptor.manifest.id.clone(),
                         version: descriptor.manifest.version.clone(),
                         density: definition.density.unwrap_or(ThemeDensity::Comfortable),
@@ -267,7 +282,13 @@ impl ThemeManager {
                         definition,
                     });
                 }
-                Ok(_) | Err(_) => upsert_invalid_theme(&database, descriptor, contribution)?,
+                Ok(_) => upsert_invalid_theme(
+                    &database,
+                    descriptor,
+                    contribution,
+                    ThemeLoadError::IdMismatch,
+                )?,
+                Err(reason) => upsert_invalid_theme(&database, descriptor, contribution, reason)?,
             }
         }
         themes[1..].sort_by(|left, right| left.metadata.theme_id.cmp(&right.metadata.theme_id));
@@ -352,27 +373,40 @@ fn theme_state(theme: &ThemeRecord) -> ThemeState {
 fn load_plugin_theme(
     descriptor: &PluginDescriptor,
     contribution: &ThemeContribution,
-) -> Result<ThemeDefinition, AppError> {
-    let definition_path = contribution.definition_path()?;
+) -> Result<ThemeDefinition, ThemeLoadError> {
+    let definition_path = contribution
+        .definition_path()
+        .map_err(|_| ThemeLoadError::ReadFailed)?;
     let path = descriptor.root_path().join(definition_path);
-    let canonical_path = path.canonicalize()?;
+    let canonical_path = path
+        .canonicalize()
+        .map_err(|_| ThemeLoadError::ReadFailed)?;
     if !canonical_path.starts_with(descriptor.root_path()) || !canonical_path.is_file() {
-        return Err(AppError::InvalidInput(
-            "theme definition escapes its plugin root".to_owned(),
-        ));
+        return Err(ThemeLoadError::ReadFailed);
     }
-    let metadata = canonical_path.metadata()?;
+    let metadata = canonical_path
+        .metadata()
+        .map_err(|_| ThemeLoadError::ReadFailed)?;
     if metadata.len() > MAX_THEME_BYTES {
-        return Err(AppError::InvalidInput(
-            "theme definition exceeds the size limit".to_owned(),
-        ));
+        return Err(ThemeLoadError::InvalidSchema);
     }
-    parse_definition(&std::fs::read(canonical_path)?)
+    let bytes = std::fs::read(canonical_path).map_err(|_| ThemeLoadError::ReadFailed)?;
+    parse_plugin_definition(&bytes)
 }
 
 fn parse_definition(bytes: &[u8]) -> Result<ThemeDefinition, AppError> {
-    let definition: ThemeDefinition = serde_json::from_slice(bytes)?;
+    let value: serde_json::Value = serde_json::from_slice(bytes)?;
+    let definition: ThemeDefinition = serde_json::from_value(value)?;
     validate_definition(&definition)?;
+    Ok(definition)
+}
+
+fn parse_plugin_definition(bytes: &[u8]) -> Result<ThemeDefinition, ThemeLoadError> {
+    let value: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|_| ThemeLoadError::InvalidJson)?;
+    let definition: ThemeDefinition =
+        serde_json::from_value(value).map_err(|_| ThemeLoadError::InvalidSchema)?;
+    validate_definition(&definition).map_err(|_| ThemeLoadError::InvalidSchema)?;
     Ok(definition)
 }
 
@@ -381,7 +415,7 @@ fn validate_definition(definition: &ThemeDefinition) -> Result<(), AppError> {
         return invalid_theme();
     }
     if let Some(name) = &definition.name {
-        if name.trim().is_empty() || name.chars().count() > 64 || !is_safe_token(name) {
+        if name.trim().is_empty() || name.encode_utf16().count() > 64 || !is_safe_token(name) {
             return invalid_theme();
         }
     }
@@ -575,11 +609,15 @@ fn is_safe_color(value: &str) -> bool {
 
 fn is_safe_token(value: &str) -> bool {
     let lowered = value.to_ascii_lowercase();
+    let compact = lowered
+        .chars()
+        .filter(|character| !character.is_ascii_whitespace())
+        .collect::<String>();
     !value.chars().any(char::is_control)
         && !value.contains(['<', '>', ';', '{', '}'])
         && !["url(", "@import", "javascript:", "expression("]
             .iter()
-            .any(|marker| lowered.contains(marker))
+            .any(|marker| compact.contains(marker))
 }
 
 fn is_theme_id(value: &str) -> bool {
@@ -609,12 +647,28 @@ fn invalid_theme_error() -> AppError {
     AppError::InvalidInput("theme definition is invalid".to_owned())
 }
 
+fn catalog_name(definition_name: Option<&str>, manifest_name: &str) -> String {
+    definition_name
+        .filter(|name| is_safe_catalog_name(name))
+        .or_else(|| is_safe_catalog_name(manifest_name).then_some(manifest_name))
+        .unwrap_or(UNNAMED_THEME_NAME)
+        .to_owned()
+}
+
+fn is_safe_catalog_name(value: &str) -> bool {
+    !value.trim().is_empty() && value.encode_utf16().count() <= 64 && is_safe_token(value)
+}
+
 fn invalidate_plugin_themes(database: &Database) -> Result<(), AppError> {
     database.with_connection(|connection| {
         connection
             .execute(
-                "UPDATE themes SET definition_json='{}',is_valid=0,updated_at=?1 WHERE plugin_id<>?2",
-                rusqlite::params![Utc::now().to_rfc3339(), HOST_THEME_PLUGIN_ID],
+                "UPDATE themes SET definition_json=?1,is_valid=0,updated_at=?2 WHERE plugin_id<>?3",
+                rusqlite::params![
+                    invalid_reason_json(STALE_THEME_REASON),
+                    Utc::now().to_rfc3339(),
+                    HOST_THEME_PLUGIN_ID
+                ],
             )
             .map(|_| ())
     })
@@ -624,15 +678,25 @@ fn upsert_invalid_theme(
     database: &Database,
     descriptor: &PluginDescriptor,
     contribution: &ThemeContribution,
+    reason: ThemeLoadError,
 ) -> Result<(), AppError> {
     let metadata = ThemeMetadata {
         theme_id: contribution.theme_id.clone(),
-        name: descriptor.manifest.name.clone(),
+        name: catalog_name(None, &descriptor.manifest.name),
         plugin_id: descriptor.manifest.id.clone(),
         version: descriptor.manifest.version.clone(),
         density: ThemeDensity::Comfortable,
     };
-    upsert_theme_json(database, &metadata, "{}", false)
+    upsert_theme_json(
+        database,
+        &metadata,
+        &invalid_reason_json(reason.reason_code()),
+        false,
+    )
+}
+
+fn invalid_reason_json(reason: &str) -> String {
+    serde_json::json!({ "invalidReason": reason }).to_string()
 }
 
 fn upsert_theme(
@@ -667,4 +731,28 @@ fn upsert_theme_json(
             )
             .map(|_| ())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::catalog_name;
+
+    #[test]
+    fn unsafe_missing_definition_name_uses_a_stable_safe_catalog_fallback() {
+        assert_eq!(catalog_name(None, "Compact Theme"), "Compact Theme");
+        let utf16_too_long = "😀".repeat(33);
+        assert_eq!(
+            catalog_name(Some(&utf16_too_long), "Compact Theme"),
+            "Compact Theme"
+        );
+        assert_eq!(catalog_name(None, &utf16_too_long), "Unnamed theme");
+        for unsafe_name in [
+            "",
+            "<style>body{color:red}</style>",
+            "unsafe\0name",
+            &"x".repeat(65),
+        ] {
+            assert_eq!(catalog_name(None, unsafe_name), "Unnamed theme");
+        }
+    }
 }
