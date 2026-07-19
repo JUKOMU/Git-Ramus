@@ -467,6 +467,7 @@ impl GitService {
     }
 
     pub fn workspace_projects(&self, workspace_id: &str) -> Result<Vec<String>, AppError> {
+        self.workspaces.get(workspace_id)?;
         self.workspaces.projects(workspace_id)
     }
 

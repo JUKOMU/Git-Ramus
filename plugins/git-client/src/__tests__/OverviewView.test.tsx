@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GitClientApi } from "../api";
@@ -175,9 +175,241 @@ describe("ProjectsView", () => {
     });
     expect(await screen.findByText("Scan rules saved for Demo.")).toBeInTheDocument();
   });
+
+  it("keeps each project busy independently while operations overlap", async () => {
+    const user = userEvent.setup();
+    const saved = deferred<typeof project>();
+    const scanned = deferred<Awaited<ReturnType<ProjectsApi["scanProject"]>>>();
+    const api: ProjectsApi = {
+      listProjects: vi.fn(async () => ({ projects: [project, betaProject] })),
+      updateProjectScanRules: vi.fn(() => saved.promise),
+      scanProject: vi.fn(() => scanned.promise)
+    };
+    render(<ProjectsView api={api} onOpenRepository={vi.fn()} />);
+    const demoCard = (await screen.findByRole("heading", { name: "Demo" })).closest("article");
+    const betaCard = screen.getByRole("heading", { name: "Beta" }).closest("article");
+    expect(demoCard).not.toBeNull();
+    expect(betaCard).not.toBeNull();
+
+    await user.click(within(demoCard!).getByRole("button", { name: "Save scan rules for Demo" }));
+    await user.click(within(betaCard!).getByRole("button", { name: "Rescan" }));
+
+    expect(
+      within(demoCard!).getByRole("button", { name: "Saving scan rules for Demo" })
+    ).toBeDisabled();
+    expect(within(betaCard!).getByRole("button", { name: "Rescan" })).toBeDisabled();
+
+    await act(async () => {
+      scanned.resolve({
+        projectId: betaProject.id,
+        repositories: [],
+        failures: [],
+        total: 0,
+        completed: 0,
+        failed: 0,
+        discoveryFailed: 0,
+        progress: []
+      });
+      await scanned.promise;
+    });
+    expect(within(betaCard!).getByRole("button", { name: "Rescan" })).toBeEnabled();
+    expect(
+      within(demoCard!).getByRole("button", { name: "Saving scan rules for Demo" })
+    ).toBeDisabled();
+
+    await act(async () => {
+      saved.resolve(project);
+      await saved.promise;
+    });
+    expect(
+      within(demoCard!).getByRole("button", { name: "Save scan rules for Demo" })
+    ).toBeEnabled();
+  });
 });
 
 describe("WorkspacesView", () => {
+  it("keeps a newer membership load pending when an older load completes", async () => {
+    const oldMembership = deferred<string[]>();
+    const newMembership = deferred<string[]>();
+    const firstApi: WorkspacesApi = {
+      listProjects: vi.fn(async () => ({ projects: [project, betaProject] })),
+      listWorkspaces: vi.fn(async () => ({ workspaces: [workspace] })),
+      getWorkspaceMembership: vi.fn(() => oldMembership.promise),
+      createWorkspace: vi.fn(),
+      updateWorkspaceMembership: vi.fn(),
+      deleteWorkspace: vi.fn()
+    };
+    const secondApi: WorkspacesApi = {
+      ...firstApi,
+      listProjects: vi.fn(async () => ({ projects: [project, betaProject] })),
+      listWorkspaces: vi.fn(async () => ({ workspaces: [workspace] })),
+      getWorkspaceMembership: vi.fn(() => newMembership.promise)
+    };
+    const { rerender } = render(<WorkspacesView api={firstApi} />);
+    expect(await screen.findByText("Shared")).toBeInTheDocument();
+    await vi.waitFor(() => expect(firstApi.getWorkspaceMembership).toHaveBeenCalledOnce());
+
+    rerender(<WorkspacesView api={secondApi} />);
+    await vi.waitFor(() => expect(secondApi.getWorkspaceMembership).toHaveBeenCalledOnce());
+    await act(async () => {
+      oldMembership.resolve([projectId]);
+      await oldMembership.promise;
+    });
+
+    expect(screen.getByText("Loading membership…")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete" })).toBeDisabled();
+    expect(
+      screen.queryByRole("button", { name: /Demo (?:to|from) Shared/u })
+    ).not.toBeInTheDocument();
+
+    await act(async () => {
+      newMembership.resolve([betaProject.id]);
+      await newMembership.promise;
+    });
+    expect(screen.getByRole("button", { name: "Remove Beta from Shared" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Add Demo to Shared" })).toBeEnabled();
+  });
+
+  it("ignores an older membership update after a newer membership load", async () => {
+    const user = userEvent.setup();
+    const oldUpdate = deferred<string[]>();
+    const firstApi: WorkspacesApi = {
+      listProjects: vi.fn(async () => ({ projects: [project, betaProject] })),
+      listWorkspaces: vi.fn(async () => ({ workspaces: [workspace] })),
+      getWorkspaceMembership: vi.fn(async () => [projectId]),
+      createWorkspace: vi.fn(),
+      updateWorkspaceMembership: vi.fn(() => oldUpdate.promise),
+      deleteWorkspace: vi.fn()
+    };
+    const secondApi: WorkspacesApi = {
+      ...firstApi,
+      listProjects: vi.fn(async () => ({ projects: [project, betaProject] })),
+      listWorkspaces: vi.fn(async () => ({ workspaces: [workspace] })),
+      getWorkspaceMembership: vi.fn(async () => [betaProject.id])
+    };
+    const { rerender } = render(<WorkspacesView api={firstApi} />);
+    await user.click(await screen.findByRole("button", { name: "Add Beta to Shared" }));
+
+    rerender(<WorkspacesView api={secondApi} />);
+    expect(await screen.findByRole("button", { name: "Add Demo to Shared" })).toBeEnabled();
+    await act(async () => {
+      oldUpdate.resolve([projectId, betaProject.id]);
+      await oldUpdate.promise;
+    });
+
+    expect(screen.getByRole("button", { name: "Add Demo to Shared" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Remove Beta from Shared" })).toBeEnabled();
+  });
+
+  it("ignores an older delete response after a newer membership load", async () => {
+    const user = userEvent.setup();
+    const oldDelete = deferred<void>();
+    const firstApi: WorkspacesApi = {
+      listProjects: vi.fn(async () => ({ projects: [project, betaProject] })),
+      listWorkspaces: vi.fn(async () => ({ workspaces: [workspace] })),
+      getWorkspaceMembership: vi.fn(async () => [projectId]),
+      createWorkspace: vi.fn(),
+      updateWorkspaceMembership: vi.fn(),
+      deleteWorkspace: vi.fn(() => oldDelete.promise)
+    };
+    const secondApi: WorkspacesApi = {
+      ...firstApi,
+      listProjects: vi.fn(async () => ({ projects: [project, betaProject] })),
+      listWorkspaces: vi.fn(async () => ({ workspaces: [workspace] })),
+      getWorkspaceMembership: vi.fn(async () => [betaProject.id])
+    };
+    const { rerender } = render(<WorkspacesView api={firstApi} />);
+    await screen.findByRole("button", { name: "Remove Demo from Shared" });
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+
+    rerender(<WorkspacesView api={secondApi} />);
+    expect(await screen.findByRole("button", { name: "Remove Beta from Shared" })).toBeEnabled();
+    await act(async () => {
+      oldDelete.resolve();
+      await oldDelete.promise;
+    });
+
+    expect(screen.getByText("Shared")).toBeInTheDocument();
+    expect(screen.queryByText("No workspaces are available.")).not.toBeInTheDocument();
+  });
+
+  it("clears workspace operation state when deletion succeeds", async () => {
+    const user = userEvent.setup();
+    const api: WorkspacesApi = {
+      listProjects: vi.fn(async () => ({ projects: [project] })),
+      listWorkspaces: vi.fn(async () => ({ workspaces: [workspace] })),
+      getWorkspaceMembership: vi.fn(async () => {
+        throw errorEnvelope("workspace.membership-unavailable", "Try again");
+      }),
+      createWorkspace: vi.fn(async ({ name }) => ({ ...workspace, name })),
+      updateWorkspaceMembership: vi.fn(),
+      deleteWorkspace: vi.fn(async () => undefined)
+    };
+    render(<WorkspacesView api={api} />);
+    expect(await screen.findByText("Membership could not be loaded.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    expect(await screen.findByText("No workspaces are available.")).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Workspace name"), "Recreated");
+    await user.click(screen.getByRole("button", { name: "Create workspace" }));
+
+    expect(await screen.findByText("Recreated")).toBeInTheDocument();
+    expect(screen.queryByText("Membership could not be loaded.")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add Demo to Recreated" })).toBeEnabled();
+  });
+
+  it("keeps retry recovery disabled while its workspace operation is pending", async () => {
+    const user = userEvent.setup();
+    const retry = deferred<string[]>();
+    const api: WorkspacesApi = {
+      listProjects: vi.fn(async () => ({ projects: [project] })),
+      listWorkspaces: vi.fn(async () => ({ workspaces: [workspace] })),
+      getWorkspaceMembership: vi
+        .fn()
+        .mockRejectedValueOnce(errorEnvelope("workspace.membership-unavailable", "Try again"))
+        .mockImplementationOnce(() => retry.promise),
+      createWorkspace: vi.fn(),
+      updateWorkspaceMembership: vi.fn(),
+      deleteWorkspace: vi.fn()
+    };
+    render(<WorkspacesView api={api} />);
+    const recovery = await screen.findByRole("button", { name: "Try again" });
+    await user.click(recovery);
+
+    expect(screen.getByRole("button", { name: "Try again" })).toBeDisabled();
+    await user.dblClick(screen.getByRole("button", { name: "Try again" }));
+    expect(api.getWorkspaceMembership).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      retry.resolve([projectId]);
+      await retry.promise;
+    });
+    expect(await screen.findByRole("button", { name: "Remove Demo from Shared" })).toBeEnabled();
+  });
+
+  it("shows unsupported workspace recovery actions as host-guided and disabled", async () => {
+    const api: WorkspacesApi = {
+      listProjects: vi.fn(async () => ({ projects: [project] })),
+      listWorkspaces: vi.fn(async () => ({ workspaces: [workspace] })),
+      getWorkspaceMembership: vi.fn(async () => {
+        throw {
+          ...errorEnvelope("workspace.settings-required", "Open settings"),
+          recoveryActions: [
+            { id: "settings", label: "Open settings", kind: "openSettings" as const }
+          ]
+        };
+      }),
+      createWorkspace: vi.fn(),
+      updateWorkspaceMembership: vi.fn(),
+      deleteWorkspace: vi.fn()
+    };
+    render(<WorkspacesView api={api} />);
+
+    const action = await screen.findByRole("button", { name: "Open settings" });
+    expect(action).toBeDisabled();
+    expect(action).toHaveAttribute("title", "Complete this action in the Git-Ramus host");
+    expect(api.getWorkspaceMembership).toHaveBeenCalledOnce();
+  });
+
   it("loads membership and reflects add/remove only after path-free host updates succeed", async () => {
     const user = userEvent.setup();
     const add = deferred<string[]>();

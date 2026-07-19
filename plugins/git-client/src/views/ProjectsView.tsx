@@ -1,5 +1,5 @@
 import type { GitContextRequest, Repository } from "@git-ramus/contracts";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { GitClientApi } from "../api";
 import { normalizeError } from "../api";
 
@@ -26,9 +26,25 @@ export function ProjectsView({ api, onOpenRepository }: ProjectsViewProps) {
   const [scanResults, setScanResults] = useState<
     Record<string, Awaited<ReturnType<ProjectsApi["scanProject"]>> | undefined>
   >({});
-  const [busyProjectId, setBusyProjectId] = useState<string | null>(null);
+  const [busyProjectIds, setBusyProjectIds] = useState<Set<string>>(new Set());
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const busyProjectIdsRef = useRef(new Set<string>());
+
+  const beginProjectOperation = (projectId: string) => {
+    if (busyProjectIdsRef.current.has(projectId)) return false;
+    const next = new Set(busyProjectIdsRef.current).add(projectId);
+    busyProjectIdsRef.current = next;
+    setBusyProjectIds(next);
+    return true;
+  };
+
+  const finishProjectOperation = (projectId: string) => {
+    const next = new Set(busyProjectIdsRef.current);
+    next.delete(projectId);
+    busyProjectIdsRef.current = next;
+    setBusyProjectIds(next);
+  };
 
   useEffect(() => {
     let active = true;
@@ -51,8 +67,7 @@ export function ProjectsView({ api, onOpenRepository }: ProjectsViewProps) {
 
   const saveScanRules = async (projectId: string) => {
     const currentDraft = drafts[projectId];
-    if (currentDraft === undefined) return;
-    setBusyProjectId(projectId);
+    if (currentDraft === undefined || !beginProjectOperation(projectId)) return;
     setNotice(null);
     setError(null);
     try {
@@ -72,12 +87,12 @@ export function ProjectsView({ api, onOpenRepository }: ProjectsViewProps) {
     } catch (reason: unknown) {
       setError(normalizeError(reason, "Scan rules could not be saved.").message);
     } finally {
-      setBusyProjectId(null);
+      finishProjectOperation(projectId);
     }
   };
 
   const scan = async (projectId: string) => {
-    setBusyProjectId(projectId);
+    if (!beginProjectOperation(projectId)) return;
     setNotice(null);
     setError(null);
     try {
@@ -87,7 +102,7 @@ export function ProjectsView({ api, onOpenRepository }: ProjectsViewProps) {
     } catch (reason: unknown) {
       setError(normalizeError(reason, "Project scan could not be started.").message);
     } finally {
-      setBusyProjectId(null);
+      finishProjectOperation(projectId);
     }
   };
 
@@ -111,7 +126,7 @@ export function ProjectsView({ api, onOpenRepository }: ProjectsViewProps) {
       <div className="card-grid">
         {projects.map((project) => {
           const currentDraft = drafts[project.id] ?? draft(project);
-          const isBusy = busyProjectId === project.id;
+          const isBusy = busyProjectIds.has(project.id);
           const result = scanResults[project.id];
           return (
             <article className="card" key={project.id}>

@@ -1025,6 +1025,28 @@ fn repo_relative_ssh_key_creates_a_real_signed_commit_when_ssh_keygen_is_availab
 }
 
 #[test]
+fn workspace_projects_requires_an_existing_workspace() {
+    let service = GitService::new(Database::open_in_memory().unwrap());
+    let missing_workspace_id = "7764f437-bb44-4c21-8991-bb38380d6ef3";
+
+    assert!(matches!(
+        service.workspace_projects(missing_workspace_id),
+        Err(AppError::NotFound(_))
+    ));
+
+    let workspace = service
+        .create_workspace(git_ramus_desktop_lib::git::service::WorkspaceCreateInput {
+            name: "Disposable".to_owned(),
+        })
+        .unwrap();
+    service.delete_workspace(&workspace.id).unwrap();
+    assert!(matches!(
+        service.workspace_projects(&workspace.id),
+        Err(AppError::NotFound(_))
+    ));
+}
+
+#[test]
 fn workspace_context_can_query_repositories_from_two_projects() {
     if !git_available() {
         return;

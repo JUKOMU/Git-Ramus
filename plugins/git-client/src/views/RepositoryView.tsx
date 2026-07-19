@@ -70,16 +70,20 @@ export function RepositoryView({ api, context, repository, onBack }: RepositoryV
   const [diffError, setDiffError] = useState<ErrorEnvelope | null>(null);
   const [diffRequest, setDiffRequest] = useState<DiffRequestState | null>(null);
   const diffGeneration = useRef(0);
+  const refreshGeneration = useRef(0);
   const trustStatusGeneration = useRef(0);
 
   const groupedChanges = useMemo(() => groupChanges(changes), [changes]);
 
   const refresh = useCallback(async () => {
+    const generation = ++refreshGeneration.current;
+    setLoading(true);
     try {
       const [nextRecord, nextChanges] = await Promise.all([
         api.getRepositorySnapshot(request),
         api.getRepositoryChanges(request)
       ]);
+      if (generation !== refreshGeneration.current) return;
       setRecord(nextRecord);
       setChanges(nextChanges.changes);
       const grouped = groupChanges(nextChanges.changes);
@@ -89,14 +93,24 @@ export function RepositoryView({ api, context, repository, onBack }: RepositoryV
       setConflictSelection((current) => retainSelection(current, grouped.conflicts));
       setRefreshError(null);
     } catch (reason: unknown) {
+      if (generation !== refreshGeneration.current) return;
       setRefreshError(normalizeError(reason, "Repository status could not be refreshed."));
     } finally {
-      setLoading(false);
+      if (generation === refreshGeneration.current) {
+        setLoading(false);
+      }
     }
   }, [api, request]);
 
   useEffect(() => {
-    void Promise.resolve().then(refresh);
+    let active = true;
+    void Promise.resolve().then(() => {
+      if (active) void refresh();
+    });
+    return () => {
+      active = false;
+      refreshGeneration.current += 1;
+    };
   }, [refresh]);
 
   const loadTrustStatus = useCallback(async () => {
@@ -278,7 +292,7 @@ export function RepositoryView({ api, context, repository, onBack }: RepositoryV
         <div className="repository-status">
           <span>{record?.snapshot?.branch ?? "Branch unknown"}</span>
           {trusted === true ? (
-            <span className="success-notice">Trusted for this session</span>
+            <span className="success-notice">Trusted on this device</span>
           ) : trusted === false ? (
             <button type="button" disabled={busy} onClick={() => setConfirmingTrust(true)}>
               Trust repository

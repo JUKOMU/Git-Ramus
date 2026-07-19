@@ -144,7 +144,7 @@ describe("RepositoryView", () => {
       await trustStatus.promise;
     });
 
-    expect(await screen.findByText("Trusted for this session")).toBeInTheDocument();
+    expect(await screen.findByText("Trusted on this device")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Trust repository" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Stage all" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "Stage all" }));
@@ -174,7 +174,7 @@ describe("RepositoryView", () => {
     expect(screen.queryByRole("button", { name: "Trust repository" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Retry Trust status" }));
-    expect(await screen.findByText("Trusted for this session")).toBeInTheDocument();
+    expect(await screen.findByText("Trusted on this device")).toBeInTheDocument();
     expect(api.getRepositoryTrustStatus).toHaveBeenCalledTimes(2);
   });
 
@@ -192,7 +192,7 @@ describe("RepositoryView", () => {
     expect(screen.getByText(/Trust allows write operations/u)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Confirm trust" }));
     expect(api.trustRepository).toHaveBeenCalledWith({ projectId, repositoryId });
-    expect(await screen.findByText("Trusted for this session")).toBeInTheDocument();
+    expect(await screen.findByText("Trusted on this device")).toBeInTheDocument();
     expect(commit).toBeEnabled();
 
     await user.click(commit);
@@ -327,6 +327,138 @@ describe("RepositoryView", () => {
     expect(screen.queryByText(diffTextMatcher)).not.toBeInTheDocument();
   });
 
+  it("ignores older refresh success, failure, and finally state around a write refresh", async () => {
+    const user = userEvent.setup();
+    const oldFailureRecord =
+      deferred<Awaited<ReturnType<RepositoryApi["getRepositorySnapshot"]>>>();
+    const oldFailureChanges =
+      deferred<Awaited<ReturnType<RepositoryApi["getRepositoryChanges"]>>>();
+    const oldSuccessRecord =
+      deferred<Awaited<ReturnType<RepositoryApi["getRepositorySnapshot"]>>>();
+    const oldSuccessChanges =
+      deferred<Awaited<ReturnType<RepositoryApi["getRepositoryChanges"]>>>();
+    const freshRecord = deferred<Awaited<ReturnType<RepositoryApi["getRepositorySnapshot"]>>>();
+    const freshChanges = deferred<Awaited<ReturnType<RepositoryApi["getRepositoryChanges"]>>>();
+    const fresh = change("src/fresh.ts", { staged: false, unstaged: true, status: ".M" });
+    const stale = change("src/stale.ts", { staged: false, unstaged: true, status: ".M" });
+    const initialRecord = {
+      repository,
+      snapshot: persistedSnapshot,
+      changes: null,
+      error: null
+    };
+    const initialChanges = { repositoryId, snapshot: persistedSnapshot, changes: [unstaged] };
+    const api = createApi({ changes: [unstaged] });
+    vi.mocked(api.getRepositorySnapshot)
+      .mockResolvedValueOnce(initialRecord)
+      .mockReturnValueOnce(oldFailureRecord.promise)
+      .mockReturnValueOnce(oldSuccessRecord.promise)
+      .mockReturnValueOnce(freshRecord.promise);
+    vi.mocked(api.getRepositoryChanges)
+      .mockResolvedValueOnce(initialChanges)
+      .mockReturnValueOnce(oldFailureChanges.promise)
+      .mockReturnValueOnce(oldSuccessChanges.promise)
+      .mockReturnValueOnce(freshChanges.promise);
+    vi.mocked(api.getRepositoryTrustStatus).mockResolvedValue({ trusted: true });
+    vi.mocked(api.listIdentities).mockRejectedValueOnce({
+      ...errorEnvelope(),
+      code: "identity.load-unavailable",
+      message: "Identity temporarily unavailable.",
+      failedStep: "identities.list",
+      recoveryActions: [{ id: "refresh", label: "Refresh repository", kind: "retry" as const }]
+    });
+    render(<RepositoryView api={api} context={{ projectId }} repository={repository} />);
+    const selected = await screen.findByRole("checkbox", { name: "Select src/unstaged.ts" });
+    await user.click(selected);
+    expect(await screen.findByText("Trusted on this device")).toBeInTheDocument();
+    const retry = await screen.findByRole("button", { name: "Refresh repository" });
+    await user.click(retry);
+    await user.click(retry);
+    await vi.waitFor(() => expect(api.getRepositoryChanges).toHaveBeenCalledTimes(3));
+
+    await user.click(screen.getByRole("button", { name: "Stage all" }));
+    await vi.waitFor(() => expect(api.getRepositoryChanges).toHaveBeenCalledTimes(4));
+    await act(async () => {
+      oldFailureRecord.reject({
+        ...errorEnvelope(),
+        code: "repository.old-refresh-failed",
+        message: "Older refresh failed.",
+        failedStep: "repositories.getSnapshot"
+      });
+      oldFailureChanges.resolve(initialChanges);
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("Loading repository…")).toBeInTheDocument();
+    expect(screen.queryByText("Older refresh failed.")).not.toBeInTheDocument();
+
+    await act(async () => {
+      freshRecord.resolve({
+        ...initialRecord,
+        snapshot: { ...persistedSnapshot, branch: "fresh-branch" }
+      });
+      freshChanges.resolve({
+        repositoryId,
+        snapshot: { ...persistedSnapshot, branch: "fresh-branch" },
+        changes: [unstaged, fresh]
+      });
+      await Promise.all([freshRecord.promise, freshChanges.promise]);
+    });
+    expect(await screen.findByText("fresh-branch")).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Select src/unstaged.ts" })).toBeChecked();
+
+    await act(async () => {
+      oldSuccessRecord.resolve({
+        ...initialRecord,
+        snapshot: { ...persistedSnapshot, branch: "stale-branch" }
+      });
+      oldSuccessChanges.resolve({
+        repositoryId,
+        snapshot: { ...persistedSnapshot, branch: "stale-branch" },
+        changes: [stale]
+      });
+      await Promise.all([oldSuccessRecord.promise, oldSuccessChanges.promise]);
+    });
+
+    expect(screen.getByText("fresh-branch")).toBeInTheDocument();
+    expect(screen.queryByText("stale-branch")).not.toBeInTheDocument();
+    expect(screen.getByText("src/fresh.ts")).toBeInTheDocument();
+    expect(screen.queryByText("src/stale.ts")).not.toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Select src/unstaged.ts" })).toBeChecked();
+    expect(screen.queryByText("Loading repository…")).not.toBeInTheDocument();
+  });
+
+  it("does not inspect or commit a refresh failure after unmount", async () => {
+    const record = deferred<Awaited<ReturnType<RepositoryApi["getRepositorySnapshot"]>>>();
+    const changes = deferred<Awaited<ReturnType<RepositoryApi["getRepositoryChanges"]>>>();
+    const api = createApi({ changes: [unstaged] });
+    vi.mocked(api.getRepositorySnapshot).mockReturnValueOnce(record.promise);
+    vi.mocked(api.getRepositoryChanges).mockReturnValueOnce(changes.promise);
+    let inspected = false;
+    const lateFailure = new Proxy(
+      {},
+      {
+        get() {
+          inspected = true;
+          return undefined;
+        }
+      }
+    );
+    const { unmount } = render(
+      <RepositoryView api={api} context={{ projectId }} repository={repository} />
+    );
+    await vi.waitFor(() => expect(api.getRepositorySnapshot).toHaveBeenCalledOnce());
+
+    unmount();
+    await act(async () => {
+      record.reject(lateFailure);
+      changes.resolve({ repositoryId, snapshot: persistedSnapshot, changes: [unstaged] });
+      await Promise.resolve();
+    });
+
+    expect(inspected).toBe(false);
+  });
+
   it("keeps a write ErrorEnvelope visible after refreshing repository status", async () => {
     const user = userEvent.setup();
     const api = createApi({ changes: [staged] });
@@ -388,7 +520,7 @@ describe("RepositoryView", () => {
 
     expect(await screen.findByText("Repository Trust is required.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Trust repository" })).toBeInTheDocument();
-    expect(screen.queryByText("Trusted for this session")).not.toBeInTheDocument();
+    expect(screen.queryByText("Trusted on this device")).not.toBeInTheDocument();
   });
 
   it("ignores an older diff response after a newer path is selected", async () => {

@@ -1,5 +1,5 @@
 import type { ErrorEnvelope, Project, Workspace } from "@git-ramus/contracts";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { GitClientApi } from "../api";
 import { normalizeError } from "../api";
 
@@ -31,34 +31,82 @@ export function WorkspacesView({ api }: WorkspacesViewProps) {
   const [pending, setPending] = useState<Set<string>>(new Set());
   const [name, setName] = useState("");
   const [globalError, setGlobalError] = useState<string | null>(null);
+  const workspaceGenerations = useRef(new Map<string, number>());
+  const pendingTokens = useRef(new Map<string, number>());
+  const mounted = useRef(false);
 
-  const setWorkspacePending = (workspaceId: string, value: boolean) => {
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  const beginWorkspaceOperation = useCallback(
+    (workspaceId: string, supersede: boolean): number | null => {
+      if (!mounted.current || (!supersede && pendingTokens.current.has(workspaceId))) {
+        return null;
+      }
+      const token = (workspaceGenerations.current.get(workspaceId) ?? 0) + 1;
+      workspaceGenerations.current.set(workspaceId, token);
+      pendingTokens.current.set(workspaceId, token);
+      setPending((current) => new Set(current).add(workspaceId));
+      return token;
+    },
+    []
+  );
+
+  const isCurrentWorkspaceOperation = useCallback(
+    (workspaceId: string, token: number) =>
+      mounted.current && workspaceGenerations.current.get(workspaceId) === token,
+    []
+  );
+
+  const finishWorkspaceOperation = useCallback(
+    (workspaceId: string, token: number) => {
+      if (!isCurrentWorkspaceOperation(workspaceId, token)) return;
+      pendingTokens.current.delete(workspaceId);
+      setPending((current) => {
+        const next = new Set(current);
+        next.delete(workspaceId);
+        return next;
+      });
+    },
+    [isCurrentWorkspaceOperation]
+  );
+
+  const clearWorkspaceState = (workspaceId: string) => {
+    pendingTokens.current.delete(workspaceId);
+    setMemberships((current) => omitKey(current, workspaceId));
+    setFailures((current) => omitKey(current, workspaceId));
     setPending((current) => {
       const next = new Set(current);
-      if (value) next.add(workspaceId);
-      else next.delete(workspaceId);
+      next.delete(workspaceId);
       return next;
     });
   };
 
   const loadMembership = useCallback(
-    async (workspaceId: string) => {
-      setWorkspacePending(workspaceId, true);
-      setFailures((current) => ({ ...current, [workspaceId]: undefined }));
+    async (workspaceId: string, supersede = false) => {
+      const token = beginWorkspaceOperation(workspaceId, supersede);
+      if (token === null) return;
       try {
         const projectIds = await api.getWorkspaceMembership({ workspaceId });
+        if (!isCurrentWorkspaceOperation(workspaceId, token)) return;
         setMemberships((current) => ({ ...current, [workspaceId]: projectIds }));
+        setFailures((current) => omitKey(current, workspaceId));
       } catch (reason: unknown) {
+        if (!isCurrentWorkspaceOperation(workspaceId, token)) return;
         const error = normalizeError(reason, "Membership could not be loaded.");
         setFailures((current) => ({
           ...current,
           [workspaceId]: { error, operation: "load", projectIds: null }
         }));
       } finally {
-        setWorkspacePending(workspaceId, false);
+        finishWorkspaceOperation(workspaceId, token);
       }
     },
-    [api]
+    [api, beginWorkspaceOperation, finishWorkspaceOperation, isCurrentWorkspaceOperation]
   );
 
   useEffect(() => {
@@ -69,7 +117,7 @@ export function WorkspacesView({ api }: WorkspacesViewProps) {
         setProjects(projectResult.projects);
         setWorkspaces(workspaceResult.workspaces);
         for (const workspace of workspaceResult.workspaces) {
-          void loadMembership(workspace.id);
+          void loadMembership(workspace.id, true);
         }
       })
       .catch((reason: unknown) => {
@@ -87,6 +135,11 @@ export function WorkspacesView({ api }: WorkspacesViewProps) {
     setGlobalError(null);
     try {
       const workspace = await api.createWorkspace({ name: trimmedName });
+      workspaceGenerations.current.set(
+        workspace.id,
+        (workspaceGenerations.current.get(workspace.id) ?? 0) + 1
+      );
+      clearWorkspaceState(workspace.id);
       setWorkspaces((current) => [...current, workspace]);
       setMemberships((current) => ({ ...current, [workspace.id]: [] }));
       setName("");
@@ -96,35 +149,43 @@ export function WorkspacesView({ api }: WorkspacesViewProps) {
   };
 
   const updateMembership = async (workspaceId: string, projectIds: string[]) => {
-    setWorkspacePending(workspaceId, true);
-    setFailures((current) => ({ ...current, [workspaceId]: undefined }));
+    const token = beginWorkspaceOperation(workspaceId, false);
+    if (token === null) return;
     try {
       const confirmed = await api.updateWorkspaceMembership({ workspaceId, projectIds });
+      if (!isCurrentWorkspaceOperation(workspaceId, token)) return;
       setMemberships((current) => ({ ...current, [workspaceId]: confirmed }));
+      setFailures((current) => omitKey(current, workspaceId));
     } catch (reason: unknown) {
+      if (!isCurrentWorkspaceOperation(workspaceId, token)) return;
       const error = normalizeError(reason, "Membership could not be updated.");
       setFailures((current) => ({
         ...current,
         [workspaceId]: { error, operation: "update", projectIds }
       }));
     } finally {
-      setWorkspacePending(workspaceId, false);
+      finishWorkspaceOperation(workspaceId, token);
     }
   };
 
   const deleteWorkspace = async (workspaceId: string) => {
-    setWorkspacePending(workspaceId, true);
+    const token = beginWorkspaceOperation(workspaceId, false);
+    if (token === null) return;
     try {
       await api.deleteWorkspace({ workspaceId });
+      if (!isCurrentWorkspaceOperation(workspaceId, token)) return;
+      workspaceGenerations.current.set(workspaceId, token + 1);
+      clearWorkspaceState(workspaceId);
       setWorkspaces((current) => current.filter((workspace) => workspace.id !== workspaceId));
     } catch (reason: unknown) {
+      if (!isCurrentWorkspaceOperation(workspaceId, token)) return;
       const error = normalizeError(reason, "Workspace could not be deleted.");
       setFailures((current) => ({
         ...current,
         [workspaceId]: { error, operation: "delete", projectIds: null }
       }));
     } finally {
-      setWorkspacePending(workspaceId, false);
+      finishWorkspaceOperation(workspaceId, token);
     }
   };
 
@@ -153,6 +214,7 @@ export function WorkspacesView({ api }: WorkspacesViewProps) {
           const failure = failures[workspace.id];
           const isPending = pending.has(workspace.id);
           const retryFailure = () => {
+            if (isPending) return;
             if (failure?.operation === "update" && failure.projectIds !== null) {
               void updateMembership(workspace.id, failure.projectIds);
             } else if (failure?.operation === "delete") {
@@ -179,9 +241,21 @@ export function WorkspacesView({ api }: WorkspacesViewProps) {
                   <p>{failure.error.message}</p>
                   {(failure.error.recoveryActions.length > 0
                     ? failure.error.recoveryActions
-                    : [{ id: "retry", label: "Try again", kind: "retry" as const }]
+                    : failure.error.retryable
+                      ? [{ id: "retry", label: "Try again", kind: "retry" as const }]
+                      : []
                   ).map((action) => (
-                    <button key={action.id} type="button" onClick={retryFailure}>
+                    <button
+                      key={action.id}
+                      type="button"
+                      disabled={isPending || action.kind !== "retry"}
+                      title={
+                        action.kind === "retry"
+                          ? undefined
+                          : "Complete this action in the Git-Ramus host"
+                      }
+                      onClick={action.kind === "retry" ? retryFailure : undefined}
+                    >
                       {action.label}
                     </button>
                   ))}
@@ -222,4 +296,10 @@ export function WorkspacesView({ api }: WorkspacesViewProps) {
       </div>
     </section>
   );
+}
+
+function omitKey<T>(record: Record<string, T | undefined>, key: string) {
+  const next = { ...record };
+  delete next[key];
+  return next;
 }
