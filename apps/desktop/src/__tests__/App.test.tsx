@@ -297,6 +297,161 @@ describe("App", () => {
     expect(selector).not.toBeDisabled();
   });
 
+  it("reconciles the authoritative theme when the latest queued activation fails", async () => {
+    const first = deferred<ThemeState>();
+    const second = deferred<ThemeState>();
+    const hostApi = createHostApi([gitClient]);
+    hostApi.currentTheme = vi
+      .fn()
+      .mockResolvedValueOnce(defaultState)
+      .mockResolvedValueOnce(compactState);
+    hostApi.activateTheme = vi.fn(({ themeId }) => {
+      if (themeId === compactState.activeThemeId) return first.promise;
+      if (themeId === lightState.activeThemeId) return second.promise;
+      throw new Error(`unexpected theme ${themeId}`);
+    });
+    render(<App hostApi={hostApi} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Overview" }));
+    const frame = await screen.findByTitle("Git Client plugin");
+    const frameWindow = (frame as HTMLIFrameElement).contentWindow;
+    if (frameWindow === null) throw new Error("expected iframe window");
+    const postMessage = vi.fn();
+    Object.defineProperty(frameWindow, "postMessage", { configurable: true, value: postMessage });
+    fireEvent.load(frame);
+    const shell = screen.getByTestId("app-shell");
+    const selector = screen.getByRole("combobox", { name: "Theme" });
+
+    act(() => {
+      fireEvent.change(selector, { target: { value: compactState.activeThemeId } });
+      fireEvent.change(selector, { target: { value: lightState.activeThemeId } });
+    });
+    await waitFor(() => expect(hostApi.activateTheme).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      first.resolve(compactState);
+      await first.promise;
+    });
+    await waitFor(() => expect(hostApi.activateTheme).toHaveBeenCalledTimes(2));
+    expect(shell).toHaveAttribute("data-theme-id", defaultState.activeThemeId);
+    expect(postMessage.mock.calls.map((call) => call[0])).not.toContainEqual(
+      expect.objectContaining({ type: "host:theme-changed", theme: compactState.theme })
+    );
+
+    await act(async () => {
+      second.reject(new Error("latest activation failed"));
+      await second.promise.catch(() => undefined);
+    });
+
+    await waitFor(() => expect(hostApi.currentTheme).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(shell).toHaveAttribute("data-theme-id", compactState.activeThemeId));
+    expect(selector).not.toBeDisabled();
+    expect(selector).toHaveAttribute("aria-busy", "false");
+    expect(postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: "host:theme-changed", theme: compactState.theme }),
+      "*"
+    );
+  });
+
+  it("does not apply an obsolete reconciliation when another activation is queued", async () => {
+    const first = deferred<ThemeState>();
+    const second = deferred<ThemeState>();
+    const third = deferred<ThemeState>();
+    const reconciliation = deferred<ThemeState>();
+    const hostApi = createHostApi();
+    hostApi.currentTheme = vi
+      .fn()
+      .mockResolvedValueOnce(defaultState)
+      .mockReturnValueOnce(reconciliation.promise);
+    hostApi.activateTheme = vi
+      .fn()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise)
+      .mockReturnValueOnce(third.promise);
+    render(<App hostApi={hostApi} />);
+    const shell = await screen.findByTestId("app-shell");
+    const selector = screen.getByRole("combobox", { name: "Theme" });
+
+    act(() => {
+      fireEvent.change(selector, { target: { value: compactState.activeThemeId } });
+      fireEvent.change(selector, { target: { value: lightState.activeThemeId } });
+    });
+    await waitFor(() => expect(hostApi.activateTheme).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      first.resolve(compactState);
+      await first.promise;
+    });
+    await waitFor(() => expect(hostApi.activateTheme).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      second.reject(new Error("latest activation failed"));
+      await second.promise.catch(() => undefined);
+    });
+    await waitFor(() => expect(hostApi.currentTheme).toHaveBeenCalledTimes(2));
+    expect(selector).toBeDisabled();
+
+    fireEvent.change(selector, { target: { value: lightState.activeThemeId } });
+    expect(hostApi.activateTheme).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      reconciliation.resolve(compactState);
+      await reconciliation.promise;
+    });
+    await waitFor(() => expect(hostApi.activateTheme).toHaveBeenCalledTimes(3));
+
+    expect(shell).toHaveAttribute("data-theme-id", defaultState.activeThemeId);
+
+    await act(async () => {
+      third.resolve(lightState);
+      await third.promise;
+    });
+    await waitFor(() => expect(shell).toHaveAttribute("data-theme-id", lightState.activeThemeId));
+    expect(selector).not.toBeDisabled();
+  });
+
+  it("continues the activation queue when authoritative reconciliation fails", async () => {
+    const failedActivation = deferred<ThemeState>();
+    const nextActivation = deferred<ThemeState>();
+    const reconciliation = deferred<ThemeState>();
+    const hostApi = createHostApi();
+    hostApi.currentTheme = vi
+      .fn()
+      .mockResolvedValueOnce(defaultState)
+      .mockReturnValueOnce(reconciliation.promise);
+    hostApi.activateTheme = vi
+      .fn()
+      .mockReturnValueOnce(failedActivation.promise)
+      .mockReturnValueOnce(nextActivation.promise);
+    render(<App hostApi={hostApi} />);
+    const shell = await screen.findByTestId("app-shell");
+    const selector = screen.getByRole("combobox", { name: "Theme" });
+
+    fireEvent.change(selector, { target: { value: lightState.activeThemeId } });
+    await waitFor(() => expect(hostApi.activateTheme).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      failedActivation.reject(new Error("activation failed"));
+      await failedActivation.promise.catch(() => undefined);
+    });
+    await waitFor(() => expect(hostApi.currentTheme).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      reconciliation.reject(new Error("reconciliation failed"));
+      await reconciliation.promise.catch(() => undefined);
+    });
+    await waitFor(() => expect(selector).not.toBeDisabled());
+    expect(selector).toHaveAttribute("aria-busy", "false");
+
+    fireEvent.change(selector, { target: { value: compactState.activeThemeId } });
+    await waitFor(() => expect(hostApi.activateTheme).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      nextActivation.resolve(compactState);
+      await nextActivation.promise;
+    });
+
+    await waitFor(() => expect(shell).toHaveAttribute("data-theme-id", compactState.activeThemeId));
+    expect(selector).not.toBeDisabled();
+    expect(selector).toHaveAttribute("aria-busy", "false");
+  });
+
   it("does not run queued theme work after unmount", async () => {
     const first = deferred<ThemeState>();
     const second = deferred<ThemeState>();

@@ -129,7 +129,16 @@ export function App({ hostApi = tauriHostApi }: AppProps) {
             setThemeState(parsed);
           }
         } catch {
-          // Keep the last confirmed theme and allow the activation queue to continue.
+          if (mounted.current && generation === activationGeneration.current) {
+            try {
+              const authoritative = themeStateSchema.parse(await hostApi.currentTheme());
+              if (mounted.current && generation === activationGeneration.current) {
+                setThemeState(authoritative);
+              }
+            } catch {
+              // Preserve the last confirmed theme when reconciliation also fails.
+            }
+          }
         } finally {
           if (mounted.current && generation === activationGeneration.current) {
             activationPending.current = false;

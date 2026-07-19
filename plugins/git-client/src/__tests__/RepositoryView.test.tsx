@@ -187,7 +187,7 @@ describe("RepositoryView", () => {
 
     const commit = screen.getByRole("button", { name: "Commit staged changes" });
     expect(commit).toBeDisabled();
-    await user.click(screen.getByRole("button", { name: "Trust repository" }));
+    await user.click(await screen.findByRole("button", { name: "Trust repository" }));
     expect(api.trustRepository).not.toHaveBeenCalled();
     expect(screen.getByText(/Trust allows write operations/u)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Confirm trust" }));
@@ -213,7 +213,7 @@ describe("RepositoryView", () => {
     render(<RepositoryView api={api} context={{ projectId }} repository={repository} />);
     await screen.findByRole("heading", { name: "Unstaged" });
 
-    await user.click(screen.getByRole("button", { name: "Trust repository" }));
+    await user.click(await screen.findByRole("button", { name: "Trust repository" }));
     await user.click(screen.getByRole("button", { name: "Confirm trust" }));
     const commit = screen.getByRole("button", { name: "Commit staged changes" });
     expect(commit).toBeDisabled();
@@ -237,7 +237,7 @@ describe("RepositoryView", () => {
     expect(await screen.findByText(diffTextMatcher)).toBeInTheDocument();
     expect(api.getRepositoryDiff).toHaveBeenCalledTimes(2);
 
-    await user.click(screen.getByRole("button", { name: "Trust repository" }));
+    await user.click(await screen.findByRole("button", { name: "Trust repository" }));
     await user.click(screen.getByRole("button", { name: "Confirm trust" }));
     await user.click(screen.getByRole("button", { name: "Stage all" }));
     expect(api.stageRepository).toHaveBeenCalledWith({
@@ -256,7 +256,7 @@ describe("RepositoryView", () => {
     await screen.findByRole("heading", { name: "Unstaged" });
     await user.click(screen.getByRole("button", { name: "View diff for src/unstaged.ts" }));
     expect(await screen.findByText(diffTextMatcher)).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Trust repository" }));
+    await user.click(await screen.findByRole("button", { name: "Trust repository" }));
     await user.click(screen.getByRole("button", { name: "Confirm trust" }));
 
     await user.click(screen.getByRole("button", { name: "Stage all" }));
@@ -275,7 +275,7 @@ describe("RepositoryView", () => {
     await user.click(screen.getByRole("button", { name: "View diff for src/staged.ts" }));
     expect(await screen.findByText(diffTextMatcher)).toBeInTheDocument();
     await user.click(selectedPath);
-    await user.click(screen.getByRole("button", { name: "Trust repository" }));
+    await user.click(await screen.findByRole("button", { name: "Trust repository" }));
     await user.click(screen.getByRole("button", { name: "Confirm trust" }));
 
     await user.click(screen.getByRole("button", { name: "Unstage selected" }));
@@ -293,7 +293,7 @@ describe("RepositoryView", () => {
     await screen.findByRole("heading", { name: "Staged" });
     await user.click(screen.getByRole("button", { name: "View diff for src/staged.ts" }));
     expect(await screen.findByText(diffTextMatcher)).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Trust repository" }));
+    await user.click(await screen.findByRole("button", { name: "Trust repository" }));
     await user.click(screen.getByRole("button", { name: "Confirm trust" }));
     await user.type(screen.getByLabelText("Commit message"), "Invalidate the old diff");
 
@@ -312,7 +312,7 @@ describe("RepositoryView", () => {
     vi.mocked(api.getRepositoryDiff).mockReturnValueOnce(pendingDiff.promise);
     render(<RepositoryView api={api} context={{ projectId }} repository={repository} />);
     await screen.findByRole("heading", { name: "Unstaged" });
-    await user.click(screen.getByRole("button", { name: "Trust repository" }));
+    await user.click(await screen.findByRole("button", { name: "Trust repository" }));
     await user.click(screen.getByRole("button", { name: "Confirm trust" }));
     await user.click(screen.getByRole("button", { name: "View diff for src/unstaged.ts" }));
 
@@ -471,7 +471,7 @@ describe("RepositoryView", () => {
     });
     render(<RepositoryView api={api} context={{ projectId }} repository={repository} />);
     await screen.findByRole("heading", { name: "Staged" });
-    await user.click(screen.getByRole("button", { name: "Trust repository" }));
+    await user.click(await screen.findByRole("button", { name: "Trust repository" }));
     await user.click(screen.getByRole("button", { name: "Confirm trust" }));
     await user.type(screen.getByLabelText("Commit message"), "Keep the failure visible");
     await user.click(screen.getByRole("button", { name: "Commit staged changes" }));
@@ -487,7 +487,7 @@ describe("RepositoryView", () => {
     render(<RepositoryView api={api} context={{ projectId }} repository={repository} />);
     const selectedPath = await screen.findByRole("checkbox", { name: "Select src/staged.ts" });
     await user.click(selectedPath);
-    await user.click(screen.getByRole("button", { name: "Trust repository" }));
+    await user.click(await screen.findByRole("button", { name: "Trust repository" }));
     await user.click(screen.getByRole("button", { name: "Confirm trust" }));
     await user.click(screen.getByRole("button", { name: "Unstage selected" }));
 
@@ -514,7 +514,7 @@ describe("RepositoryView", () => {
     });
     render(<RepositoryView api={api} context={{ projectId }} repository={repository} />);
     await screen.findByRole("heading", { name: "Unstaged" });
-    await user.click(screen.getByRole("button", { name: "Trust repository" }));
+    await user.click(await screen.findByRole("button", { name: "Trust repository" }));
     await user.click(screen.getByRole("button", { name: "Confirm trust" }));
     await user.click(screen.getByRole("button", { name: "Stage all" }));
 
