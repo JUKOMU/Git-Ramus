@@ -25,6 +25,9 @@ import {
   scanProjectResultSchema,
   trustResponseSchema,
   trustStatusResponseSchema,
+  themeActivateRequestSchema,
+  themeCatalogSchema,
+  themeStateSchema,
   workspaceCreateRequestSchema,
   workspaceDeleteRequestSchema,
   workspaceListResponseSchema,
@@ -63,6 +66,9 @@ import type {
   ScanProjectResult,
   TrustResponse,
   TrustStatusResponse,
+  ThemeActivateRequest,
+  ThemeCatalog,
+  ThemeState,
   Workspace,
   WorkspaceCreateRequest,
   WorkspaceDeleteRequest,
@@ -92,6 +98,9 @@ export interface HostApi {
   getAppInfo(): Promise<AppInfo>;
   listPlugins(): Promise<PluginDescriptor[]>;
   listJobs(): Promise<Job[]>;
+  listThemes(): Promise<ThemeCatalog>;
+  currentTheme(): Promise<ThemeState>;
+  activateTheme(request: ThemeActivateRequest): Promise<ThemeState>;
   authorizePluginCall(request: AuthorizationRequest): Promise<AuthorizationDecision>;
   startEchoJob(pluginId: string, message: string): Promise<Job>;
   cancelJob(jobId: string): Promise<void>;
@@ -126,6 +135,10 @@ export const tauriHostApi: HostApi = {
   getAppInfo: () => invoke<AppInfo>("get_app_info"),
   listPlugins: () => invoke<PluginDescriptor[]>("list_plugins"),
   listJobs: () => invoke<Job[]>("list_jobs"),
+  listThemes: () => invokeParsed("list_themes", themeCatalogSchema),
+  currentTheme: () => invokeParsed("current_theme", themeStateSchema),
+  activateTheme: (request) =>
+    invokeRequest("activate_theme", themeActivateRequestSchema, themeStateSchema, request),
   authorizePluginCall: (request) =>
     invoke<AuthorizationDecision>("authorize_plugin_call", { request }),
   startEchoJob: (pluginId, message) =>

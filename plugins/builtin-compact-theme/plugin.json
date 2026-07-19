@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "git-ramus.compact-theme",
+  "name": "Compact Theme",
+  "version": "0.1.0",
+  "publisher": "git-ramus",
+  "description": "A compact global skin with tighter spacing and geometry.",
+  "kind": "builtin",
+  "sdkVersion": "^0.1.0",
+  "entrypoints": {
+    "ui": "ui.html"
+  },
+  "contributions": {
+    "navigation": [],
+    "theme": {
+      "themeId": "git-ramus.theme.compact",
+      "definition": "theme.json"
+    }
+  },
+  "permissions": []
+}

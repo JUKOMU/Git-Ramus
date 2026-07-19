@@ -11,6 +11,7 @@ use crate::git::service::{
 use crate::identity::{EffectiveIdentity, IdentityProfile, IdentityProfileInput};
 use crate::jobs::model::Job;
 use crate::plugins::PluginDescriptor;
+use crate::themes::{ThemeMetadata, ThemeState};
 
 pub type CommandResult<T> = Result<T, Box<ErrorEnvelope>>;
 
@@ -262,6 +263,18 @@ pub struct GitIdentityListResponse {
     pub global_identity_profile_id: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThemeActivateRequest {
+    pub theme_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThemeCatalogResponse {
+    pub themes: Vec<ThemeMetadata>,
+}
+
 #[tauri::command]
 pub fn get_app_info() -> AppInfo {
     app_info()
@@ -277,6 +290,32 @@ pub fn app_info() -> AppInfo {
 #[tauri::command]
 pub fn list_plugins(state: State<'_, AppState>) -> Vec<PluginDescriptor> {
     state.plugins.descriptors().to_vec()
+}
+
+#[tauri::command]
+pub fn list_themes(state: State<'_, AppState>) -> ThemeCatalogResponse {
+    ThemeCatalogResponse {
+        themes: state.themes.list(),
+    }
+}
+
+#[tauri::command]
+pub fn current_theme(state: State<'_, AppState>) -> CommandResult<ThemeState> {
+    state.themes.current().map_err(command_error)
+}
+
+#[tauri::command]
+pub fn activate_theme(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: ThemeActivateRequest,
+) -> CommandResult<ThemeState> {
+    let theme = state
+        .themes
+        .activate(&request.theme_id)
+        .map_err(command_error)?;
+    let _ = app.emit("theme://changed", theme.clone());
+    Ok(theme)
 }
 
 #[tauri::command]
@@ -797,8 +836,9 @@ mod tests {
     use super::{
         GitIdentityCreateRequest, GitProjectCreateRequest, GitProjectDeleteRequest,
         GitRepositoryCommitRequest, GitRepositoryIdentityBindRequest, GitWorkspaceRequest,
-        GitWorkspaceUpdateRequest,
+        GitWorkspaceUpdateRequest, ThemeActivateRequest, ThemeCatalogResponse,
     };
+    use crate::themes::{ThemeDensity, ThemeMetadata};
     use serde_json::json;
 
     #[test]
@@ -895,6 +935,43 @@ mod tests {
             json!({
                 "identities": [],
                 "globalIdentityProfileId": "profile"
+            })
+        );
+    }
+
+    #[test]
+    fn theme_commands_use_strict_camel_case_contracts() {
+        let request: ThemeActivateRequest = serde_json::from_value(json!({
+            "themeId": "git-ramus.theme.compact"
+        }))
+        .expect("activation request parses");
+        assert_eq!(request.theme_id, "git-ramus.theme.compact");
+        assert!(
+            serde_json::from_value::<ThemeActivateRequest>(json!({
+                "themeId": "git-ramus.theme.compact",
+                "definitionPath": "C:/must-not-cross-boundary"
+            }))
+            .is_err()
+        );
+        let response = ThemeCatalogResponse {
+            themes: vec![ThemeMetadata {
+                theme_id: "git-ramus.theme.default".to_owned(),
+                name: "Git-Ramus Default".to_owned(),
+                plugin_id: "git-ramus.host".to_owned(),
+                version: "0.1.0".to_owned(),
+                density: ThemeDensity::Comfortable,
+            }],
+        };
+        assert_eq!(
+            serde_json::to_value(response).expect("catalog serializes"),
+            json!({
+                "themes": [{
+                    "themeId": "git-ramus.theme.default",
+                    "name": "Git-Ramus Default",
+                    "pluginId": "git-ramus.host",
+                    "version": "0.1.0",
+                    "density": "comfortable"
+                }]
             })
         );
     }

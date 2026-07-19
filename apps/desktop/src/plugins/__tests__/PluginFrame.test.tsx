@@ -39,6 +39,9 @@ const hostApi: HostApi = {
   getAppInfo: vi.fn(async () => ({ name: "Git-Ramus", version: "0.1.0" })),
   listPlugins: vi.fn(async () => []),
   listJobs: vi.fn(async () => []),
+  listThemes: vi.fn(),
+  currentTheme: vi.fn(),
+  activateTheme: vi.fn(),
   authorizePluginCall: vi.fn(async () => ({ allowed: true })),
   startEchoJob: vi.fn(async () => ({
     id: "a032bc9c-8759-45ac-856f-b76f9addb9d1",

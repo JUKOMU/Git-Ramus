@@ -99,6 +99,9 @@ describe("tauriHostApi Git client commands", () => {
     const bind = { ...repositoryRequest, identityProfileId: profileId };
 
     await tauriHostApi.listProjects();
+    await tauriHostApi.listThemes();
+    await tauriHostApi.currentTheme();
+    await tauriHostApi.activateTheme({ themeId: "git-ramus.theme.compact" });
     await tauriHostApi.updateProjectScanRules(updateScanRules);
     await tauriHostApi.scanProject(scan);
     await tauriHostApi.listWorkspaces();
@@ -126,6 +129,9 @@ describe("tauriHostApi Git client commands", () => {
 
     expect(invoke.mock.calls).toEqual([
       ["git_project_list"],
+      ["list_themes"],
+      ["current_theme"],
+      ["activate_theme", { request: { themeId: "git-ramus.theme.compact" } }],
       ["git_project_update_scan_rules", { request: updateScanRules }],
       ["git_project_scan", { request: scan }],
       ["git_workspace_list"],
@@ -165,6 +171,25 @@ describe("tauriHostApi Git client commands", () => {
 });
 
 const responses: Record<string, unknown> = {
+  list_themes: {
+    themes: [
+      {
+        themeId: "git-ramus.theme.default",
+        name: "Git-Ramus Default",
+        pluginId: "git-ramus.host",
+        version: "0.1.0",
+        density: "comfortable"
+      }
+    ]
+  },
+  current_theme: {
+    activeThemeId: "git-ramus.theme.default",
+    theme: { themeId: "git-ramus.theme.default", density: "comfortable" }
+  },
+  activate_theme: {
+    activeThemeId: "git-ramus.theme.compact",
+    theme: { themeId: "git-ramus.theme.compact", density: "compact" }
+  },
   git_project_list: { projects: [project] },
   git_project_update_scan_rules: project,
   git_project_scan: {

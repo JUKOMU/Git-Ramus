@@ -204,6 +204,40 @@ describe("plugin client", () => {
     expect(values.has("--gr-colors-text")).toBe(false);
   });
 
+  it("formats numeric length tokens without changing unitless typography values", () => {
+    const values = new Map<string, string>();
+    const root = {
+      style: {
+        setProperty: (key: string, value: string) => values.set(key, value),
+        removeProperty: (key: string) => values.delete(key)
+      }
+    } as unknown as HTMLElement;
+
+    applyThemeToDocument(
+      {
+        themeId: "git-ramus.theme.compact",
+        typography: {
+          fontSize: 13,
+          lineHeight: 1.35,
+          fontWeight: 400,
+          letterSpacing: 0
+        },
+        spacing: { sm: 6 },
+        shape: { radius: 5 },
+        density: "compact"
+      },
+      root
+    );
+
+    expect(values.get("--gr-typography-fontSize")).toBe("13px");
+    expect(values.get("--gr-typography-lineHeight")).toBe("1.35");
+    expect(values.get("--gr-typography-fontWeight")).toBe("400");
+    expect(values.get("--gr-typography-letterSpacing")).toBe("0px");
+    expect(values.get("--gr-spacing-sm")).toBe("6px");
+    expect(values.get("--gr-shape-radius")).toBe("5px");
+    expect(values.get("--gr-density")).toBe("compact");
+  });
+
   it("clears the active theme when the client is disposed", async () => {
     const values = new Map<string, string>();
     const root = {

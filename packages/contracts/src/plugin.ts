@@ -41,7 +41,16 @@ export const themeContributionSchema = z
   .strict()
   .refine((value) => value.definition !== undefined || value.definitionPath !== undefined, {
     message: "theme definition path is required"
-  });
+  })
+  .refine(
+    (value) =>
+      value.definition === undefined ||
+      value.definitionPath === undefined ||
+      value.definition === value.definitionPath,
+    {
+      message: "theme definition and definitionPath must match"
+    }
+  );
 
 export const pluginManifestSchema = z
   .object({

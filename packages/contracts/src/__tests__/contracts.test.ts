@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import manifest from "../../../../plugins/builtin-welcome/plugin.json";
 import gitClientManifest from "../../../../plugins/git-client/plugin.json";
+import compactManifest from "../../../../plugins/builtin-compact-theme/plugin.json";
+import compactTheme from "../../../../plugins/builtin-compact-theme/theme.json";
 import type { PersistedRepositorySnapshot, RepositorySnapshot } from "../index";
 import {
   errorEnvelopeSchema,
@@ -36,7 +38,10 @@ import {
   repositoryOperationResponseSchema,
   themeContributionSchema,
   hostThemeChangedSchema,
-  themeChangedSchema
+  themeChangedSchema,
+  themeActivateRequestSchema,
+  themeCatalogSchema,
+  themeStateSchema
 } from "../index";
 
 const projectId = "87a31769-8aaa-47ca-bef3-47e66f0c62fc";
@@ -211,6 +216,36 @@ describe("shared contracts", () => {
         }
       })
     ).toThrow();
+    expect(
+      pluginManifestSchema.parse({
+        ...manifest,
+        contributions: {
+          ...manifest.contributions,
+          theme: { themeId: "git-ramus.default", definitionPath: "theme.json" }
+        }
+      }).contributions.theme?.definitionPath
+    ).toBe("theme.json");
+    expect(() =>
+      pluginManifestSchema.parse({
+        ...manifest,
+        contributions: {
+          ...manifest.contributions,
+          theme: {
+            themeId: "git-ramus.default",
+            definition: "theme.json",
+            definitionPath: "other.json"
+          }
+        }
+      })
+    ).toThrow();
+  });
+
+  it("parses the shipped Compact manifest and definition", () => {
+    const parsedManifest = pluginManifestSchema.parse(compactManifest);
+    const parsedTheme = themeDefinitionSchema.parse(compactTheme);
+    expect(parsedManifest.contributions.theme?.themeId).toBe("git-ramus.theme.compact");
+    expect(parsedTheme.themeId).toBe(parsedManifest.contributions.theme?.themeId);
+    expect(parsedTheme.density).toBe("compact");
   });
 
   it("rejects executable or arbitrary theme payloads", () => {
@@ -239,6 +274,63 @@ describe("shared contracts", () => {
     expect(() => themeDefinitionSchema.parse({ themeId: "git-ramus.safe", shadows: {} })).toThrow();
     expect(() =>
       themeDefinitionSchema.parse({ themeId: "git-ramus.safe", colors: { arbitrary: "#fff" } })
+    ).toThrow();
+  });
+
+  it("strictly matches the Rust theme catalog, state, and activation contracts", () => {
+    const theme = {
+      themeId: "git-ramus.theme.compact",
+      name: "Compact",
+      colors: { background: "#07111f" },
+      density: "compact" as const
+    };
+    expect(
+      themeCatalogSchema.parse({
+        themes: [
+          {
+            themeId: theme.themeId,
+            name: "Compact",
+            pluginId: "git-ramus.compact-theme",
+            version: "0.1.0",
+            density: "compact"
+          }
+        ]
+      }).themes[0]?.themeId
+    ).toBe(theme.themeId);
+    expect(themeStateSchema.parse({ activeThemeId: theme.themeId, theme }).theme).toEqual(theme);
+    expect(themeActivateRequestSchema.parse({ themeId: theme.themeId })).toEqual({
+      themeId: theme.themeId
+    });
+    expect(() =>
+      themeStateSchema.parse({
+        activeThemeId: "git-ramus.theme.default",
+        theme,
+        definitionPath: "C:/must-not-cross-boundary"
+      })
+    ).toThrow();
+    expect(() =>
+      themeStateSchema.parse({ activeThemeId: "git-ramus.theme.default", theme })
+    ).toThrow();
+  });
+
+  it("rejects allowed token keys whose values exceed host safety bounds", () => {
+    expect(() =>
+      themeDefinitionSchema.parse({
+        themeId: "git-ramus.theme.unsafe",
+        spacing: { unit: 10000 }
+      })
+    ).toThrow();
+    expect(() =>
+      themeDefinitionSchema.parse({
+        themeId: "git-ramus.theme.unsafe",
+        typography: { fontWeight: 901 }
+      })
+    ).toThrow();
+    expect(() =>
+      themeDefinitionSchema.parse({
+        themeId: "git-ramus.theme.unsafe",
+        colors: { background: "url(https://evil.test/a.png)" }
+      })
     ).toThrow();
   });
 

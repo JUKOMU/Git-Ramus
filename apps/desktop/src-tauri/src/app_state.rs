@@ -13,6 +13,7 @@ use crate::plugins::PluginRegistry;
 use crate::plugins::manifest::PluginKind;
 use crate::plugins::permissions::PermissionGateway;
 use crate::secrets::{KeyringSecretStore, SecretStore};
+use crate::themes::ThemeManager;
 
 pub struct AppState {
     pub database: Database,
@@ -22,6 +23,7 @@ pub struct AppState {
     pub jobs: JobService,
     pub plugins: PluginRegistry,
     pub permissions: PermissionGateway,
+    pub themes: ThemeManager,
 }
 
 impl AppState {
@@ -40,6 +42,7 @@ impl AppState {
     pub fn from_paths(database_path: &Path, plugin_root: &Path) -> Result<Self, AppError> {
         let database = Database::open(database_path)?;
         let plugins = PluginRegistry::discover(plugin_root)?;
+        let themes = ThemeManager::discover(database.clone(), &plugins)?;
         let permissions = PermissionGateway::new(database.clone());
         let now = chrono::Utc::now().to_rfc3339();
         for descriptor in plugins.descriptors() {
@@ -87,6 +90,7 @@ impl AppState {
             secrets: Arc::new(KeyringSecretStore::new("io.git-ramus.desktop")),
             plugins,
             permissions,
+            themes,
             database,
         })
     }

@@ -1,6 +1,34 @@
 import { themeDefinitionSchema, type ThemeDefinition } from "@git-ramus/contracts";
 
 const appliedVariables = new WeakMap<HTMLElement, Set<string>>();
+const TOKEN_KEYS = {
+  colors: [
+    "background",
+    "surface",
+    "surfaceRaised",
+    "text",
+    "textMuted",
+    "border",
+    "primary",
+    "secondary",
+    "accent",
+    "success",
+    "warning",
+    "danger",
+    "focusRing"
+  ],
+  typography: ["fontFamily", "fontSize", "lineHeight", "fontWeight", "letterSpacing"],
+  spacing: ["unit", "xs", "sm", "md", "lg", "xl"],
+  shape: ["radius", "radiusSm", "radiusMd", "radiusLg"],
+  elevation: ["none", "sm", "md", "lg", "level1", "level2", "level3"],
+  motion: ["durationFast", "durationNormal", "durationSlow", "easing"]
+} as const;
+const LENGTH_TOKENS = new Set([
+  "typography.fontSize",
+  "typography.letterSpacing",
+  ...TOKEN_KEYS.spacing.map((key) => `spacing.${key}`),
+  ...TOKEN_KEYS.shape.map((key) => `shape.${key}`)
+]);
 
 export function clearAppliedTheme(documentRoot?: HTMLElement): void {
   const root =
@@ -20,18 +48,25 @@ export function applyThemeToDocument(theme: ThemeDefinition, documentRoot?: HTML
   if (!parsed.success) return;
   clearAppliedTheme(root);
   const next = new Set<string>();
-  for (const [group, values] of Object.entries(parsed.data)) {
-    if (group === "themeId" || group === "name" || values === undefined) continue;
-    if (group === "density") {
-      root.style.setProperty("--gr-density", String(values));
-      next.add("--gr-density");
-      continue;
-    }
-    for (const [key, value] of Object.entries(values)) {
+  for (const [group, keys] of Object.entries(TOKEN_KEYS)) {
+    const values = parsed.data[group as keyof typeof TOKEN_KEYS] as
+      Record<string, string | number | undefined> | undefined;
+    if (values === undefined) continue;
+    for (const key of keys) {
+      const value = values[key];
+      if (value === undefined) continue;
       const property = `--gr-${group}-${key}`;
-      root.style.setProperty(property, String(value));
+      const token = `${group}.${key}`;
+      root.style.setProperty(
+        property,
+        typeof value === "number" && LENGTH_TOKENS.has(token) ? `${value}px` : String(value)
+      );
       next.add(property);
     }
+  }
+  if (parsed.data.density !== undefined) {
+    root.style.setProperty("--gr-density", parsed.data.density);
+    next.add("--gr-density");
   }
   appliedVariables.set(root, next);
 }

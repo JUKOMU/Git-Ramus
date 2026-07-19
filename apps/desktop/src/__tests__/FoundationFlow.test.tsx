@@ -109,6 +109,25 @@ function createHostApi(): HostApi {
         error: null
       }
     ]),
+    listThemes: vi.fn(async () => ({
+      themes: [
+        {
+          themeId: "git-ramus.theme.default",
+          name: "Git-Ramus Default",
+          pluginId: "git-ramus.host",
+          version: "0.1.0",
+          density: "comfortable" as const
+        }
+      ]
+    })),
+    currentTheme: vi.fn(async () => ({
+      activeThemeId: "git-ramus.theme.default",
+      theme: { themeId: "git-ramus.theme.default", density: "comfortable" as const }
+    })),
+    activateTheme: vi.fn(async () => ({
+      activeThemeId: "git-ramus.theme.default",
+      theme: { themeId: "git-ramus.theme.default", density: "comfortable" as const }
+    })),
     authorizePluginCall: vi.fn(async () => ({ allowed: true })),
     startEchoJob: vi.fn(),
     cancelJob: vi.fn(async () => undefined),

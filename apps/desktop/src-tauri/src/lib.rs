@@ -7,6 +7,7 @@ pub mod identity;
 pub mod jobs;
 pub mod plugins;
 pub mod secrets;
+pub mod themes;
 
 use tauri::Manager;
 
@@ -38,6 +39,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_app_info,
             commands::list_plugins,
+            commands::list_themes,
+            commands::current_theme,
+            commands::activate_theme,
             commands::list_jobs,
             commands::authorize_plugin_call,
             commands::start_echo_job,

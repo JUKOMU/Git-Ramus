@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
@@ -13,6 +13,8 @@ pub struct PluginDescriptor {
     pub ui_url: String,
     #[serde(skip_serializing)]
     pub ui_html: String,
+    #[serde(skip_serializing)]
+    pub(crate) root_path: PathBuf,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -77,6 +79,7 @@ impl PluginRegistry {
                     manifest,
                     ui_url,
                     ui_html,
+                    root_path: canonical_root,
                 });
             }
         }
@@ -92,6 +95,12 @@ impl PluginRegistry {
         self.descriptors
             .iter()
             .find(|descriptor| descriptor.manifest.id == plugin_id)
+    }
+}
+
+impl PluginDescriptor {
+    pub(crate) fn root_path(&self) -> &Path {
+        &self.root_path
     }
 }
 
