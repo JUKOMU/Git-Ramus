@@ -111,7 +111,7 @@ On Windows, run Cargo commands from the Visual Studio Developer PowerShell with 
 - Test: packages/contracts/src/__tests__/contracts.test.ts
 - Test: packages/plugin-sdk/src/__tests__/client.test.ts
 
-- [ ] Step 1: Add failing contract tests
+- [x] Step 1: Add failing contract tests
 
 Add tests for these behaviors before changing schemas:
 
@@ -156,17 +156,17 @@ npm run test --workspace @git-ramus/plugin-sdk -- client
 
 Expected: FAIL because themeDefinitionSchema, the theme contribution and new messages do not exist.
 
-- [ ] Step 2: Implement the minimal shared schemas
+- [x] Step 2: Implement the minimal shared schemas
 
 Define ThemeDefinition with an allowlisted token object (colors, typography, spacing, shape, elevation, motion, density) and a safe themeId. Define Git DTOs for Project, Workspace, Repository, RepositorySnapshot, ChangeEntry, IdentityProfile, EffectiveIdentity, and operation responses. Keep all IDs opaque UUID strings and all paths host-returned strings.
 
 Make hostInitSchema.route optional for backward compatibility; the SDK must use / when absent. Add themeContributionSchema to PluginContributions and themeChangedSchema to the host-to-plugin union. Export the new modules from index.ts.
 
-- [ ] Step 3: Extend the SDK lifecycle
+- [x] Step 3: Extend the SDK lifecycle
 
 Expose client.ready with the optional route, add client.theme and client.onThemeChanged(listener), and apply only validated CSS custom properties to the plugin document root. A theme update must not evaluate CSS or JavaScript received from the host.
 
-- [ ] Step 4: Run focused tests and commit
+- [x] Step 4: Run focused tests and commit
 
 ~~~powershell
 npx prettier --write packages/contracts packages/plugin-sdk
@@ -192,7 +192,7 @@ Expected: all contract and SDK tests pass.
 - Modify: apps/desktop/src-tauri/src/git/mod.rs
 - Test: apps/desktop/src-tauri/src/db/mod.rs and new repository tests
 
-- [ ] Step 1: Write migration and repository invariant tests first
+- [x] Step 1: Write migration and repository invariant tests first
 
 Add Rust tests that open an in-memory database and assert:
 
@@ -210,17 +210,17 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml db::
 
 Expected: FAIL because migration v2 and repositories are absent.
 
-- [ ] Step 2: Add the transactional v2 migration
+- [x] Step 2: Add the transactional v2 migration
 
 Create 0002_git_client.sql with the tables and constraints from the specification, including the themes table. Use TEXT UUIDs, ISO-8601 timestamps, JSON text for exclusion patterns and theme definitions, ON DELETE CASCADE only for relationship rows, and indexes on canonical paths, snapshot refresh time and relationship foreign keys. End the transaction with PRAGMA user_version = 2.
 
 Update db/migrations.rs to run migration 1 when needed, then migration 2 when current < 2; never rerun an already-applied migration.
 
-- [ ] Step 3: Implement focused repositories
+- [x] Step 3: Implement focused repositories
 
 Implement small repository types with methods for Project, Workspace, Repository, Snapshot, Trust, Identity Profile and Theme rows. Every query must use rusqlite parameters. Use one transaction for membership changes and Global identity pointer changes. Map missing rows to AppError::NotFound and constraint violations to stable validation errors.
 
-- [ ] Step 4: Verify and commit
+- [x] Step 4: Verify and commit
 
 ~~~powershell
 cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml
@@ -241,7 +241,7 @@ git commit -m "feat: persist git client models"
 - Test: apps/desktop/src-tauri/src/git/parser.rs
 - Create: apps/desktop/src-tauri/tests/git_integration.rs
 
-- [ ] Step 1: Add parser fixture tests
+- [x] Step 1: Add parser fixture tests
 
 Add fixtures for status --porcelain=v2 -z --branch containing a branch header, staged/unstaged changes, an untracked Unicode path, a rename with spaces, and a conflict. Assert exact RepositorySnapshot counts and ChangeEntry fields. Add Diff tests proving binary markers and paths after -- are retained.
 
@@ -253,7 +253,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml git::parser
 
 Expected: FAIL because parser types and functions do not exist.
 
-- [ ] Step 2: Define command and output types
+- [x] Step 2: Define command and output types
 
 Implement:
 
@@ -278,15 +278,15 @@ pub trait GitRunner: Send + Sync {
 
 Use std::process::Command with current_dir/-C, argument arrays, bounded output collection, timeout polling and child termination. Do not invoke cmd.exe, PowerShell, or a shell interpreter. Preserve only the minimum environment required for Git/GCM/SSH and redact credentials from errors.
 
-- [ ] Step 3: Implement parsers and repository detection
+- [x] Step 3: Implement parsers and repository detection
 
 Parse NUL-separated records without converting the entire stream through a platform code page. Implement parse_status_v2, parse_diff_summary, parse_git_config, and detect_repository. Canonicalize paths, reject non-UTF8 paths with a stable error, and recognize normal, bare and worktree repositories.
 
-- [ ] Step 4: Add real temporary-repository integration tests
+- [x] Step 4: Add real temporary-repository integration tests
 
 Create temporary repositories with git init, configure only local identity, create files with spaces and Unicode names, and exercise status, Diff and parser output. Add a test that a path containing shell metacharacters is passed as one argument and never executed.
 
-- [ ] Step 5: Verify and commit
+- [x] Step 5: Verify and commit
 
 ~~~powershell
 cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml
@@ -309,7 +309,7 @@ Expected: parser, engine and integration tests pass.
 - Test: apps/desktop/src-tauri/tests/git_integration.rs
 - Test: apps/desktop/src-tauri/src/git/service.rs
 
-- [ ] Step 1: Write failing service tests
+- [x] Step 1: Write failing service tests
 
 Using a temporary root, create repo-a, nested/repo-b, an excluded node_modules/repo-c, a .git file Worktree and a Bare repository. Assert a depth-3 scan returns the correct repository kinds, deduplicates canonical paths, ignores excluded directories and preserves the old snapshot when one repository becomes unreadable. Add tests for Workspace membership across two Project roots.
 
@@ -321,13 +321,13 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml git::service
 
 Expected: FAIL because scan/service methods do not exist.
 
-- [ ] Step 2: Implement scan and snapshot service
+- [x] Step 2: Implement scan and snapshot service
 
 Implement scan_project, refresh_repository, get_overview, get_changes, and get_diff. Use a bounded semaphore for read-only work and a per-repository lock for writes. Return progressive result records rather than waiting for all repositories. Store relationships and summary snapshots through the v2 repositories.
 
 Add explicit validation that a requested repository belongs to the Project/Workspace context supplied by the caller.
 
-- [ ] Step 3: Implement Stage/Unstage/Commit orchestration
+- [x] Step 3: Implement Stage/Unstage/Commit orchestration
 
 Add service methods that:
 
@@ -340,11 +340,11 @@ Add service methods that:
 
 On any failure, release the lock and refresh status before returning the error.
 
-- [ ] Step 4: Add Tauri command adapters
+- [x] Step 4: Add Tauri command adapters
 
 Expose typed commands for Project/Workspace CRUD, scan, overview, snapshot, Changes, Diff, Stage, Unstage, Commit and Trust. Register them in lib.rs; return CommandResult<T> with ErrorEnvelope. Do not expose a generic run-git command.
 
-- [ ] Step 5: Verify and commit
+- [x] Step 5: Verify and commit
 
 ~~~powershell
 cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml
@@ -365,7 +365,7 @@ git commit -m "feat: scan projects and commit staged changes"
 - Test: apps/desktop/src-tauri/src/identity.rs
 - Test: apps/desktop/src-tauri/tests/git_integration.rs
 
-- [ ] Step 1: Write failing identity tests
+- [x] Step 1: Write failing identity tests
 
 Use an isolated temporary Git config file/home so tests never touch the developer's Global config. Cover:
 
@@ -385,15 +385,15 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml identity::
 
 Expected: FAIL because IdentityService and v2 persistence are incomplete.
 
-- [ ] Step 2: Implement Profile validation and effective identity
+- [x] Step 2: Implement Profile validation and effective identity
 
 Validate non-empty display name, valid email shape, supported gpg.format, and signing key requirements. Implement list, create, update, delete, set_global, bind_repository, unbind_repository, and effective_for_repository. Refuse deleting the current Global Profile.
 
-- [ ] Step 3: Implement safe config application and signature checks
+- [x] Step 3: Implement safe config application and signature checks
 
 Snapshot the exact keys Git-Ramus manages, apply with git config --global/--local, read back, and roll back on any mismatch. For a signed Commit, use the selected profile's commit.gpgSign and gpg.format; run a lightweight availability check before starting the Commit job and preserve the original Git error in a redacted envelope.
 
-- [ ] Step 4: Verify and commit
+- [x] Step 4: Verify and commit
 
 ~~~powershell
 cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml
@@ -415,7 +415,7 @@ git commit -m "feat: manage git identity profiles"
 - Modify: apps/desktop/src/__tests__/FoundationFlow.test.tsx
 - Modify: apps/desktop/src/plugins/__tests__/PluginFrame.test.tsx
 
-- [ ] Step 1: Add failing RPC route tests
+- [x] Step 1: Add failing RPC route tests
 
 Add tests that dispatch projects.list, repositories.getChanges, repositories.stage, repositories.commit, identities.setGlobal, and repositories.trust. Assert each route checks the exact capability/resource before calling the Rust-backed HostApi. Add negative tests for an unknown Repository ID, an untrusted write, and an undeclared capability.
 
@@ -427,15 +427,15 @@ npm run test --workspace @git-ramus/desktop -- rpcRouter PluginFrame
 
 Expected: FAIL because the routes and route-aware frame props do not exist.
 
-- [ ] Step 2: Implement typed HostApi and RPC dispatch
+- [x] Step 2: Implement typed HostApi and RPC dispatch
 
 Add TypeScript request/response methods matching packages/contracts/src/git.ts. Keep resource checks in a single route table. Never let a plugin supply a filesystem path to the route handler; resolve IDs through HostApi.
 
-- [ ] Step 3: Add route and theme message handling to PluginFrame
+- [x] Step 3: Add route and theme message handling to PluginFrame
 
 Pass the selected contribution route in host:init. Subscribe to host:theme-changed, apply the validated theme through the SDK, and keep the existing source/session checks. Add tests for route delivery, theme updates, and rejection of messages from another frame.
 
-- [ ] Step 4: Verify and commit
+- [x] Step 4: Verify and commit
 
 ~~~powershell
 npx prettier --write apps/desktop/src packages/contracts/src packages/plugin-sdk/src
@@ -472,7 +472,7 @@ git commit -m "feat: expose git client host routes"
 - Modify: apps/desktop/src/shell/AppShell.tsx
 - Modify: apps/desktop/src/app.css
 
-- [ ] Step 1: Write failing component tests
+- [x] Step 1: Write failing component tests
 
 Add Testing Library tests for:
 
@@ -486,21 +486,21 @@ Add Testing Library tests for:
 
 Run the new plugin test command and observe failures because the package does not exist.
 
-- [ ] Step 2: Scaffold the single-file plugin
+- [x] Step 2: Scaffold the single-file plugin
 
 Follow the existing Welcome Vite configuration. Set the package name to @git-ramus/git-client, add the Manifest with navigation routes /overview, /projects, and /workspaces, and use permissions from the specification. The plugin API must only call the typed RPC client; it must not import Tauri APIs or access window.__TAURI_INTERNALS__.
 
-- [ ] Step 3: Implement the views and explicit staging flow
+- [x] Step 3: Implement the views and explicit staging flow
 
 Implement route-based rendering. Overview requests snapshots in batches. Projects and Workspaces use optimistic relationship updates only after the host confirms success. RepositoryView refreshes after Stage/Unstage/Commit, keeps selected paths stable when possible, and displays ErrorEnvelope recovery actions.
 
 The Commit panel sends only selected staged paths and the selected identity profile ID; it never auto-stages unstaged files. Add an explicit Stage all button.
 
-- [ ] Step 4: Integrate navigation and resource sync
+- [x] Step 4: Integrate navigation and resource sync
 
 Generalize sync-builtin-plugins.mjs to build/copy Welcome and Git Client into resources/plugins/<id>. Make AppShell render plugin navigation contributions rather than no-op hardcoded buttons. Keep TaskCenter visible as a host slot; Task 8 adds the Compact Theme copy step after that plugin exists.
 
-- [ ] Step 5: Verify and commit
+- [x] Step 5: Verify and commit
 
 ~~~powershell
 npm run build --workspace @git-ramus/builtin-welcome
@@ -535,25 +535,25 @@ git commit -m "feat: add git client plugin views"
 - Modify: apps/desktop/src/plugins/PluginFrame.tsx
 - Test: Rust theme tests and apps/desktop/src/__tests__/App.test.tsx
 
-- [ ] Step 1: Write failing theme tests
+- [x] Step 1: Write failing theme tests
 
 Test that a valid Compact theme.json is discovered, an out-of-range token is rejected, activating a theme persists active_theme_id, invalid activation falls back to the default, and a host:theme-changed message reaches an iframe without allowing cross-origin injection.
 
 Run the focused Rust and desktop tests and observe failures.
 
-- [ ] Step 2: Implement ThemeManager and theme persistence
+- [x] Step 2: Implement ThemeManager and theme persistence
 
 Load theme definitions from validated plugin roots, store only the active ID and definition metadata, expose list/activate commands, and emit a theme-changed event. Use the host default when no plugin theme is active. Never load raw CSS or executable theme content into the host.
 
-- [ ] Step 3: Apply tokens to Shell and SDK
+- [x] Step 3: Apply tokens to Shell and SDK
 
 Render CSS variables from the validated definition at the Shell root. Add density classes for host slots. Extend PluginFrame to send the current theme on init and on changes; the plugin SDK applies allowlisted variables to its own document root.
 
-- [ ] Step 4: Add the Compact plugin and switcher
+- [x] Step 4: Add the Compact plugin and switcher
 
 Create the @git-ramus/builtin-compact-theme plugin with a visibly different density, palette and component geometry. Add a small host Settings/toolbar selector that lists themes and calls activate_theme. Verify Git Client, TaskCenter and plugin iframe all update without reload.
 
-- [ ] Step 5: Verify and commit
+- [x] Step 5: Verify and commit
 
 ~~~powershell
 npx prettier --write apps/desktop/src packages/plugin-sdk/src plugins/builtin-compact-theme
@@ -583,11 +583,11 @@ git commit -m "feat: support global skin plugins"
 - Modify: .github/workflows/ci.yml
 - Modify: docs/development.md
 
-- [ ] Step 1: Add the native dialog dependency and command
+- [x] Step 1: Add the native dialog dependency and command
 
 Add tauri-plugin-dialog 2.7.1 to Cargo.toml and @tauri-apps/plugin-dialog 2.7.1 to apps/desktop/package.json, run npm install and cargo check, enable the dialog default capability, and expose a host command that returns a selected directory or null. The command must not accept arbitrary plugin-provided paths as a substitute for the dialog.
 
-- [ ] Step 2: Write the native E2E journey
+- [x] Step 2: Write the native E2E journey
 
 Add a WebdriverIO spec that:
 
@@ -601,11 +601,11 @@ Add a WebdriverIO spec that:
 
 Because the embedded driver cannot inspect the opaque cross-origin plugin DOM directly, expose host-side status attributes only for handshake/operation observability, as in the Foundation E2E. Do not weaken the production sandbox.
 
-- [ ] Step 3: Add CI commands and documentation
+- [x] Step 3: Add CI commands and documentation
 
 Keep Node 24 and Node 26 quality jobs, MSVC initialization on Windows, Rust fmt/Clippy/tests, Windows/Linux E2E, and Linux WebView dependencies. Document Git installation requirements, test fixture setup, isolated Git config, Trust behavior, and theme plugin development.
 
-- [ ] Step 4: Verify and commit
+- [x] Step 4: Verify and commit
 
 ~~~powershell
 npm run check
@@ -624,7 +624,7 @@ git commit -m "test: cover git client vertical slice"
 - Modify only files required by verification findings; do not broaden scope.
 - Update: docs/superpowers/plans/2026-07-18-git-client-vertical-slice.md checkboxes.
 
-- [ ] Step 1: Run the complete clean-install gate
+- [x] Step 1: Run the complete clean-install gate
 
 ~~~powershell
 npm ci
@@ -644,10 +644,10 @@ git status --short
 
 Expected: all checks pass, native E2E reports a passing Git Client journey, audit reports zero high vulnerabilities, and only intended committed files remain.
 
-- [ ] Step 2: Perform a security and scope review
+- [x] Step 2: Perform a security and scope review
 
 Check that no command accepts arbitrary shell strings, no plugin receives secrets, Trust gates every write, signatures never silently downgrade, theme definitions are schema-only, and no remote/provider/Skills feature slipped into this plan.
 
-- [ ] Step 3: Request code review and finalize
+- [x] Step 3: Request code review and finalize
 
 Run the project code-review skill against the final diff. Address concrete findings with a failing regression test first. Update all plan checkboxes only after the corresponding command has passed, then report the final commit list and verification evidence.
