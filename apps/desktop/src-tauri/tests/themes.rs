@@ -145,6 +145,10 @@ fn rejects_unknown_executable_and_out_of_range_theme_tokens() {
             "expression",
             json!({ "motion": { "easing": "expression(alert(1))" } }),
         ),
+        (
+            "unicode whitespace URL",
+            json!({ "name": "url\u{00a0}(https://evil.test)" }),
+        ),
         ("out of range", json!({ "spacing": { "unit": 10000 } })),
     ];
 

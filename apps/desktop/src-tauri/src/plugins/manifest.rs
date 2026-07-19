@@ -188,11 +188,11 @@ fn is_safe_relative_path(value: &str) -> bool {
         && !value.split(['/', '\\']).any(|component| component == "..")
 }
 
-fn is_safe_text(value: &str, maximum: usize) -> bool {
+pub(crate) fn is_safe_text(value: &str, maximum: usize) -> bool {
     let lowered = value.to_ascii_lowercase();
     let compact = lowered
         .chars()
-        .filter(|character| !character.is_ascii_whitespace())
+        .filter(|character| !character.is_whitespace())
         .collect::<String>();
     !value.trim().is_empty()
         && value.encode_utf16().count() <= maximum
@@ -376,6 +376,7 @@ mod tests {
             "😀".repeat(33),
             "unsafe\0name".to_owned(),
             "url (https://evil.test)".to_owned(),
+            "url\u{00a0}(https://evil.test)".to_owned(),
             "javascript :alert(1)".to_owned(),
         ] {
             let mut manifest = original.clone();
@@ -391,6 +392,7 @@ mod tests {
             "x".repeat(257),
             "😀".repeat(129),
             "unsafe\ndescription".to_owned(),
+            "url\u{00a0}(https://evil.test)".to_owned(),
         ] {
             let mut manifest = original.clone();
             manifest.description = description;

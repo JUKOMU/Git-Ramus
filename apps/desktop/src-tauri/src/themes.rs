@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::db::Database;
 use crate::error::AppError;
-use crate::plugins::manifest::ThemeContribution;
+use crate::plugins::manifest::{ThemeContribution, is_safe_text};
 use crate::plugins::{PluginDescriptor, PluginRegistry};
 
 pub const DEFAULT_THEME_ID: &str = "git-ramus.theme.default";
@@ -415,7 +415,7 @@ fn validate_definition(definition: &ThemeDefinition) -> Result<(), AppError> {
         return invalid_theme();
     }
     if let Some(name) = &definition.name {
-        if name.trim().is_empty() || name.encode_utf16().count() > 64 || !is_safe_token(name) {
+        if !is_safe_text(name, 64) {
             return invalid_theme();
         }
     }
@@ -611,7 +611,7 @@ fn is_safe_token(value: &str) -> bool {
     let lowered = value.to_ascii_lowercase();
     let compact = lowered
         .chars()
-        .filter(|character| !character.is_ascii_whitespace())
+        .filter(|character| !character.is_whitespace())
         .collect::<String>();
     !value.chars().any(char::is_control)
         && !value.contains(['<', '>', ';', '{', '}'])
@@ -649,14 +649,10 @@ fn invalid_theme_error() -> AppError {
 
 fn catalog_name(definition_name: Option<&str>, manifest_name: &str) -> String {
     definition_name
-        .filter(|name| is_safe_catalog_name(name))
-        .or_else(|| is_safe_catalog_name(manifest_name).then_some(manifest_name))
+        .filter(|name| is_safe_text(name, 64))
+        .or_else(|| is_safe_text(manifest_name, 64).then_some(manifest_name))
         .unwrap_or(UNNAMED_THEME_NAME)
         .to_owned()
-}
-
-fn is_safe_catalog_name(value: &str) -> bool {
-    !value.trim().is_empty() && value.encode_utf16().count() <= 64 && is_safe_token(value)
 }
 
 fn invalidate_plugin_themes(database: &Database) -> Result<(), AppError> {
@@ -750,6 +746,7 @@ mod tests {
             "",
             "<style>body{color:red}</style>",
             "unsafe\0name",
+            "url\u{00a0}(https://evil.test)",
             &"x".repeat(65),
         ] {
             assert_eq!(catalog_name(None, unsafe_name), "Unnamed theme");
