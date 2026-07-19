@@ -44,6 +44,8 @@ import {
   themeStateSchema
 } from "../index";
 
+const validMotionDurations = ["0ms", "1ms", "1.5s", "2000ms"] as const;
+const invalidMotionDurations = ["1e3ms", ".5s", "1.s", "+1ms", "-1ms", " 1ms", "1ms "] as const;
 const projectId = "87a31769-8aaa-47ca-bef3-47e66f0c62fc";
 const workspaceId = "e3d622f1-f1f7-4f7e-8f18-3db8a1e6ffbe";
 const repositoryId = "a032bc9c-8759-45ac-856f-b76f9addb9d1";
@@ -266,6 +268,24 @@ describe("shared contracts", () => {
     expect(parsedManifest.contributions.theme?.themeId).toBe("git-ramus.theme.compact");
     expect(parsedTheme.themeId).toBe(parsedManifest.contributions.theme?.themeId);
     expect(parsedTheme.density).toBe("compact");
+  });
+
+  it.each(validMotionDurations)("accepts canonical motion duration %s", (duration) => {
+    expect(() =>
+      themeDefinitionSchema.parse({
+        themeId: "git-ramus.theme.duration",
+        motion: { durationFast: duration }
+      })
+    ).not.toThrow();
+  });
+
+  it.each(invalidMotionDurations)("rejects non-canonical motion duration %s", (duration) => {
+    expect(() =>
+      themeDefinitionSchema.parse({
+        themeId: "git-ramus.theme.duration",
+        motion: { durationFast: duration }
+      })
+    ).toThrow();
   });
 
   it("rejects executable or arbitrary theme payloads", () => {

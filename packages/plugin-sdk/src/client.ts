@@ -60,6 +60,7 @@ export function createPluginClient(
     rejectReady = reject;
   });
   const pending = new Map<string, PendingRequest>();
+  const themeOwner = {};
   let disposed = false;
 
   const rejectPending = (error: Error) => {
@@ -74,7 +75,7 @@ export function createPluginClient(
       if (init !== null) {
         rejectPending(new Error("plugin session replaced"));
         currentTheme = null;
-        clearAppliedTheme();
+        clearAppliedTheme(undefined, themeOwner);
       }
       init = { ...message, route: message.route ?? "/" };
       transport.send({ type: "plugin:ready", sessionId: message.sessionId });
@@ -86,7 +87,7 @@ export function createPluginClient(
       const parsed = themeDefinitionSchema.safeParse(message.theme);
       if (!parsed.success) return;
       currentTheme = parsed.data;
-      applyThemeToDocument(currentTheme);
+      applyThemeToDocument(currentTheme, undefined, themeOwner);
       for (const listener of themeListeners) {
         try {
           void Promise.resolve(listener(currentTheme)).catch(() => undefined);
@@ -142,7 +143,7 @@ export function createPluginClient(
       const error = new Error("plugin client disposed");
       rejectReady(error);
       rejectPending(error);
-      clearAppliedTheme();
+      clearAppliedTheme(undefined, themeOwner);
       currentTheme = null;
       themeListeners.clear();
     }

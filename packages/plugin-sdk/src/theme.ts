@@ -1,6 +1,11 @@
 import { themeDefinitionSchema, type ThemeDefinition } from "@git-ramus/contracts";
 
-const appliedVariables = new WeakMap<HTMLElement, Set<string>>();
+interface AppliedTheme {
+  variables: Set<string>;
+  owner: object | undefined;
+}
+
+const appliedThemes = new WeakMap<HTMLElement, AppliedTheme>();
 const TOKEN_KEYS = {
   colors: [
     "background",
@@ -30,17 +35,22 @@ const LENGTH_TOKENS = new Set([
   ...TOKEN_KEYS.shape.map((key) => `shape.${key}`)
 ]);
 
-export function clearAppliedTheme(documentRoot?: HTMLElement): void {
+export function clearAppliedTheme(documentRoot?: HTMLElement, owner?: object): void {
   const root =
     documentRoot ?? (typeof document === "undefined" ? undefined : document.documentElement);
   if (!root) return;
-  const previous = appliedVariables.get(root);
+  const previous = appliedThemes.get(root);
   if (!previous) return;
-  for (const property of previous) root.style.removeProperty(property);
-  appliedVariables.delete(root);
+  if (owner !== undefined && previous.owner !== owner) return;
+  for (const property of previous.variables) root.style.removeProperty(property);
+  appliedThemes.delete(root);
 }
 
-export function applyThemeToDocument(theme: ThemeDefinition, documentRoot?: HTMLElement): void {
+export function applyThemeToDocument(
+  theme: ThemeDefinition,
+  documentRoot?: HTMLElement,
+  owner?: object
+): void {
   const root =
     documentRoot ?? (typeof document === "undefined" ? undefined : document.documentElement);
   if (!root) return;
@@ -68,5 +78,5 @@ export function applyThemeToDocument(theme: ThemeDefinition, documentRoot?: HTML
     root.style.setProperty("--gr-density", parsed.data.density);
     next.add("--gr-density");
   }
-  appliedVariables.set(root, next);
+  appliedThemes.set(root, { variables: next, owner });
 }

@@ -269,4 +269,63 @@ describe("plugin client", () => {
     expect(values.size).toBe(0);
     delete (globalThis as { document?: unknown }).document;
   });
+
+  it("only clears document theme variables still owned by the disposing client", () => {
+    const values = new Map<string, string>();
+    const root = {
+      style: {
+        setProperty: (key: string, value: string) => values.set(key, value),
+        removeProperty: (key: string) => values.delete(key)
+      }
+    } as unknown as HTMLElement;
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      value: { documentElement: root }
+    });
+    const firstTransport = new FakeTransport();
+    const secondTransport = new FakeTransport();
+    const firstClient = createPluginClient(firstTransport);
+    const secondClient = createPluginClient(secondTransport);
+
+    try {
+      firstTransport.receive({
+        type: "host:init",
+        sessionId: "e3d622f1-f1f7-4f7e-8f18-3db8a1e6ffbe",
+        pluginId: "git-ramus.first",
+        sdkVersion: "0.1.0"
+      });
+      firstTransport.receive({
+        type: "host:theme-changed",
+        sessionId: "e3d622f1-f1f7-4f7e-8f18-3db8a1e6ffbe",
+        theme: {
+          themeId: "git-ramus.theme.first",
+          colors: { background: "#ffffff", text: "#111111" }
+        }
+      });
+      secondTransport.receive({
+        type: "host:init",
+        sessionId: "87a31769-8aaa-47ca-bef3-47e66f0c62fc",
+        pluginId: "git-ramus.second",
+        sdkVersion: "0.1.0"
+      });
+      secondTransport.receive({
+        type: "host:theme-changed",
+        sessionId: "87a31769-8aaa-47ca-bef3-47e66f0c62fc",
+        theme: { themeId: "git-ramus.theme.second", colors: { background: "#000000" } }
+      });
+
+      expect(values.get("--gr-colors-background")).toBe("#000000");
+      expect(values.has("--gr-colors-text")).toBe(false);
+
+      firstClient.dispose();
+      expect(values.get("--gr-colors-background")).toBe("#000000");
+
+      secondClient.dispose();
+      expect(values.size).toBe(0);
+    } finally {
+      firstClient.dispose();
+      secondClient.dispose();
+      delete (globalThis as { document?: unknown }).document;
+    }
+  });
 });

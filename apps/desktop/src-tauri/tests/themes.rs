@@ -9,6 +9,8 @@ use tempfile::tempdir;
 
 const COMPACT_PLUGIN_ID: &str = "git-ramus.compact-theme";
 const COMPACT_THEME_ID: &str = "git-ramus.theme.compact";
+const VALID_DURATIONS: [&str; 4] = ["0ms", "1ms", "1.5s", "2000ms"];
+const INVALID_DURATIONS: [&str; 7] = ["1e3ms", ".5s", "1.s", "+1ms", "-1ms", " 1ms", "1ms "];
 const BUILTIN_COMPACT_MANIFEST: &str =
     include_str!("../../../../plugins/builtin-compact-theme/plugin.json");
 const BUILTIN_COMPACT_THEME: &str =
@@ -123,6 +125,53 @@ fn discovers_the_shipped_compact_theme_definition() {
             .iter()
             .any(|theme| theme.theme_id == COMPACT_THEME_ID && theme.density.as_str() == "compact")
     );
+}
+
+#[test]
+fn discovery_matches_the_contract_motion_duration_lexer() {
+    for (duration, should_accept) in VALID_DURATIONS
+        .into_iter()
+        .map(|duration| (duration, true))
+        .chain(
+            INVALID_DURATIONS
+                .into_iter()
+                .map(|duration| (duration, false)),
+        )
+    {
+        let directory = tempdir().expect("temp directory creates");
+        let mut definition = compact_theme();
+        merge_object(
+            &mut definition,
+            json!({ "motion": { "durationFast": duration } }),
+        );
+        write_theme_plugin(directory.path(), &definition);
+        let database = Database::open_in_memory().expect("database opens");
+        let registry = PluginRegistry::discover(directory.path()).expect("plugins discover");
+
+        let manager = ThemeManager::discover(database.clone(), &registry).expect("host survives");
+        let stored_valid: bool = database
+            .with_connection(|connection| {
+                connection.query_row(
+                    "SELECT is_valid FROM themes WHERE theme_id=?1",
+                    [COMPACT_THEME_ID],
+                    |row| row.get(0),
+                )
+            })
+            .expect("duration validation result is stored");
+
+        assert_eq!(
+            manager
+                .list()
+                .iter()
+                .any(|theme| theme.theme_id == COMPACT_THEME_ID),
+            should_accept,
+            "catalog result diverged for {duration}"
+        );
+        assert_eq!(
+            stored_valid, should_accept,
+            "persistence result diverged for {duration}"
+        );
+    }
 }
 
 #[test]

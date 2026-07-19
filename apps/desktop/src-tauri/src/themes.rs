@@ -580,19 +580,30 @@ fn parse_length(value: &str) -> Option<(f64, &str)> {
 }
 
 fn is_safe_duration(value: &str) -> bool {
-    if !is_safe_token(value) {
+    let (number, multiplier) = if let Some(number) = value.strip_suffix("ms") {
+        (number, 1.0)
+    } else if let Some(number) = value.strip_suffix('s') {
+        (number, 1_000.0)
+    } else {
+        return false;
+    };
+    if !is_canonical_decimal(number) {
         return false;
     }
-    let milliseconds = value
-        .strip_suffix("ms")
-        .and_then(|number| number.parse::<f64>().ok())
-        .or_else(|| {
-            value
-                .strip_suffix('s')
-                .and_then(|number| number.parse::<f64>().ok())
-                .map(|seconds| seconds * 1000.0)
-        });
+    let milliseconds = number.parse::<f64>().ok().map(|number| number * multiplier);
     matches!(milliseconds, Some(value) if value.is_finite() && (0.0..=2_000.0).contains(&value))
+}
+
+fn is_canonical_decimal(value: &str) -> bool {
+    match value.split_once('.') {
+        Some((integer, fraction)) => {
+            !integer.is_empty()
+                && !fraction.is_empty()
+                && integer.bytes().all(|byte| byte.is_ascii_digit())
+                && fraction.bytes().all(|byte| byte.is_ascii_digit())
+        }
+        None => !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()),
+    }
 }
 
 fn is_safe_color(value: &str) -> bool {

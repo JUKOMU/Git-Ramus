@@ -18,6 +18,7 @@ interface AppShellProps {
   hostApi: HostApi;
   themeCatalog: ThemeCatalog;
   themeState: ThemeState | null;
+  themeActivationPending: boolean;
   onActivateTheme(themeId: string): void;
   onSelectPlugin(pluginId: string, route: string): void;
   children: ReactNode;
@@ -58,8 +59,13 @@ export function AppShell(props: AppShellProps) {
           <select
             id="theme-selector"
             aria-label="Theme"
+            aria-busy={props.themeActivationPending}
             value={props.themeState?.activeThemeId ?? ""}
-            disabled={props.themeState === null || props.themeCatalog.themes.length === 0}
+            disabled={
+              props.themeActivationPending ||
+              props.themeState === null ||
+              props.themeCatalog.themes.length === 0
+            }
             onChange={(event) => props.onActivateTheme(event.currentTarget.value)}
           >
             {props.themeState === null ? <option value="">Theme loading</option> : null}

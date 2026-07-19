@@ -6,7 +6,7 @@ import {
   type ThemeState
 } from "@git-ramus/contracts";
 import { listen } from "@tauri-apps/api/event";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { HostApi } from "./lib/hostApi";
 import { tauriHostApi } from "./lib/hostApi";
 import { PluginHost } from "./plugins/PluginHost";
@@ -28,6 +28,19 @@ export function App({ hostApi = tauriHostApi }: AppProps) {
   const [selection, setSelection] = useState<PluginSelection | null>(null);
   const [themeCatalog, setThemeCatalog] = useState<ThemeCatalog>({ themes: [] });
   const [themeState, setThemeState] = useState<ThemeState | null>(null);
+  const [themeActivationPending, setThemeActivationPending] = useState(false);
+  const activationTail = useRef<Promise<void>>(Promise.resolve());
+  const activationGeneration = useRef(0);
+  const activationPending = useRef(false);
+  const mounted = useRef(true);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      activationGeneration.current += 1;
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -59,7 +72,7 @@ export function App({ hostApi = tauriHostApi }: AppProps) {
     let unlisten: (() => void) | null = null;
     void listen<ThemeState>("theme://changed", (event) => {
       const parsed = themeStateSchema.safeParse(event.payload);
-      if (parsed.success) {
+      if (parsed.success && !activationPending.current) {
         setThemeState(parsed.data);
       }
     }).then((dispose) => {
@@ -101,6 +114,35 @@ export function App({ hostApi = tauriHostApi }: AppProps) {
     [plugins, selection?.pluginId]
   );
 
+  const activateTheme = useCallback(
+    (themeId: string) => {
+      const generation = ++activationGeneration.current;
+      activationPending.current = true;
+      setThemeActivationPending(true);
+
+      const run = async () => {
+        if (!mounted.current) return;
+        try {
+          const activated = await hostApi.activateTheme({ themeId });
+          const parsed = themeStateSchema.parse(activated);
+          if (mounted.current && generation === activationGeneration.current) {
+            setThemeState(parsed);
+          }
+        } catch {
+          // Keep the last confirmed theme and allow the activation queue to continue.
+        } finally {
+          if (mounted.current && generation === activationGeneration.current) {
+            activationPending.current = false;
+            setThemeActivationPending(false);
+          }
+        }
+      };
+
+      activationTail.current = activationTail.current.then(run, run);
+    },
+    [hostApi]
+  );
+
   return (
     <AppShell
       version={version}
@@ -111,11 +153,8 @@ export function App({ hostApi = tauriHostApi }: AppProps) {
       hostApi={hostApi}
       themeCatalog={themeCatalog}
       themeState={themeState}
-      onActivateTheme={(themeId) => {
-        void hostApi.activateTheme({ themeId }).then((activated) => {
-          setThemeState(themeStateSchema.parse(activated));
-        });
-      }}
+      themeActivationPending={themeActivationPending}
+      onActivateTheme={activateTheme}
       onSelectPlugin={(pluginId, route) => setSelection({ pluginId, route })}
     >
       <PluginHost
