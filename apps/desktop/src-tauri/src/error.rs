@@ -42,6 +42,8 @@ pub enum AppError {
     },
     #[error("operation completed with partial results: {0}")]
     PartialResult(String),
+    #[error("{0}")]
+    Provider(ProviderFailure),
 }
 
 impl fmt::Debug for AppError {
@@ -64,6 +66,7 @@ impl fmt::Debug for AppError {
             Self::UserActionRequired(_) => "UserActionRequired",
             Self::SigningFailed { .. } => "SigningFailed",
             Self::PartialResult(_) => "PartialResult",
+            Self::Provider(_) => "Provider",
         };
         formatter.write_str(label)
     }
@@ -113,8 +116,269 @@ pub struct ErrorEnvelope {
     pub details: Option<serde_json::Map<String, Value>>,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct ProviderFailure(Box<ProviderFailureData>);
+
+#[derive(Clone, PartialEq, Eq)]
+struct ProviderFailureData {
+    code: &'static str,
+    category: ErrorCategory,
+    message: &'static str,
+    retryable: bool,
+    retry_after_ms: Option<u64>,
+    recovery_actions: Vec<RecoveryAction>,
+    operation_id: Option<String>,
+    plugin_id: Option<String>,
+    resource_id: Option<String>,
+    failed_step: Option<String>,
+}
+
+impl ProviderFailure {
+    pub fn authentication() -> Self {
+        Self::new(
+            "provider.authentication-required",
+            ErrorCategory::UserActionRequired,
+            "Provider authentication is required",
+            false,
+            None,
+            vec![recovery(
+                "reauthorize-provider",
+                "Reconnect account",
+                RecoveryActionKind::Reauthorize,
+            )],
+        )
+    }
+
+    pub fn permission() -> Self {
+        Self::new(
+            "provider.permission-insufficient",
+            ErrorCategory::UserActionRequired,
+            "Provider permission is insufficient",
+            false,
+            None,
+            vec![recovery(
+                "review-provider-permissions",
+                "Review Provider permissions",
+                RecoveryActionKind::OpenSettings,
+            )],
+        )
+    }
+
+    pub fn rate_limited(retry_after_ms: Option<u64>) -> Self {
+        Self::new(
+            "provider.rate-limited",
+            ErrorCategory::Retryable,
+            "Provider rate limit was reached",
+            true,
+            retry_after_ms,
+            vec![recovery(
+                "retry-provider-request",
+                "Retry request",
+                RecoveryActionKind::Retry,
+            )],
+        )
+    }
+
+    pub fn unreachable(retryable: bool) -> Self {
+        Self::new(
+            "provider.instance-unreachable",
+            if retryable {
+                ErrorCategory::Retryable
+            } else {
+                ErrorCategory::UserActionRequired
+            },
+            "Provider instance is unreachable",
+            retryable,
+            None,
+            vec![recovery(
+                "retry-provider-instance",
+                "Retry instance",
+                RecoveryActionKind::Retry,
+            )],
+        )
+    }
+
+    pub fn tls() -> Self {
+        Self::new(
+            "provider.tls-failed",
+            ErrorCategory::UserActionRequired,
+            "Provider TLS verification failed",
+            false,
+            None,
+            vec![recovery(
+                "review-provider-certificate",
+                "Review certificate settings",
+                RecoveryActionKind::OpenSettings,
+            )],
+        )
+    }
+
+    pub fn invalid_cursor() -> Self {
+        Self::new(
+            "provider.cursor-invalid",
+            ErrorCategory::Validation,
+            "Provider cursor is invalid or expired",
+            false,
+            None,
+            vec![recovery(
+                "reload-provider-repositories",
+                "Reload repositories",
+                RecoveryActionKind::Retry,
+            )],
+        )
+    }
+
+    pub fn partial() -> Self {
+        Self::new(
+            "provider.partial-result",
+            ErrorCategory::PartialResult,
+            "Provider returned a partial result",
+            true,
+            None,
+            vec![recovery(
+                "retry-provider-page",
+                "Retry page",
+                RecoveryActionKind::Retry,
+            )],
+        )
+    }
+
+    pub fn invalid_response() -> Self {
+        Self::new(
+            "provider.response-invalid",
+            ErrorCategory::InternalFatal,
+            "Provider returned an invalid response",
+            false,
+            None,
+            vec![recovery(
+                "export-provider-diagnostics",
+                "Export diagnostics",
+                RecoveryActionKind::ExportDiagnostics,
+            )],
+        )
+    }
+
+    pub fn canceled() -> Self {
+        Self::new(
+            "provider.request-canceled",
+            ErrorCategory::Validation,
+            "Provider request was canceled",
+            false,
+            None,
+            Vec::new(),
+        )
+    }
+
+    pub fn busy(retry_after_ms: Option<u64>) -> Self {
+        Self::new(
+            "provider.request-busy",
+            ErrorCategory::Retryable,
+            "Provider request capacity is busy",
+            true,
+            retry_after_ms,
+            vec![recovery(
+                "retry-provider-request",
+                "Retry request",
+                RecoveryActionKind::Retry,
+            )],
+        )
+    }
+
+    pub fn code(&self) -> &'static str {
+        self.0.code
+    }
+
+    pub fn with_request_context(
+        mut self,
+        plugin_id: impl Into<String>,
+        operation_id: impl Into<String>,
+    ) -> Self {
+        self.0.plugin_id = Some(plugin_id.into());
+        self.0.operation_id = Some(operation_id.into());
+        self
+    }
+
+    pub fn with_resource_id(mut self, resource_id: impl Into<String>) -> Self {
+        self.0.resource_id = Some(resource_id.into());
+        self
+    }
+
+    pub fn with_failed_step(mut self, failed_step: impl Into<String>) -> Self {
+        self.0.failed_step = Some(failed_step.into());
+        self
+    }
+
+    fn new(
+        code: &'static str,
+        category: ErrorCategory,
+        message: &'static str,
+        retryable: bool,
+        retry_after_ms: Option<u64>,
+        recovery_actions: Vec<RecoveryAction>,
+    ) -> Self {
+        Self(Box::new(ProviderFailureData {
+            code,
+            category,
+            message,
+            retryable,
+            retry_after_ms,
+            recovery_actions,
+            operation_id: None,
+            plugin_id: None,
+            resource_id: None,
+            failed_step: None,
+        }))
+    }
+
+    fn envelope(&self) -> ErrorEnvelope {
+        ErrorEnvelope {
+            code: self.0.code.to_owned(),
+            category: self.0.category,
+            message: self.0.message.to_owned(),
+            operation_id: self.0.operation_id.clone(),
+            plugin_id: self.0.plugin_id.clone(),
+            resource_id: self.0.resource_id.clone(),
+            failed_step: self.0.failed_step.clone(),
+            retryable: self.0.retryable,
+            retry_after_ms: self.0.retry_after_ms,
+            recovery_actions: self.0.recovery_actions.clone(),
+            details: None,
+        }
+    }
+}
+
+impl fmt::Display for ProviderFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.0.message)
+    }
+}
+
+impl fmt::Debug for ProviderFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderFailure")
+            .field("code", &self.0.code)
+            .field("operation_id", &self.0.operation_id)
+            .field("plugin_id", &self.0.plugin_id)
+            .field("resource_id", &self.0.resource_id)
+            .field("failed_step", &self.0.failed_step)
+            .finish()
+    }
+}
+
+fn recovery(id: &str, label: &str, kind: RecoveryActionKind) -> RecoveryAction {
+    RecoveryAction {
+        id: id.to_owned(),
+        label: label.to_owned(),
+        kind,
+    }
+}
+
 impl From<AppError> for ErrorEnvelope {
     fn from(error: AppError) -> Self {
+        if let AppError::Provider(failure) = &error {
+            return failure.envelope();
+        }
         let code = match &error {
             AppError::Database(_) => "storage.database",
             AppError::Io(_) => "storage.io",
@@ -131,6 +395,7 @@ impl From<AppError> for ErrorEnvelope {
             AppError::UserActionRequired(_) => "user.action-required",
             AppError::SigningFailed { .. } => "git.signing-failed",
             AppError::PartialResult(_) => "git.partial-result",
+            AppError::Provider(_) => unreachable!("Provider failures return above"),
         };
         let category = match &error {
             AppError::InvalidInput(_) | AppError::NotFound(_) => ErrorCategory::Validation,
@@ -147,6 +412,7 @@ impl From<AppError> for ErrorEnvelope {
             | AppError::Serialization(_)
             | AppError::Git(_)
             | AppError::OutputLimit => ErrorCategory::InternalFatal,
+            AppError::Provider(_) => unreachable!("Provider failures return above"),
         };
         let (failed_step, resource_id, details) = match &error {
             AppError::SigningFailed {
@@ -219,7 +485,30 @@ fn classify_signing_failure(reason: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppError, ErrorCategory, ErrorEnvelope};
+    use super::{AppError, ErrorCategory, ErrorEnvelope, ProviderFailure};
+
+    #[test]
+    fn provider_failures_serialize_without_tokens_or_urls() {
+        let error = AppError::Provider(
+            ProviderFailure::authentication()
+                .with_request_context(
+                    "git-ramus.provider-center",
+                    "f84223af-c753-4209-be36-12d381375fcb",
+                )
+                .with_resource_id("provider-account/7f3c0214-373c-4d43-b0c7-cdaed1cbcc50"),
+        );
+        let debug = format!("{error:?}");
+        let envelope = ErrorEnvelope::from(error);
+        let json = serde_json::to_string(&envelope).unwrap();
+        assert_eq!(envelope.code, "provider.authentication-required");
+        assert_eq!(
+            envelope.operation_id.as_deref(),
+            Some("f84223af-c753-4209-be36-12d381375fcb")
+        );
+        assert!(!json.contains("glpat-"));
+        assert!(!json.contains("gitlab.example/private"));
+        assert!(!debug.contains("glpat-"));
+    }
 
     #[test]
     fn permission_error_has_a_stable_redacted_envelope() {

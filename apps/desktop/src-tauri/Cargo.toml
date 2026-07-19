@@ -17,8 +17,10 @@ tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
 chrono = { version = "0.4.45", features = ["serde"] }
+futures-util = "0.3.32"
 keyring = "4.1.5"
 parking_lot = "0.12.5"
+reqwest = { version = "0.13.4", features = ["json", "query", "stream"] }
 rusqlite = { version = "0.39.0", features = ["bundled"] }
 semver = { version = "1.0.28", features = ["serde"] }
 serde = { version = "1.0.228", features = ["derive"] }
@@ -26,15 +28,20 @@ serde_json = "1.0.150"
 tauri = { version = "2.11.5", features = [] }
 tauri-plugin-dialog = "=2.7.1"
 thiserror = "2.0.18"
-tokio = { version = "1.53.0", features = ["macros", "rt-multi-thread", "time"] }
+tokio = { version = "1.53.0", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-util = { version = "0.7.18", features = ["rt"] }
 uuid = { version = "1.24.0", features = ["serde", "v4"] }
 url = "2.5.8"
+zeroize = "1.9.0"
 
 [dependencies.tauri-plugin-wdio-webdriver]
 version = "1.2.0"
 
 [dev-dependencies]
+httpmock = "0.8.3"
+rcgen = "0.14.8"
 tempfile = "3.27.0"
+tokio-rustls = "0.26.4"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.186"

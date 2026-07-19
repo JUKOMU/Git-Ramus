@@ -2,8 +2,36 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
+use zeroize::Zeroize;
 
 use crate::error::AppError;
+
+pub struct SensitiveString(String);
+
+impl SensitiveString {
+    pub fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    // This is consumed by the Provider service once secrets are handed to an adapter. Keeping
+    // it crate-private prevents UI/plugin serialization from acquiring an escape hatch.
+    #[allow(dead_code)]
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for SensitiveString {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SensitiveString([REDACTED])")
+    }
+}
+
+impl Drop for SensitiveString {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
 
 pub trait SecretStore: Send + Sync {
     fn set(&self, key: &str, secret: &str) -> Result<(), AppError>;
@@ -73,7 +101,13 @@ impl SecretStore for KeyringSecretStore {
 
 #[cfg(test)]
 mod tests {
-    use super::{MemorySecretStore, SecretStore};
+    use super::{MemorySecretStore, SecretStore, SensitiveString};
+
+    #[test]
+    fn sensitive_strings_never_debug_their_contents() {
+        let value = SensitiveString::new("glpat-super-secret".to_owned());
+        assert_eq!(format!("{value:?}"), "SensitiveString([REDACTED])");
+    }
 
     #[test]
     fn memory_store_round_trips_and_deletes_a_secret() {

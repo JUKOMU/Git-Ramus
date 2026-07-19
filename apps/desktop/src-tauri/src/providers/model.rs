@@ -223,6 +223,126 @@ pub enum RemoteRepositoryIdentity {
     Path { path: String },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderVisibility {
+    Public,
+    Internal,
+    Private,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderPermission {
+    Read,
+    Write,
+    Admin,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderArchivedFilter {
+    All,
+    Active,
+    Archived,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderRepositorySort {
+    Name,
+    Updated,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderRepositoryDirection {
+    Asc,
+    Desc,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderRepositoryQuery {
+    pub search: String,
+    pub visibility: Option<ProviderVisibility>,
+    pub namespace: Option<String>,
+    pub archived: ProviderArchivedFilter,
+    pub sort: ProviderRepositorySort,
+    pub direction: ProviderRepositoryDirection,
+    pub page_size: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderRateLimitState {
+    pub limit: Option<u64>,
+    pub remaining: Option<u64>,
+    pub reset_at: Option<DateTime<Utc>>,
+    pub retry_after_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteRepository {
+    pub provider_kind: ProviderKind,
+    pub instance_id: String,
+    pub repository_id: String,
+    pub namespace: String,
+    pub name: String,
+    pub full_name: String,
+    pub web_url: String,
+    pub https_url: String,
+    pub ssh_url: String,
+    pub default_branch: Option<String>,
+    pub visibility: ProviderVisibility,
+    pub archived: bool,
+    pub fork: bool,
+    pub permission: ProviderPermission,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderRepositoryPage {
+    pub items: Vec<RemoteRepository>,
+    pub next_cursor: Option<String>,
+    pub has_more: bool,
+    pub rate_limit: Option<ProviderRateLimitState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdapterCursor {
+    Page(u64),
+    Keyset(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstanceMetadata {
+    pub server_version: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountIdentity {
+    pub provider_user_id: String,
+    pub username: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdapterListRequest {
+    pub query: ProviderRepositoryQuery,
+    pub cursor: Option<AdapterCursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdapterPage {
+    pub items: Vec<RemoteRepository>,
+    pub next_cursor: Option<AdapterCursor>,
+    pub rate_limit: Option<ProviderRateLimitState>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
