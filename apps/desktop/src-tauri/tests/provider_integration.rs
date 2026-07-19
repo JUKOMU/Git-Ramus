@@ -1,11 +1,13 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::Utc;
 use futures_util::future::BoxFuture;
 use git_ramus_desktop_lib::db::Database;
 use git_ramus_desktop_lib::error::{AppError, ErrorEnvelope};
+use git_ramus_desktop_lib::git::model::{Remote, Repository, RepositoryKind};
+use git_ramus_desktop_lib::git::repository::RepositoryRepository;
 use git_ramus_desktop_lib::providers::adapter::{
     AdapterAccountContext, ProviderAdapterRegistry, RepositoryDiscoveryProvider,
 };
@@ -14,11 +16,13 @@ use git_ramus_desktop_lib::providers::gitlab::GitlabProvider;
 use git_ramus_desktop_lib::providers::http::ScopedHttpClient;
 use git_ramus_desktop_lib::providers::model::{
     AccountIdentity, AdapterCursor, AdapterListRequest, AdapterPage, InstanceMetadata,
-    ProviderArchivedFilter, ProviderInstance, ProviderKind, ProviderPermission,
-    ProviderRepositoryDirection, ProviderRepositoryQuery, ProviderRepositorySort,
-    ProviderVisibility, RemoteRepository, RemoteRepositoryIdentity,
+    ProviderArchivedFilter, ProviderBindingSuggestionStatus, ProviderInstance, ProviderKind,
+    ProviderPermission, ProviderRepositoryDirection, ProviderRepositoryQuery,
+    ProviderRepositorySort, ProviderVisibility, RemoteRepository, RemoteRepositoryIdentity,
 };
-use git_ramus_desktop_lib::providers::service::{CreateInstanceInput, ProviderService};
+use git_ramus_desktop_lib::providers::service::{
+    BindRemoteInput, CreateInstanceInput, ProviderService,
+};
 use git_ramus_desktop_lib::providers::store::ProviderStore;
 use git_ramus_desktop_lib::providers::url::{NormalizedInstance, NormalizedRemoteUrl};
 use git_ramus_desktop_lib::secrets::{MemorySecretStore, SecretStore, SensitiveString};
@@ -1194,7 +1198,21 @@ async fn gitlab_maps_authentication_malformed_json_and_cross_origin_links() {
     assert_eq!(error_code(error), "provider.response-invalid");
 }
 
-struct ServiceFakeProvider;
+struct ServiceFakeProvider {
+    instance_id: Mutex<String>,
+}
+
+impl ServiceFakeProvider {
+    fn new() -> Self {
+        Self {
+            instance_id: Mutex::new(String::new()),
+        }
+    }
+
+    fn set_instance_id(&self, instance_id: &str) {
+        *self.instance_id.lock().expect("instance ID lock") = instance_id.to_owned();
+    }
+}
 
 impl RepositoryDiscoveryProvider for ServiceFakeProvider {
     fn kind(&self) -> ProviderKind {
@@ -1244,17 +1262,47 @@ impl RepositoryDiscoveryProvider for ServiceFakeProvider {
     fn get_repository<'a>(
         &'a self,
         _context: AdapterAccountContext<'a>,
-        _identity: RemoteRepositoryIdentity,
+        identity: RemoteRepositoryIdentity,
     ) -> BoxFuture<'a, Result<RemoteRepository, AppError>> {
-        Box::pin(async { Err(AppError::NotFound("fake repository".to_owned())) })
+        let instance_id = self.instance_id.lock().expect("instance ID lock").clone();
+        Box::pin(async move {
+            let (repository_id, full_name) = match identity {
+                RemoteRepositoryIdentity::Id { repository_id } if repository_id == "42" => {
+                    (repository_id, "group/skill".to_owned())
+                }
+                RemoteRepositoryIdentity::Path { path } if path == "group/skill" => {
+                    ("42".to_owned(), path)
+                }
+                _ => return Err(AppError::NotFound("fake repository".to_owned())),
+            };
+            Ok(RemoteRepository {
+                provider_kind: ProviderKind::Gitlab,
+                instance_id,
+                repository_id,
+                namespace: "group".to_owned(),
+                name: "skill".to_owned(),
+                full_name: full_name.clone(),
+                web_url: format!("https://gitlab.example/{full_name}"),
+                https_url: format!("https://gitlab.example/{full_name}.git"),
+                ssh_url: format!("git@gitlab.example:{full_name}.git"),
+                default_branch: Some("main".to_owned()),
+                visibility: ProviderVisibility::Private,
+                archived: false,
+                fork: false,
+                permission: ProviderPermission::Read,
+                updated_at: Utc::now(),
+            })
+        })
     }
 
     fn detect_remote(
         &self,
-        _instance: &NormalizedInstance,
-        _remote: &NormalizedRemoteUrl,
+        instance: &NormalizedInstance,
+        remote: &NormalizedRemoteUrl,
     ) -> Option<RemoteRepositoryIdentity> {
-        None
+        (instance.host == remote.host).then(|| RemoteRepositoryIdentity::Path {
+            path: remote.path.clone(),
+        })
     }
 }
 
@@ -1272,11 +1320,9 @@ async fn service_connects_without_persisting_the_pat_and_respects_provider_enabl
         .unwrap();
     let store = ProviderStore::new(database.clone());
     let secrets = Arc::new(MemorySecretStore::default());
-    let adapters = ProviderAdapterRegistry::for_test(
-        database.clone(),
-        ProviderKind::Gitlab,
-        Arc::new(ServiceFakeProvider),
-    );
+    let fake = Arc::new(ServiceFakeProvider::new());
+    let adapters =
+        ProviderAdapterRegistry::for_test(database.clone(), ProviderKind::Gitlab, fake.clone());
     let service = ProviderService::new(store.clone(), secrets.clone(), adapters);
     let instance = service
         .create_instance(CreateInstanceInput {
@@ -1287,6 +1333,7 @@ async fn service_connects_without_persisting_the_pat_and_respects_provider_enabl
         })
         .await
         .unwrap();
+    fake.set_instance_id(&instance.id);
     let account = service
         .connect_account(
             &instance.id,
@@ -1312,4 +1359,83 @@ async fn service_connects_without_persisting_the_pat_and_respects_provider_enabl
         .unwrap();
     assert!(service.validate_account(&account.id).await.is_err());
     assert_eq!(store.list_accounts(&instance.id).unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn binding_matches_unlisted_remotes_and_persists_without_mutating_local_git_state() {
+    let database = Database::open_in_memory().expect("database opens");
+    database
+        .with_connection(|connection| {
+            connection.execute(
+                "INSERT INTO plugin_installations(plugin_id,version,kind,root_path,enabled,installed_at,updated_at) VALUES('git-ramus.provider.gitlab','0.1.0','builtin','/builtin/gitlab',1,?1,?1)",
+                [Utc::now().to_rfc3339()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let local = RepositoryRepository::new(database.clone());
+    let repository = Repository::new(
+        "/integration/repository",
+        "repository",
+        RepositoryKind::Normal,
+    );
+    local.create(&repository).unwrap();
+    let remote = Remote {
+        repository_id: repository.id.clone(),
+        name: "origin".to_owned(),
+        fetch_url: Some("https://gitlab.example/group/skill.git".to_owned()),
+        push_url: Some("git@gitlab.example:group/skill.git".to_owned()),
+    };
+    local.add_remote(&remote).unwrap();
+    let fake = Arc::new(ServiceFakeProvider::new());
+    let adapters =
+        ProviderAdapterRegistry::for_test(database.clone(), ProviderKind::Gitlab, fake.clone());
+    let service = ProviderService::new(
+        ProviderStore::new(database),
+        Arc::new(MemorySecretStore::default()),
+        adapters,
+    );
+    let instance = service
+        .create_instance(CreateInstanceInput {
+            provider_kind: ProviderKind::Gitlab,
+            display_name: "Binding GitLab".to_owned(),
+            base_url: "https://gitlab.example".to_owned(),
+            custom_ca_path: None,
+        })
+        .await
+        .unwrap();
+    fake.set_instance_id(&instance.id);
+    let account = service
+        .connect_account(
+            &instance.id,
+            SensitiveString::new("binding-token".to_owned()),
+        )
+        .await
+        .unwrap();
+
+    let suggestions = service
+        .match_local_remotes(
+            "git-ramus.provider-center",
+            &instance.id,
+            &account.id,
+            "d0df8130-30d9-420b-a1ce-0cbabdfca632",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        suggestions[0].status,
+        ProviderBindingSuggestionStatus::Suggested
+    );
+    let binding = service
+        .bind_remote(BindRemoteInput {
+            repository_id: repository.id.clone(),
+            remote_name: "origin".to_owned(),
+            instance_id: instance.id,
+            account_id: None,
+            provider_repository_id: "42".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(binding.full_name, "group/skill");
+    assert_eq!(local.get_remote(&repository.id, "origin").unwrap(), remote);
 }

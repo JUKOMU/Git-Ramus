@@ -1,27 +1,40 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Semaphore;
 use uuid::Uuid;
 
 use crate::error::{AppError, ProviderFailure};
-use crate::providers::adapter::ProviderAdapterRegistry;
-use crate::providers::cursor::{CursorStore, OperationRegistry};
+use crate::git::model::Remote;
+use crate::git::repository::RepositoryRepository;
+use crate::providers::adapter::{
+    AdapterAccountContext, ProviderAdapterRegistry, RepositoryDiscoveryProvider,
+};
+use crate::providers::cursor::{CursorEntry, CursorStore, OperationRegistry};
 use crate::providers::http::ScopedHttpClient;
 use crate::providers::model::{
-    AccountDeletionImpact, AccountDeletionResolution, NewProviderAccount, ProviderAccount,
-    ProviderAccountSummary, ProviderConnectionStatus, ProviderInstance, ProviderInstanceSummary,
-    ProviderKind,
+    AccountDeletionImpact, AccountDeletionResolution, BindingSource, NewProviderAccount,
+    ProviderAccount, ProviderAccountSummary, ProviderArchivedFilter, ProviderBinding,
+    ProviderBindingSuggestion, ProviderBindingSuggestionStatus, ProviderConnectionStatus,
+    ProviderInstance, ProviderInstanceSummary, ProviderKind, ProviderRateLimitState,
+    ProviderRepositoryPage, ProviderRepositoryQuery, RemoteRepository, RemoteRepositoryIdentity,
 };
 use crate::providers::store::ProviderStore;
-use crate::providers::url::normalize_instance_base;
+use crate::providers::url::{
+    NormalizedInstance, normalize_instance_base, normalize_remote_url, sanitized_remote_url,
+};
 use crate::secrets::{SecretStore, SensitiveString};
 
 const ACCOUNT_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
+const ACCOUNT_DISCOVERY_CONCURRENCY: usize = 4;
+const CURSOR_TTL: Duration = Duration::from_secs(10 * 60);
+const MAX_ADAPTER_PAGE_ITEMS: usize = 100;
+const MAX_UPSTREAM_PAGES_PER_REQUEST: usize = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -57,6 +70,25 @@ pub struct DeleteAccountInput {
     pub new_default_account_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListRepositoriesInput {
+    pub account_id: String,
+    pub query: ProviderRepositoryQuery,
+    pub cursor: Option<String>,
+    pub operation_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BindRemoteInput {
+    pub repository_id: String,
+    pub remote_name: String,
+    pub instance_id: String,
+    pub account_id: Option<String>,
+    pub provider_repository_id: String,
+}
+
 #[derive(Default)]
 struct ProviderHealth {
     instances: HashMap<String, ProviderConnectionStatus>,
@@ -67,8 +99,9 @@ pub struct ProviderService {
     store: ProviderStore,
     secrets: Arc<dyn SecretStore>,
     adapters: ProviderAdapterRegistry,
-    _cursors: CursorStore,
+    cursors: CursorStore,
     operations: OperationRegistry,
+    account_semaphores: Arc<Mutex<HashMap<String, Arc<Semaphore>>>>,
     health: Arc<Mutex<ProviderHealth>>,
 }
 
@@ -82,8 +115,9 @@ impl ProviderService {
             store,
             secrets,
             adapters,
-            _cursors: CursorStore::default(),
+            cursors: CursorStore::default(),
             operations: OperationRegistry::default(),
+            account_semaphores: Arc::new(Mutex::new(HashMap::new())),
             health: Arc::new(Mutex::new(ProviderHealth::default())),
         }
     }
@@ -381,6 +415,7 @@ impl ProviderService {
             return Err(error);
         }
         self.health.lock().accounts.remove(&input.account_id);
+        self.account_semaphores.lock().remove(&input.account_id);
         Ok(())
     }
 
@@ -394,6 +429,406 @@ impl ProviderService {
         self.operations
             .wait_for_plugin_account_idle(plugin_id, account_id, ACCOUNT_IDLE_TIMEOUT)
             .await
+    }
+
+    pub async fn list_repositories(
+        &self,
+        plugin_id: &str,
+        input: ListRepositoriesInput,
+    ) -> Result<ProviderRepositoryPage, AppError> {
+        let operation_id = input.operation_id.clone();
+        self.list_repositories_inner(plugin_id, input)
+            .await
+            .map_err(|error| with_request_context(error, plugin_id, &operation_id))
+    }
+
+    async fn list_repositories_inner(
+        &self,
+        plugin_id: &str,
+        input: ListRepositoriesInput,
+    ) -> Result<ProviderRepositoryPage, AppError> {
+        validate_repository_query(&input.query)?;
+        let operation = self
+            .operations
+            .start(plugin_id, &input.account_id, &input.operation_id)?;
+        let cancellation = operation.token().clone();
+        let account = self.store.get_account(&input.account_id)?;
+        let instance = self.store.get_instance(&account.instance_id)?;
+        let adapter = self.adapters.get(instance.provider_kind)?;
+        let continuation = input.cursor.is_some();
+        let mut adapter_cursor = None;
+        let mut buffered = Vec::new();
+        if let Some(cursor) = input.cursor.as_deref() {
+            let entry = self.cursors.take(
+                cursor,
+                plugin_id,
+                instance.provider_kind,
+                &instance.id,
+                &account.id,
+                &input.query,
+            )?;
+            adapter_cursor = entry.adapter_cursor;
+            buffered = entry.buffered;
+        }
+
+        let semaphore = self.account_semaphore(&account.id);
+        let permit = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(canceled()),
+            permit = semaphore.acquire_owned() => {
+                permit.map_err(|_| AppError::Provider(ProviderFailure::busy(Some(250))))?
+            },
+        };
+        let value = self
+            .secrets
+            .get(&account.secret_ref)?
+            .ok_or(AppError::SecretStore)?;
+        let secret = SensitiveString::new(value);
+        let client = ScopedHttpClient::build(&instance)?;
+        let mut items = Vec::with_capacity(input.query.page_size);
+        take_buffered(&mut buffered, &mut items, input.query.page_size);
+        let mut rate_limit = None;
+        let mut pages_read = 0;
+        let mut should_fetch =
+            !continuation || (items.len() < input.query.page_size && adapter_cursor.is_some());
+        let mut seen_cursors = Vec::new();
+
+        while items.len() < input.query.page_size && should_fetch {
+            if pages_read >= MAX_UPSTREAM_PAGES_PER_REQUEST {
+                return Err(AppError::Provider(
+                    ProviderFailure::partial()
+                        .with_failed_step("provider.listRepositories.pageLimit"),
+                ));
+            }
+            if let Some(cursor) = adapter_cursor.as_ref() {
+                if seen_cursors.contains(cursor) {
+                    return Err(AppError::Provider(ProviderFailure::invalid_response()));
+                }
+                seen_cursors.push(cursor.clone());
+            }
+            let request = crate::providers::model::AdapterListRequest {
+                query: input.query.clone(),
+                cursor: adapter_cursor.take(),
+            };
+            let page = match adapter
+                .list_repositories(
+                    AdapterAccountContext {
+                        client: &client,
+                        secret: secret.as_str(),
+                        cancellation: &cancellation,
+                    },
+                    request,
+                )
+                .await
+            {
+                Ok(page) => page,
+                Err(error) => {
+                    self.record_account_error(&account.id, &error);
+                    if continuation && !is_canceled(&error) {
+                        return Err(AppError::Provider(
+                            ProviderFailure::partial()
+                                .with_failed_step("provider.listRepositories.page"),
+                        ));
+                    }
+                    return Err(error);
+                }
+            };
+            if cancellation.is_cancelled() {
+                return Err(canceled());
+            }
+            pages_read += 1;
+            if page.items.len() > MAX_ADAPTER_PAGE_ITEMS
+                || page.items.iter().any(|item| {
+                    item.provider_kind != instance.provider_kind || item.instance_id != instance.id
+                })
+            {
+                return Err(AppError::Provider(ProviderFailure::invalid_response()));
+            }
+            let mut matching = page
+                .items
+                .into_iter()
+                .filter(|item| repository_matches(item, &input.query))
+                .collect::<Vec<_>>();
+            adapter_cursor = page.next_cursor;
+            if let Some(state) = page.rate_limit {
+                self.update_rate_health(&account.id, &state);
+                rate_limit = Some(state);
+            }
+            let remaining = input.query.page_size - items.len();
+            if matching.len() > remaining {
+                buffered.extend(matching.drain(remaining..));
+            }
+            items.extend(matching);
+            should_fetch = adapter_cursor.is_some();
+        }
+        if cancellation.is_cancelled() {
+            return Err(canceled());
+        }
+        drop(permit);
+        let has_more = !buffered.is_empty() || adapter_cursor.is_some();
+        let next_cursor = has_more.then(|| {
+            self.cursors.insert(CursorEntry {
+                plugin_id: plugin_id.to_owned(),
+                provider_kind: instance.provider_kind,
+                instance_id: instance.id.clone(),
+                account_id: account.id.clone(),
+                query: input.query,
+                adapter_cursor,
+                buffered,
+                expires_at: Instant::now() + CURSOR_TTL,
+            })
+        });
+        self.health
+            .lock()
+            .accounts
+            .entry(account.id)
+            .or_insert(ProviderConnectionStatus::Connected);
+        Ok(ProviderRepositoryPage {
+            items,
+            next_cursor,
+            has_more,
+            rate_limit,
+        })
+    }
+
+    pub fn cancel_operation(
+        &self,
+        plugin_id: &str,
+        account_id: &str,
+        operation_id: &str,
+    ) -> Result<(), AppError> {
+        if self.operations.cancel(plugin_id, account_id, operation_id) {
+            Ok(())
+        } else {
+            Err(AppError::Provider(
+                ProviderFailure::canceled().with_request_context(plugin_id, operation_id),
+            ))
+        }
+    }
+
+    pub async fn match_local_remotes(
+        &self,
+        plugin_id: &str,
+        instance_id: &str,
+        account_id: &str,
+        operation_id: &str,
+    ) -> Result<Vec<ProviderBindingSuggestion>, AppError> {
+        self.match_local_remotes_inner(plugin_id, instance_id, account_id, operation_id)
+            .await
+            .map_err(|error| with_request_context(error, plugin_id, operation_id))
+    }
+
+    async fn match_local_remotes_inner(
+        &self,
+        plugin_id: &str,
+        instance_id: &str,
+        account_id: &str,
+        operation_id: &str,
+    ) -> Result<Vec<ProviderBindingSuggestion>, AppError> {
+        let operation = self.operations.start(plugin_id, account_id, operation_id)?;
+        let cancellation = operation.token().clone();
+        let account = self.store.get_account(account_id)?;
+        if account.instance_id != instance_id {
+            return Err(AppError::InvalidInput(
+                "Provider account must belong to the selected instance".to_owned(),
+            ));
+        }
+        let instance = self.store.get_instance(instance_id)?;
+        let adapter = self.adapters.get(instance.provider_kind)?;
+        let normalized_instance =
+            normalize_instance_base(&instance.base_url, instance.provider_kind)?;
+        let semaphore = self.account_semaphore(account_id);
+        let _permit = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(canceled()),
+            permit = semaphore.acquire_owned() => {
+                permit.map_err(|_| AppError::Provider(ProviderFailure::busy(Some(250))))?
+            },
+        };
+        let value = self
+            .secrets
+            .get(&account.secret_ref)?
+            .ok_or(AppError::SecretStore)?;
+        let secret = SensitiveString::new(value);
+        let client = ScopedHttpClient::build(&instance)?;
+        let mut suggestions = Vec::new();
+
+        for remote in self.store.list_local_remotes()? {
+            if cancellation.is_cancelled() {
+                return Err(canceled());
+            }
+            let analysis = analyze_remote(adapter.as_ref(), &normalized_instance, &remote);
+            if analysis.detected.is_empty() {
+                suggestions.push(empty_suggestion(
+                    &remote.repository_id,
+                    &remote.name,
+                    instance_id,
+                    ProviderBindingSuggestionStatus::None,
+                ));
+                continue;
+            }
+            let mut repositories = Vec::new();
+            let mut verification_failed = false;
+            for candidate in &analysis.detected {
+                let result = tokio::select! {
+                    biased;
+                    _ = cancellation.cancelled() => return Err(canceled()),
+                    result = adapter.get_repository(
+                        AdapterAccountContext {
+                            client: &client,
+                            secret: secret.as_str(),
+                            cancellation: &cancellation,
+                        },
+                        candidate.identity.clone(),
+                    ) => result,
+                };
+                match result {
+                    Ok(repository)
+                        if repository.provider_kind == instance.provider_kind
+                            && repository.instance_id == instance.id =>
+                    {
+                        if !repositories.iter().any(|current: &RemoteRepository| {
+                            current.repository_id == repository.repository_id
+                        }) {
+                            repositories.push(repository);
+                        }
+                    }
+                    Ok(_) => return Err(AppError::Provider(ProviderFailure::invalid_response())),
+                    Err(error) if is_canceled(&error) => return Err(error),
+                    Err(error) => {
+                        verification_failed = true;
+                        self.record_account_error(account_id, &error);
+                    }
+                }
+            }
+            let status = if repositories.len() > 1 {
+                ProviderBindingSuggestionStatus::Ambiguous
+            } else if repositories.len() == 1 && !verification_failed {
+                ProviderBindingSuggestionStatus::Suggested
+            } else {
+                ProviderBindingSuggestionStatus::Unverified
+            };
+            let selected = (status == ProviderBindingSuggestionStatus::Suggested)
+                .then(|| repositories.first())
+                .flatten();
+            suggestions.push(ProviderBindingSuggestion {
+                repository_id: remote.repository_id,
+                remote_name: remote.name,
+                instance_id: instance.id.clone(),
+                status,
+                provider_repository_id: selected.map(|repository| repository.repository_id.clone()),
+                full_name: selected.map(|repository| repository.full_name.clone()),
+                web_url: selected.map(|repository| repository.web_url.clone()),
+                matched_url: selected.and_then(|_| {
+                    analysis
+                        .detected
+                        .first()
+                        .map(|candidate| candidate.sanitized.clone())
+                }),
+                candidates: repositories,
+            });
+        }
+        Ok(suggestions)
+    }
+
+    pub async fn bind_remote(&self, input: BindRemoteInput) -> Result<ProviderBinding, AppError> {
+        if input.provider_repository_id.trim().is_empty()
+            || input.provider_repository_id.chars().any(char::is_control)
+        {
+            return Err(AppError::InvalidInput(
+                "Provider repository ID is invalid".to_owned(),
+            ));
+        }
+        let local = RepositoryRepository::new(self.store.database().clone());
+        let remote = local.get_remote(&input.repository_id, &input.remote_name)?;
+        let instance = self.store.get_instance(&input.instance_id)?;
+        let accounts = self.store.list_accounts(&instance.id)?;
+        let effective_account = if let Some(account_id) = input.account_id.as_deref() {
+            accounts
+                .into_iter()
+                .find(|account| account.id == account_id)
+                .ok_or_else(|| {
+                    AppError::InvalidInput(
+                        "binding account must belong to the Provider instance".to_owned(),
+                    )
+                })?
+        } else {
+            accounts
+                .into_iter()
+                .find(|account| account.is_default)
+                .ok_or_else(|| {
+                    AppError::InvalidInput(
+                        "Provider instance requires a default account".to_owned(),
+                    )
+                })?
+        };
+        let adapter = self.adapters.get(instance.provider_kind)?;
+        let value = self
+            .secrets
+            .get(&effective_account.secret_ref)?
+            .ok_or(AppError::SecretStore)?;
+        let secret = SensitiveString::new(value);
+        let client = ScopedHttpClient::build(&instance)?;
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let verified = adapter
+            .get_repository(
+                AdapterAccountContext {
+                    client: &client,
+                    secret: secret.as_str(),
+                    cancellation: &cancellation,
+                },
+                RemoteRepositoryIdentity::Id {
+                    repository_id: input.provider_repository_id.clone(),
+                },
+            )
+            .await?;
+        if verified.provider_kind != instance.provider_kind
+            || verified.instance_id != instance.id
+            || verified.repository_id != input.provider_repository_id
+        {
+            return Err(AppError::Provider(ProviderFailure::invalid_response()));
+        }
+        let normalized_instance =
+            normalize_instance_base(&instance.base_url, instance.provider_kind)?;
+        let analysis = analyze_remote(adapter.as_ref(), &normalized_instance, &remote);
+        let automatic = analysis
+            .detected
+            .iter()
+            .find(|candidate| identity_matches_repository(&candidate.identity, &verified));
+        let matched_url = automatic
+            .map(|candidate| candidate.sanitized.clone())
+            .or_else(|| analysis.sanitized.first().cloned())
+            .ok_or_else(|| AppError::InvalidInput("remote has no supported Git URL".to_owned()))?;
+        let now = Utc::now();
+        self.store.upsert_binding(ProviderBinding {
+            repository_id: remote.repository_id,
+            remote_name: remote.name,
+            provider_instance_id: instance.id,
+            provider_account_id: input.account_id,
+            provider_repository_id: verified.repository_id,
+            full_name: verified.full_name,
+            web_url: verified.web_url,
+            matched_url,
+            binding_source: if automatic.is_some() {
+                BindingSource::Auto
+            } else {
+                BindingSource::Manual
+            },
+            bound_at: now,
+            updated_at: now,
+        })
+    }
+
+    pub fn list_bindings_for_account(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<ProviderBinding>, AppError> {
+        self.store.get_account(account_id)?;
+        self.store.list_bindings_for_account(account_id)
+    }
+
+    pub fn unbind_remote(&self, repository_id: &str, remote_name: &str) -> Result<(), AppError> {
+        self.store.delete_binding(repository_id, remote_name)
     }
 
     pub fn retry_secret_cleanup(&self) -> Result<(), AppError> {
@@ -419,6 +854,27 @@ impl ProviderService {
         if self.secrets.delete(secret_ref).is_err() {
             let _ = self.store.enqueue_secret_cleanup(secret_ref);
         }
+    }
+
+    fn account_semaphore(&self, account_id: &str) -> Arc<Semaphore> {
+        Arc::clone(
+            self.account_semaphores
+                .lock()
+                .entry(account_id.to_owned())
+                .or_insert_with(|| Arc::new(Semaphore::new(ACCOUNT_DISCOVERY_CONCURRENCY))),
+        )
+    }
+
+    fn update_rate_health(&self, account_id: &str, state: &ProviderRateLimitState) {
+        let status = if state.remaining == Some(0) || state.retry_after_ms.is_some() {
+            ProviderConnectionStatus::RateLimited
+        } else {
+            ProviderConnectionStatus::Connected
+        };
+        self.health
+            .lock()
+            .accounts
+            .insert(account_id.to_owned(), status);
     }
 
     fn instance_summary(
@@ -523,27 +979,181 @@ fn status_for_error(error: &AppError) -> ProviderConnectionStatus {
     }
 }
 
+struct DetectedRemote {
+    identity: RemoteRepositoryIdentity,
+    sanitized: String,
+}
+
+struct RemoteAnalysis {
+    detected: Vec<DetectedRemote>,
+    sanitized: Vec<String>,
+}
+
+fn analyze_remote(
+    adapter: &dyn RepositoryDiscoveryProvider,
+    instance: &NormalizedInstance,
+    remote: &Remote,
+) -> RemoteAnalysis {
+    let mut analysis = RemoteAnalysis {
+        detected: Vec::new(),
+        sanitized: Vec::new(),
+    };
+    for value in [remote.fetch_url.as_deref(), remote.push_url.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        let Ok(normalized) = normalize_remote_url(value) else {
+            continue;
+        };
+        let sanitized = sanitized_remote_url(&normalized);
+        if !analysis.sanitized.contains(&sanitized) {
+            analysis.sanitized.push(sanitized.clone());
+        }
+        let Some(identity) = adapter.detect_remote(instance, &normalized) else {
+            continue;
+        };
+        if !analysis
+            .detected
+            .iter()
+            .any(|candidate| candidate.identity == identity)
+        {
+            analysis.detected.push(DetectedRemote {
+                identity,
+                sanitized,
+            });
+        }
+    }
+    analysis
+}
+
+fn identity_matches_repository(
+    identity: &RemoteRepositoryIdentity,
+    repository: &RemoteRepository,
+) -> bool {
+    match identity {
+        RemoteRepositoryIdentity::Id { repository_id } => {
+            repository_id == &repository.repository_id
+        }
+        RemoteRepositoryIdentity::Path { path } => path == &repository.full_name,
+    }
+}
+
+fn empty_suggestion(
+    repository_id: &str,
+    remote_name: &str,
+    instance_id: &str,
+    status: ProviderBindingSuggestionStatus,
+) -> ProviderBindingSuggestion {
+    ProviderBindingSuggestion {
+        repository_id: repository_id.to_owned(),
+        remote_name: remote_name.to_owned(),
+        instance_id: instance_id.to_owned(),
+        status,
+        provider_repository_id: None,
+        full_name: None,
+        web_url: None,
+        matched_url: None,
+        candidates: Vec::new(),
+    }
+}
+
+fn validate_repository_query(query: &ProviderRepositoryQuery) -> Result<(), AppError> {
+    if query.page_size == 0
+        || query.page_size > 100
+        || query.search.chars().count() > 256
+        || query.search.chars().any(char::is_control)
+        || query.namespace.as_ref().is_some_and(|namespace| {
+            namespace.trim().is_empty()
+                || namespace.chars().count() > 1024
+                || namespace.chars().any(char::is_control)
+        })
+    {
+        return Err(AppError::InvalidInput(
+            "Provider repository query is invalid".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn repository_matches(item: &RemoteRepository, query: &ProviderRepositoryQuery) -> bool {
+    let search_matches = query.search.trim().is_empty()
+        || item
+            .full_name
+            .to_lowercase()
+            .contains(&query.search.trim().to_lowercase());
+    let namespace_matches = query
+        .namespace
+        .as_ref()
+        .is_none_or(|namespace| item.namespace.to_lowercase() == namespace.trim().to_lowercase());
+    let visibility_matches = query
+        .visibility
+        .is_none_or(|visibility| item.visibility == visibility);
+    let archived_matches = match query.archived {
+        ProviderArchivedFilter::All => true,
+        ProviderArchivedFilter::Active => !item.archived,
+        ProviderArchivedFilter::Archived => item.archived,
+    };
+    search_matches && namespace_matches && visibility_matches && archived_matches
+}
+
+fn take_buffered(
+    buffered: &mut Vec<RemoteRepository>,
+    output: &mut Vec<RemoteRepository>,
+    page_size: usize,
+) {
+    let count = buffered.len().min(page_size.saturating_sub(output.len()));
+    output.extend(buffered.drain(..count));
+}
+
+fn with_request_context(error: AppError, plugin_id: &str, operation_id: &str) -> AppError {
+    match error {
+        AppError::Provider(failure) => AppError::Provider(
+            failure.with_request_context(plugin_id.to_owned(), operation_id.to_owned()),
+        ),
+        error => error,
+    }
+}
+
+fn is_canceled(error: &AppError) -> bool {
+    matches!(error, AppError::Provider(failure) if failure.code() == "provider.request-canceled")
+}
+
+fn canceled() -> AppError {
+    AppError::Provider(ProviderFailure::canceled())
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::Duration;
 
     use chrono::Utc;
     use futures_util::future::BoxFuture;
     use parking_lot::Mutex;
     use tempfile::tempdir;
+    use tokio::sync::Notify;
+    use uuid::Uuid;
 
-    use super::{CreateInstanceInput, DeleteAccountInput, ProviderService};
+    use super::{
+        BindRemoteInput, CreateInstanceInput, DeleteAccountInput, ListRepositoriesInput,
+        ProviderService,
+    };
     use crate::db::Database;
-    use crate::error::AppError;
+    use crate::error::{AppError, ErrorEnvelope, ProviderFailure};
+    use crate::git::model::{Remote, Repository, RepositoryKind};
+    use crate::git::repository::RepositoryRepository;
     use crate::providers::adapter::{
         AdapterAccountContext, ProviderAdapterRegistry, RepositoryDiscoveryProvider,
     };
     use crate::providers::http::ScopedHttpClient;
     use crate::providers::model::{
-        AccountDeletionResolution, AccountIdentity, AdapterListRequest, AdapterPage,
-        InstanceMetadata, ProviderKind, RemoteRepository, RemoteRepositoryIdentity,
+        AccountDeletionResolution, AccountIdentity, AdapterCursor, AdapterListRequest, AdapterPage,
+        InstanceMetadata, ProviderArchivedFilter, ProviderBindingSuggestionStatus,
+        ProviderConnectionStatus, ProviderKind, ProviderPermission, ProviderRateLimitState,
+        ProviderRepositoryDirection, ProviderRepositoryQuery, ProviderRepositorySort,
+        ProviderVisibility, RemoteRepository, RemoteRepositoryIdentity,
     };
     use crate::providers::store::ProviderStore;
     use crate::providers::url::{NormalizedInstance, NormalizedRemoteUrl};
@@ -607,6 +1217,292 @@ mod tests {
                     next_cursor: None,
                     rate_limit: None,
                 })
+            })
+        }
+
+        fn get_repository<'a>(
+            &'a self,
+            _context: AdapterAccountContext<'a>,
+            _identity: RemoteRepositoryIdentity,
+        ) -> BoxFuture<'a, Result<RemoteRepository, AppError>> {
+            Box::pin(async { Err(AppError::NotFound("fake repository".to_owned())) })
+        }
+
+        fn detect_remote(
+            &self,
+            _instance: &NormalizedInstance,
+            _remote: &NormalizedRemoteUrl,
+        ) -> Option<RemoteRepositoryIdentity> {
+            None
+        }
+    }
+
+    struct PagingProvider;
+
+    impl RepositoryDiscoveryProvider for PagingProvider {
+        fn kind(&self) -> ProviderKind {
+            ProviderKind::Gitlab
+        }
+
+        fn validate_instance<'a>(
+            &'a self,
+            _client: &'a ScopedHttpClient,
+        ) -> BoxFuture<'a, Result<InstanceMetadata, AppError>> {
+            Box::pin(async {
+                Ok(InstanceMetadata {
+                    server_version: None,
+                })
+            })
+        }
+
+        fn authenticate_account<'a>(
+            &'a self,
+            _client: &'a ScopedHttpClient,
+            _secret: &'a str,
+        ) -> BoxFuture<'a, Result<AccountIdentity, AppError>> {
+            Box::pin(async {
+                Ok(AccountIdentity {
+                    provider_user_id: "paging-user".to_owned(),
+                    username: "paging-user".to_owned(),
+                    display_name: None,
+                    avatar_url: None,
+                })
+            })
+        }
+
+        fn list_repositories<'a>(
+            &'a self,
+            context: AdapterAccountContext<'a>,
+            request: AdapterListRequest,
+        ) -> BoxFuture<'a, Result<AdapterPage, AppError>> {
+            Box::pin(async move {
+                let page = match request.cursor {
+                    None | Some(AdapterCursor::Page(1)) => 1,
+                    Some(AdapterCursor::Page(page)) => page,
+                    Some(AdapterCursor::Keyset(_)) => 99,
+                };
+                let names: &[&str] = if page == 1 {
+                    &["group/unrelated"]
+                } else {
+                    &["group/skill-a", "group/skill-b", "group/skill-c"]
+                };
+                Ok(AdapterPage {
+                    items: names
+                        .iter()
+                        .enumerate()
+                        .map(|(index, full_name)| {
+                            remote_repository(
+                                context.client.instance_id(),
+                                &format!("{page}-{index}"),
+                                full_name,
+                            )
+                        })
+                        .collect(),
+                    next_cursor: (page == 1).then_some(AdapterCursor::Page(2)),
+                    rate_limit: (page == 2).then_some(ProviderRateLimitState {
+                        limit: Some(100),
+                        remaining: Some(0),
+                        reset_at: None,
+                        retry_after_ms: Some(1_000),
+                    }),
+                })
+            })
+        }
+
+        fn get_repository<'a>(
+            &'a self,
+            _context: AdapterAccountContext<'a>,
+            _identity: RemoteRepositoryIdentity,
+        ) -> BoxFuture<'a, Result<RemoteRepository, AppError>> {
+            Box::pin(async { Err(AppError::NotFound("fake repository".to_owned())) })
+        }
+
+        fn detect_remote(
+            &self,
+            _instance: &NormalizedInstance,
+            _remote: &NormalizedRemoteUrl,
+        ) -> Option<RemoteRepositoryIdentity> {
+            None
+        }
+    }
+
+    fn remote_repository(instance_id: &str, id: &str, full_name: &str) -> RemoteRepository {
+        let (namespace, name) = full_name.rsplit_once('/').unwrap();
+        RemoteRepository {
+            provider_kind: ProviderKind::Gitlab,
+            instance_id: instance_id.to_owned(),
+            repository_id: id.to_owned(),
+            namespace: namespace.to_owned(),
+            name: name.to_owned(),
+            full_name: full_name.to_owned(),
+            web_url: format!("https://gitlab.example/{full_name}"),
+            https_url: format!("https://gitlab.example/{full_name}.git"),
+            ssh_url: format!("git@gitlab.example:{full_name}.git"),
+            default_branch: Some("main".to_owned()),
+            visibility: ProviderVisibility::Private,
+            archived: false,
+            fork: false,
+            permission: ProviderPermission::Read,
+            updated_at: Utc::now(),
+        }
+    }
+
+    struct MatchingProvider {
+        get_calls: AtomicUsize,
+    }
+
+    impl MatchingProvider {
+        fn new() -> Self {
+            Self {
+                get_calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl RepositoryDiscoveryProvider for MatchingProvider {
+        fn kind(&self) -> ProviderKind {
+            ProviderKind::Gitlab
+        }
+
+        fn validate_instance<'a>(
+            &'a self,
+            _client: &'a ScopedHttpClient,
+        ) -> BoxFuture<'a, Result<InstanceMetadata, AppError>> {
+            Box::pin(async {
+                Ok(InstanceMetadata {
+                    server_version: None,
+                })
+            })
+        }
+
+        fn authenticate_account<'a>(
+            &'a self,
+            _client: &'a ScopedHttpClient,
+            _secret: &'a str,
+        ) -> BoxFuture<'a, Result<AccountIdentity, AppError>> {
+            Box::pin(async {
+                Ok(AccountIdentity {
+                    provider_user_id: "matching-user".to_owned(),
+                    username: "matching-user".to_owned(),
+                    display_name: None,
+                    avatar_url: None,
+                })
+            })
+        }
+
+        fn list_repositories<'a>(
+            &'a self,
+            _context: AdapterAccountContext<'a>,
+            _request: AdapterListRequest,
+        ) -> BoxFuture<'a, Result<AdapterPage, AppError>> {
+            Box::pin(async {
+                Ok(AdapterPage {
+                    items: Vec::new(),
+                    next_cursor: None,
+                    rate_limit: None,
+                })
+            })
+        }
+
+        fn get_repository<'a>(
+            &'a self,
+            context: AdapterAccountContext<'a>,
+            identity: RemoteRepositoryIdentity,
+        ) -> BoxFuture<'a, Result<RemoteRepository, AppError>> {
+            self.get_calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                let (id, path) = match identity {
+                    RemoteRepositoryIdentity::Id { repository_id } if repository_id == "42" => {
+                        ("42".to_owned(), "group/skill".to_owned())
+                    }
+                    RemoteRepositoryIdentity::Id { repository_id } => {
+                        return Err(AppError::NotFound(format!("fake {repository_id}")));
+                    }
+                    RemoteRepositoryIdentity::Path { path } if path == "group/skill" => {
+                        ("42".to_owned(), path)
+                    }
+                    RemoteRepositoryIdentity::Path { path } => ("99".to_owned(), path),
+                };
+                Ok(remote_repository(context.client.instance_id(), &id, &path))
+            })
+        }
+
+        fn detect_remote(
+            &self,
+            instance: &NormalizedInstance,
+            remote: &NormalizedRemoteUrl,
+        ) -> Option<RemoteRepositoryIdentity> {
+            (instance.host == remote.host).then(|| RemoteRepositoryIdentity::Path {
+                path: remote.path.clone(),
+            })
+        }
+    }
+
+    struct BlockingProvider {
+        entered: AtomicUsize,
+        entered_notify: Notify,
+    }
+
+    impl BlockingProvider {
+        fn new() -> Self {
+            Self {
+                entered: AtomicUsize::new(0),
+                entered_notify: Notify::new(),
+            }
+        }
+
+        async fn wait_for_entered(&self, expected: usize) {
+            loop {
+                let notified = self.entered_notify.notified();
+                if self.entered.load(Ordering::SeqCst) >= expected {
+                    return;
+                }
+                notified.await;
+            }
+        }
+    }
+
+    impl RepositoryDiscoveryProvider for BlockingProvider {
+        fn kind(&self) -> ProviderKind {
+            ProviderKind::Gitlab
+        }
+
+        fn validate_instance<'a>(
+            &'a self,
+            _client: &'a ScopedHttpClient,
+        ) -> BoxFuture<'a, Result<InstanceMetadata, AppError>> {
+            Box::pin(async {
+                Ok(InstanceMetadata {
+                    server_version: None,
+                })
+            })
+        }
+
+        fn authenticate_account<'a>(
+            &'a self,
+            _client: &'a ScopedHttpClient,
+            _secret: &'a str,
+        ) -> BoxFuture<'a, Result<AccountIdentity, AppError>> {
+            Box::pin(async {
+                Ok(AccountIdentity {
+                    provider_user_id: "blocking-user".to_owned(),
+                    username: "blocking-user".to_owned(),
+                    display_name: None,
+                    avatar_url: None,
+                })
+            })
+        }
+
+        fn list_repositories<'a>(
+            &'a self,
+            context: AdapterAccountContext<'a>,
+            _request: AdapterListRequest,
+        ) -> BoxFuture<'a, Result<AdapterPage, AppError>> {
+            self.entered.fetch_add(1, Ordering::SeqCst);
+            self.entered_notify.notify_waiters();
+            Box::pin(async move {
+                context.cancellation.cancelled().await;
+                Err(AppError::Provider(ProviderFailure::canceled()))
             })
         }
 
@@ -1074,6 +1970,428 @@ mod tests {
                 .values()
                 .values()
                 .any(|value| value == "persisted-token-a")
+        );
+    }
+
+    #[tokio::test]
+    async fn discovery_fills_a_page_across_upstream_pages_and_uses_one_use_cursors() {
+        let database = Database::open_in_memory().unwrap();
+        database
+            .with_connection(|connection| {
+                connection.execute(
+                    "INSERT INTO plugin_installations(plugin_id,version,kind,root_path,enabled,installed_at,updated_at) VALUES('git-ramus.provider.gitlab','0.1.0','builtin','/builtin/gitlab',1,?1,?1)",
+                    [Utc::now().to_rfc3339()],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let store = ProviderStore::new(database.clone());
+        let registry = ProviderAdapterRegistry::for_test(
+            database,
+            ProviderKind::Gitlab,
+            Arc::new(PagingProvider),
+        );
+        let service =
+            ProviderService::new(store, Arc::new(ScriptedSecretStore::default()), registry);
+        let instance = service
+            .create_instance(CreateInstanceInput {
+                provider_kind: ProviderKind::Gitlab,
+                display_name: "Paging GitLab".to_owned(),
+                base_url: "https://gitlab.example".to_owned(),
+                custom_ca_path: None,
+            })
+            .await
+            .unwrap();
+        let account = service
+            .connect_account(
+                &instance.id,
+                SensitiveString::new("paging-token".to_owned()),
+            )
+            .await
+            .unwrap();
+        let query = ProviderRepositoryQuery {
+            search: "skill".to_owned(),
+            visibility: None,
+            namespace: None,
+            archived: ProviderArchivedFilter::All,
+            sort: ProviderRepositorySort::Name,
+            direction: ProviderRepositoryDirection::Asc,
+            page_size: 2,
+        };
+        let first = service
+            .list_repositories(
+                "plugin-a",
+                ListRepositoriesInput {
+                    account_id: account.id.clone(),
+                    query: query.clone(),
+                    cursor: None,
+                    operation_id: Uuid::new_v4().to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            first
+                .items
+                .iter()
+                .map(|item| item.full_name.as_str())
+                .collect::<Vec<_>>(),
+            ["group/skill-a", "group/skill-b"]
+        );
+        assert!(first.has_more);
+        assert_eq!(
+            service.list_accounts(&instance.id).unwrap()[0].status,
+            ProviderConnectionStatus::RateLimited
+        );
+        let cursor = first.next_cursor.unwrap();
+        assert!(
+            service
+                .list_repositories(
+                    "plugin-b",
+                    ListRepositoriesInput {
+                        account_id: account.id.clone(),
+                        query: query.clone(),
+                        cursor: Some(cursor.clone()),
+                        operation_id: Uuid::new_v4().to_string(),
+                    },
+                )
+                .await
+                .is_err()
+        );
+        let second = service
+            .list_repositories(
+                "plugin-a",
+                ListRepositoriesInput {
+                    account_id: account.id.clone(),
+                    query,
+                    cursor: Some(cursor.clone()),
+                    operation_id: Uuid::new_v4().to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(second.items[0].full_name, "group/skill-c");
+        assert!(!second.has_more);
+        assert!(
+            service
+                .list_repositories(
+                    "plugin-a",
+                    ListRepositoriesInput {
+                        account_id: account.id,
+                        query: ProviderRepositoryQuery {
+                            search: "skill".to_owned(),
+                            visibility: None,
+                            namespace: None,
+                            archived: ProviderArchivedFilter::All,
+                            sort: ProviderRepositorySort::Name,
+                            direction: ProviderRepositoryDirection::Asc,
+                            page_size: 2,
+                        },
+                        cursor: Some(cursor),
+                        operation_id: Uuid::new_v4().to_string(),
+                    },
+                )
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn discovery_concurrency_queues_the_fifth_request_and_cancel_never_crosses_plugin_scope()
+    {
+        let database = Database::open_in_memory().unwrap();
+        database
+            .with_connection(|connection| {
+                connection.execute(
+                    "INSERT INTO plugin_installations(plugin_id,version,kind,root_path,enabled,installed_at,updated_at) VALUES('git-ramus.provider.gitlab','0.1.0','builtin','/builtin/gitlab',1,?1,?1)",
+                    [Utc::now().to_rfc3339()],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let provider = Arc::new(BlockingProvider::new());
+        let adapters = ProviderAdapterRegistry::for_test(
+            database.clone(),
+            ProviderKind::Gitlab,
+            provider.clone(),
+        );
+        let service = Arc::new(ProviderService::new(
+            ProviderStore::new(database),
+            Arc::new(ScriptedSecretStore::default()),
+            adapters,
+        ));
+        let instance = service
+            .create_instance(CreateInstanceInput {
+                provider_kind: ProviderKind::Gitlab,
+                display_name: "Blocking GitLab".to_owned(),
+                base_url: "https://gitlab.example".to_owned(),
+                custom_ca_path: None,
+            })
+            .await
+            .unwrap();
+        let account = service
+            .connect_account(
+                &instance.id,
+                SensitiveString::new("blocking-token".to_owned()),
+            )
+            .await
+            .unwrap();
+        let query = ProviderRepositoryQuery {
+            search: String::new(),
+            visibility: None,
+            namespace: None,
+            archived: ProviderArchivedFilter::All,
+            sort: ProviderRepositorySort::Name,
+            direction: ProviderRepositoryDirection::Asc,
+            page_size: 10,
+        };
+        let operation_ids = (0..5)
+            .map(|_| Uuid::new_v4().to_string())
+            .collect::<Vec<_>>();
+        let mut running = Vec::new();
+        for operation_id in &operation_ids[..4] {
+            let service = Arc::clone(&service);
+            let account_id = account.id.clone();
+            let query = query.clone();
+            let operation_id = operation_id.clone();
+            running.push(tokio::spawn(async move {
+                service
+                    .list_repositories(
+                        "plugin-a",
+                        ListRepositoriesInput {
+                            account_id,
+                            query,
+                            cursor: None,
+                            operation_id,
+                        },
+                    )
+                    .await
+            }));
+        }
+        provider.wait_for_entered(4).await;
+        let fifth_service = Arc::clone(&service);
+        let fifth_account = account.id.clone();
+        let fifth_query = query.clone();
+        let fifth_operation = operation_ids[4].clone();
+        let fifth = tokio::spawn(async move {
+            fifth_service
+                .list_repositories(
+                    "plugin-a",
+                    ListRepositoriesInput {
+                        account_id: fifth_account,
+                        query: fifth_query,
+                        cursor: None,
+                        operation_id: fifth_operation,
+                    },
+                )
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert_eq!(provider.entered.load(Ordering::SeqCst), 4);
+        assert!(
+            service
+                .cancel_operation("plugin-b", &account.id, &operation_ids[4])
+                .is_err()
+        );
+        assert!(
+            service
+                .cancel_operation("plugin-a", &account.id, &operation_ids[4])
+                .is_ok()
+        );
+        let canceled = ErrorEnvelope::from(fifth.await.unwrap().unwrap_err());
+        assert_eq!(canceled.code, "provider.request-canceled");
+        assert_eq!(canceled.plugin_id.as_deref(), Some("plugin-a"));
+        assert_eq!(
+            canceled.operation_id.as_deref(),
+            Some(operation_ids[4].as_str())
+        );
+        assert_eq!(provider.entered.load(Ordering::SeqCst), 4);
+
+        for operation_id in &operation_ids[..4] {
+            service
+                .cancel_operation("plugin-a", &account.id, operation_id)
+                .unwrap();
+        }
+        for task in running {
+            assert!(task.await.unwrap().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn matching_deduplicates_https_and_ssh_then_binding_rereads_current_remote() {
+        let database = Database::open_in_memory().unwrap();
+        database
+            .with_connection(|connection| {
+                connection.execute(
+                    "INSERT INTO plugin_installations(plugin_id,version,kind,root_path,enabled,installed_at,updated_at) VALUES('git-ramus.provider.gitlab','0.1.0','builtin','/builtin/gitlab',1,?1,?1)",
+                    [Utc::now().to_rfc3339()],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let local = RepositoryRepository::new(database.clone());
+        let repository = Repository::new("/test/repository", "repository", RepositoryKind::Normal);
+        local.create(&repository).unwrap();
+        local
+            .add_remote(&Remote {
+                repository_id: repository.id.clone(),
+                name: "origin".to_owned(),
+                fetch_url: Some("https://gitlab.example/group/skill.git".to_owned()),
+                push_url: Some("git@gitlab.example:group/skill.git".to_owned()),
+            })
+            .unwrap();
+        let provider = Arc::new(MatchingProvider::new());
+        let adapters = ProviderAdapterRegistry::for_test(
+            database.clone(),
+            ProviderKind::Gitlab,
+            provider.clone(),
+        );
+        let service = ProviderService::new(
+            ProviderStore::new(database),
+            Arc::new(ScriptedSecretStore::default()),
+            adapters,
+        );
+        let instance = service
+            .create_instance(CreateInstanceInput {
+                provider_kind: ProviderKind::Gitlab,
+                display_name: "Matching GitLab".to_owned(),
+                base_url: "https://gitlab.example".to_owned(),
+                custom_ca_path: None,
+            })
+            .await
+            .unwrap();
+        let account = service
+            .connect_account(
+                &instance.id,
+                SensitiveString::new("matching-token".to_owned()),
+            )
+            .await
+            .unwrap();
+
+        let suggestions = service
+            .match_local_remotes(
+                "plugin-a",
+                &instance.id,
+                &account.id,
+                &Uuid::new_v4().to_string(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(
+            suggestions[0].status,
+            ProviderBindingSuggestionStatus::Suggested
+        );
+        assert_eq!(suggestions[0].candidates.len(), 1);
+        assert_eq!(provider.get_calls.load(Ordering::SeqCst), 1);
+
+        local
+            .add_remote(&Remote {
+                repository_id: repository.id.clone(),
+                name: "origin".to_owned(),
+                fetch_url: Some("https://gitlab.example/group/skill.git".to_owned()),
+                push_url: Some("git@gitlab.example:group/other.git".to_owned()),
+            })
+            .unwrap();
+        let ambiguous = service
+            .match_local_remotes(
+                "plugin-a",
+                &instance.id,
+                &account.id,
+                &Uuid::new_v4().to_string(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            ambiguous[0].status,
+            ProviderBindingSuggestionStatus::Ambiguous
+        );
+        assert_eq!(ambiguous[0].candidates.len(), 2);
+        local
+            .add_remote(&Remote {
+                repository_id: repository.id.clone(),
+                name: "origin".to_owned(),
+                fetch_url: None,
+                push_url: Some("git@gitlab.example:group/skill.git".to_owned()),
+            })
+            .unwrap();
+
+        let other_instance = service
+            .create_instance(CreateInstanceInput {
+                provider_kind: ProviderKind::Gitlab,
+                display_name: "Other GitLab".to_owned(),
+                base_url: "https://other.gitlab.example".to_owned(),
+                custom_ca_path: None,
+            })
+            .await
+            .unwrap();
+        let other_account = service
+            .connect_account(
+                &other_instance.id,
+                SensitiveString::new("other-token".to_owned()),
+            )
+            .await
+            .unwrap();
+        assert!(
+            service
+                .bind_remote(BindRemoteInput {
+                    repository_id: repository.id.clone(),
+                    remote_name: "origin".to_owned(),
+                    instance_id: instance.id.clone(),
+                    account_id: Some(other_account.id),
+                    provider_repository_id: "42".to_owned(),
+                })
+                .await
+                .is_err()
+        );
+
+        let binding = service
+            .bind_remote(BindRemoteInput {
+                repository_id: repository.id.clone(),
+                remote_name: "origin".to_owned(),
+                instance_id: instance.id,
+                account_id: None,
+                provider_repository_id: "42".to_owned(),
+            })
+            .await
+            .unwrap();
+        assert!(binding.provider_account_id.is_none());
+        assert_eq!(
+            binding.binding_source,
+            crate::providers::model::BindingSource::Auto
+        );
+        assert!(!binding.matched_url.contains("matching-token"));
+        assert_eq!(binding.matched_url, "git@gitlab.example:group/skill.git");
+        assert_eq!(
+            service
+                .list_bindings_for_account(&account.id)
+                .unwrap()
+                .len(),
+            1
+        );
+        service
+            .unbind_remote(&repository.id, "origin")
+            .expect("binding removes");
+        assert!(
+            service
+                .list_bindings_for_account(&account.id)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            local
+                .get_remote(&repository.id, "origin")
+                .unwrap()
+                .fetch_url,
+            None
+        );
+        assert_eq!(
+            local
+                .get_remote(&repository.id, "origin")
+                .unwrap()
+                .push_url
+                .as_deref(),
+            Some("git@gitlab.example:group/skill.git")
         );
     }
 }

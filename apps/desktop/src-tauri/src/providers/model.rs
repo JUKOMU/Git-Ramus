@@ -212,6 +212,29 @@ pub struct ProviderBinding {
     pub updated_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderBindingSuggestionStatus {
+    Suggested,
+    Ambiguous,
+    Unverified,
+    None,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderBindingSuggestion {
+    pub repository_id: String,
+    pub remote_name: String,
+    pub instance_id: String,
+    pub status: ProviderBindingSuggestionStatus,
+    pub provider_repository_id: Option<String>,
+    pub full_name: Option<String>,
+    pub web_url: Option<String>,
+    pub matched_url: Option<String>,
+    pub candidates: Vec<RemoteRepository>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",

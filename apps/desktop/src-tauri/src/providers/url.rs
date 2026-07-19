@@ -136,6 +136,31 @@ pub fn detect_remote(
     })
 }
 
+pub fn sanitized_remote_url(remote: &NormalizedRemoteUrl) -> String {
+    let host = if remote.host.contains(':') {
+        format!("[{}]", remote.host)
+    } else {
+        remote.host.clone()
+    };
+    match remote.transport {
+        RemoteTransport::Https => {
+            let authority = remote
+                .port
+                .map_or(host.clone(), |port| format!("{host}:{port}"));
+            format!("https://{authority}/{}.git", remote.path)
+        }
+        RemoteTransport::Ssh if remote.port.is_none() && !remote.host.contains(':') => {
+            format!("git@{}:{}.git", remote.host, remote.path)
+        }
+        RemoteTransport::Ssh => {
+            let authority = remote
+                .port
+                .map_or(host.clone(), |port| format!("{host}:{port}"));
+            format!("ssh://git@{authority}/{}.git", remote.path)
+        }
+    }
+}
+
 fn normalize_scp_remote(value: &str) -> Result<NormalizedRemoteUrl, AppError> {
     let (host, path) = value.split_once(':').ok_or_else(invalid_remote)?;
     if host.is_empty()
@@ -220,7 +245,7 @@ mod tests {
 
     use super::{
         NormalizedInstance, NormalizedRemoteUrl, RemoteTransport, detect_remote,
-        normalize_instance_base, normalize_remote_url,
+        normalize_instance_base, normalize_remote_url, sanitized_remote_url,
     };
 
     #[test]
@@ -305,5 +330,23 @@ mod tests {
             normalize_remote_url("ssh://git@gitlab.example:2222/root/group/repository.git")
                 .unwrap();
         assert_eq!(detect_remote(&instance, &other_port), None);
+    }
+
+    #[test]
+    fn sanitizes_remote_urls_without_credentials_or_query_data() {
+        let remote = normalize_remote_url(
+            "https://token@gitlab.example:8443/group/repo.git?secret=yes#fragment",
+        )
+        .unwrap();
+        assert_eq!(
+            sanitized_remote_url(&remote),
+            "https://gitlab.example:8443/group/repo.git"
+        );
+        assert_eq!(
+            sanitized_remote_url(
+                &normalize_remote_url("git@gitlab.example:group/repo.git").unwrap()
+            ),
+            "git@gitlab.example:group/repo.git"
+        );
     }
 }

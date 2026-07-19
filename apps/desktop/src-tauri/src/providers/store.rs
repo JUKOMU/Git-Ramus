@@ -3,6 +3,7 @@ use rusqlite::{OptionalExtension, Row, params};
 
 use crate::db::{Database, map_constraint_error};
 use crate::error::AppError;
+use crate::git::model::Remote;
 use crate::providers::model::{
     AccountDeletionImpact, AccountDeletionResolution, NewProviderAccount, ProviderAccount,
     ProviderBinding, ProviderInstance, SecretCleanupRecord,
@@ -417,6 +418,43 @@ impl ProviderStore {
         })
     }
 
+    pub fn list_bindings_for_account(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<ProviderBinding>, AppError> {
+        self.database.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT b.repository_id,b.remote_name,b.provider_instance_id,b.provider_account_id,b.provider_repository_id,b.full_name,b.web_url,b.matched_url,b.binding_source,b.bound_at,b.updated_at
+                 FROM provider_repository_bindings b
+                 JOIN provider_accounts a ON a.id=?1
+                 WHERE b.provider_account_id=?1
+                    OR (a.is_default=1 AND b.provider_account_id IS NULL AND b.provider_instance_id=a.instance_id)
+                 ORDER BY b.repository_id,b.remote_name",
+            )?;
+            statement
+                .query_map([account_id], map_binding)
+                .map(|rows| rows.collect())?
+        })
+    }
+
+    pub fn list_local_remotes(&self) -> Result<Vec<Remote>, AppError> {
+        self.database.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT repository_id,name,fetch_url,push_url FROM repository_remotes ORDER BY repository_id,name",
+            )?;
+            statement
+                .query_map([], |row| {
+                    Ok(Remote {
+                        repository_id: row.get(0)?,
+                        name: row.get(1)?,
+                        fetch_url: row.get(2)?,
+                        push_url: row.get(3)?,
+                    })
+                })
+                .map(|rows| rows.collect())?
+        })
+    }
+
     pub fn delete_binding(&self, repository_id: &str, remote_name: &str) -> Result<(), AppError> {
         self.database.with_connection(|connection| {
             connection
@@ -750,6 +788,71 @@ mod tests {
                 .get_binding(REPOSITORY_ID, "upstream")
                 .unwrap()
                 .is_some()
+        );
+    }
+
+    #[test]
+    fn account_binding_views_move_only_inherited_bindings_when_the_default_changes() {
+        let store = ProviderStore::new(Database::open_in_memory().expect("database opens"));
+        let instance = store
+            .insert_instance(instance(ProviderKind::Gitlab, "https://gitlab.example"))
+            .unwrap();
+        let first = store
+            .insert_account(new_account(&instance.id, "1"))
+            .unwrap();
+        let second = store
+            .insert_account(new_account(&instance.id, "2"))
+            .unwrap();
+        for name in ["first", "second", "inherited"] {
+            seed_local_remote(store.database(), name);
+        }
+        store
+            .upsert_binding(binding("first", &instance.id, Some(&first.id)))
+            .unwrap();
+        store
+            .upsert_binding(binding("second", &instance.id, Some(&second.id)))
+            .unwrap();
+        store
+            .upsert_binding(binding("inherited", &instance.id, None))
+            .unwrap();
+
+        assert_eq!(
+            store
+                .list_bindings_for_account(&first.id)
+                .unwrap()
+                .into_iter()
+                .map(|binding| binding.remote_name)
+                .collect::<Vec<_>>(),
+            ["first", "inherited"]
+        );
+        assert_eq!(
+            store
+                .list_bindings_for_account(&second.id)
+                .unwrap()
+                .into_iter()
+                .map(|binding| binding.remote_name)
+                .collect::<Vec<_>>(),
+            ["second"]
+        );
+
+        store.set_default_account(&instance.id, &second.id).unwrap();
+        assert_eq!(
+            store
+                .list_bindings_for_account(&first.id)
+                .unwrap()
+                .into_iter()
+                .map(|binding| binding.remote_name)
+                .collect::<Vec<_>>(),
+            ["first"]
+        );
+        assert_eq!(
+            store
+                .list_bindings_for_account(&second.id)
+                .unwrap()
+                .into_iter()
+                .map(|binding| binding.remote_name)
+                .collect::<Vec<_>>(),
+            ["inherited", "second"]
         );
     }
 
