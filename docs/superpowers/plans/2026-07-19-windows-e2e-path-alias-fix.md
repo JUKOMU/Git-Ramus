@@ -23,7 +23,7 @@
 - Modify: `apps/desktop/e2e/app-data-profile.ts`
 - Test: `apps/desktop/e2e/app-data-profile.test.ts`
 
-- [ ] **Step 1: Write the failing alias regression test**
+- [x] **Step 1: Write the failing alias regression test**
 
 Update the imports and add this test to `app-data-profile.test.ts`:
 
@@ -56,7 +56,7 @@ it("canonicalizes a filesystem alias to the same existing E2E path", async () =>
 });
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run:
 
@@ -66,7 +66,7 @@ npm --prefix apps/desktop test -- e2e/app-data-profile.test.ts
 
 Expected: FAIL because `app-data-profile.ts` does not export `canonicalizeExistingE2eFsPath`.
 
-- [ ] **Step 3: Implement the minimal physical canonicalizer**
+- [x] **Step 3: Implement the minimal physical canonicalizer**
 
 Update `app-data-profile.ts`:
 
@@ -80,7 +80,7 @@ export async function canonicalizeExistingE2eFsPath(path: string): Promise<strin
 
 Do not change `normalizeE2eFsPath`, `cleanupE2eAppDataProfile`, or `assertSafeExistingProfile`.
 
-- [ ] **Step 4: Run the focused tests and verify GREEN**
+- [x] **Step 4: Run the focused tests and verify GREEN**
 
 Run:
 
@@ -90,7 +90,7 @@ npm --prefix apps/desktop test -- e2e/app-data-profile.test.ts
 
 Expected: all `app-data-profile` tests PASS, including alias canonicalization and nested cleanup rejection.
 
-- [ ] **Step 5: Commit the helper and regression test**
+- [x] **Step 5: Commit the helper and regression test**
 
 ```powershell
 git add -- apps/desktop/e2e/app-data-profile.ts apps/desktop/e2e/app-data-profile.test.ts
@@ -103,7 +103,7 @@ git commit -m "test: cover e2e filesystem aliases"
 
 - Modify: `apps/desktop/e2e/git-client.e2e.ts`
 
-- [ ] **Step 1: Replace lexical equality with physical equality**
+- [x] **Step 1: Replace lexical equality with physical equality**
 
 Change the imports and `assertIsolatedAppData` implementation:
 
@@ -132,7 +132,7 @@ async function assertIsolatedAppData(): Promise<void> {
 }
 ```
 
-- [ ] **Step 2: Run TypeScript and focused tests**
+- [x] **Step 2: Run TypeScript and focused tests**
 
 Run:
 
@@ -143,7 +143,7 @@ npm --prefix apps/desktop test -- e2e/app-data-profile.test.ts
 
 Expected: both commands PASS.
 
-- [ ] **Step 3: Build and run the native E2E suite**
+- [x] **Step 3: Build and run the native E2E suite**
 
 Run:
 
@@ -156,7 +156,7 @@ npm run test:e2e --workspace @git-ramus/desktop
 
 Expected: Foundation and Git Client specs both PASS; the logged app-data paths are physically canonical and the isolated profile is removed.
 
-- [ ] **Step 4: Run the repository release checks**
+- [x] **Step 4: Run the repository release checks**
 
 Run:
 
@@ -169,12 +169,11 @@ git status --short
 
 Expected: formatting, lint, typecheck, unit tests, audit, and diff checks PASS; only the three intended E2E files and this plan's checkbox updates are modified.
 
-- [ ] **Step 5: Commit, push, and verify the workflow**
+- [x] **Step 5: Commit the E2E assertion and completed plan**
 
 ```powershell
 git add -- apps/desktop/e2e/git-client.e2e.ts docs/superpowers/plans/2026-07-19-windows-e2e-path-alias-fix.md
 git commit -m "fix: canonicalize windows e2e paths"
-git push origin main
 ```
 
-Expected: `main` pushes successfully. The next Windows E2E job passes the app-data isolation assertion when `TEMP` uses `RUNNER~1` and the host returns `runneradmin`.
+Expected: the isolated feature branch contains the reviewed E2E assertion change. The required finishing workflow then merges it locally to `main`, pushes `main`, and verifies the next Windows E2E job passes when `TEMP` uses `RUNNER~1` and the host returns `runneradmin`.

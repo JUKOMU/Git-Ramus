@@ -1,7 +1,7 @@
 import { $, browser, expect } from "@wdio/globals";
 import { lstat } from "node:fs/promises";
 import { resolve } from "node:path";
-import { E2E_APP_DATA_ROOT_ENV, normalizeE2eFsPath } from "./app-data-profile";
+import { canonicalizeExistingE2eFsPath, E2E_APP_DATA_ROOT_ENV } from "./app-data-profile";
 import {
   cleanupGitClientJourney,
   invokeHost,
@@ -180,10 +180,14 @@ async function assertIsolatedAppData(): Promise<void> {
   const expectedRoot = process.env[E2E_APP_DATA_ROOT_ENV];
   if (expectedRoot === undefined) throw new Error("E2E app-data profile is unavailable");
   const paths = record(await invokeHost("e2e_app_data_paths", {}));
-  const appDataRoot = normalizeE2eFsPath(resolve(text(paths.appDataRoot)));
-  const databasePath = normalizeE2eFsPath(resolve(text(paths.databasePath)));
-  expect(appDataRoot).toBe(normalizeE2eFsPath(resolve(expectedRoot)));
-  expect(databasePath).toBe(normalizeE2eFsPath(resolve(expectedRoot, "git-ramus.db")));
+  const [appDataRoot, databasePath, expectedAppDataRoot, expectedDatabasePath] = await Promise.all([
+    canonicalizeExistingE2eFsPath(text(paths.appDataRoot)),
+    canonicalizeExistingE2eFsPath(text(paths.databasePath)),
+    canonicalizeExistingE2eFsPath(expectedRoot),
+    canonicalizeExistingE2eFsPath(resolve(expectedRoot, "git-ramus.db"))
+  ]);
+  expect(appDataRoot).toBe(expectedAppDataRoot);
+  expect(databasePath).toBe(expectedDatabasePath);
   expect((await lstat(databasePath)).isFile()).toBe(true);
   console.info(`E2E app-data root=${appDataRoot} database=${databasePath}`);
 }
