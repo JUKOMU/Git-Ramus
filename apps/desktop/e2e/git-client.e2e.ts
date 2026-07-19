@@ -20,10 +20,15 @@ describe("Git Client vertical slice", () => {
 
   it("scans, groups, trusts, stages, commits, and updates one opaque plugin frame theme", async () => {
     await assertIsolatedAppData();
-    await (await $("button=Overview")).click();
+    await (await $("button=Identities")).click();
     let frame = await $("iframe[title='Git Client plugin']");
     await frame.waitForDisplayed();
     await expect(frame).toHaveAttribute("sandbox", "allow-scripts");
+    await expect(frame).toHaveAttribute("data-plugin-route", "/identities");
+    await waitForFrameRpc(frame, "identities.list");
+
+    await (await $("button=Overview")).click();
+    frame = await $("iframe[title='Git Client plugin']");
     await waitForFrameRpc(frame, "projects.list");
 
     fixture = await seedFixture();
@@ -95,9 +100,25 @@ describe("Git Client vertical slice", () => {
     );
     const untrusted = record(await invokeHost("git_repository_trust_status", { request: context }));
     expect(untrusted.trusted).toBe(false);
+    const untrustedDiff = record(
+      await invokeHost("git_repository_diff", {
+        request: { ...context, paths: [fixture.changes.stagePath], staged: false }
+      })
+    );
+    expect(untrustedDiff.patch).toBeNull();
+    expect(untrustedDiff.contentUnavailableReason).toBe("untrustedRepository");
     await invokeHost("git_repository_trust", { request: context });
     const trusted = record(await invokeHost("git_repository_trust_status", { request: context }));
     expect(trusted.trusted).toBe(true);
+    const trustedDiff = record(
+      await invokeHost("git_repository_diff", {
+        request: { ...context, paths: [fixture.changes.stagePath], staged: false }
+      })
+    );
+    expect(text(trustedDiff.patch)).toContain("-unstaged initial");
+    expect(text(trustedDiff.patch)).toContain("+unstaged changed");
+    expect(trustedDiff.truncated).toBe(false);
+    expect(trustedDiff.contentUnavailableReason).toBeNull();
     const staged = record(
       await invokeHost("git_repository_stage", {
         request: { ...context, paths: [fixture.changes.stagePath], all: false }

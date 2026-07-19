@@ -127,6 +127,75 @@ describe("RepositoryView", () => {
     expect(await screen.findByText(diffTextMatcher)).toBeInTheDocument();
   });
 
+  it("marks a bounded patch when the host truncated its content", async () => {
+    const user = userEvent.setup();
+    const api = createApi({ changes: [unstaged] });
+    vi.mocked(api.getRepositoryDiff).mockResolvedValueOnce({
+      ...diffResult(unstaged.path, false),
+      truncated: true
+    });
+    render(<RepositoryView api={api} context={{ projectId }} repository={repository} />);
+
+    await user.click(await screen.findByRole("button", { name: "View diff for src/unstaged.ts" }));
+
+    expect(await screen.findByText(diffTextMatcher)).toBeInTheDocument();
+    expect(screen.getByText("Diff content was truncated at the safe display limit.")).toBeVisible();
+  });
+
+  it("shows a partial-content reason alongside an available patch", async () => {
+    const user = userEvent.setup();
+    const api = createApi({ changes: [unstaged] });
+    vi.mocked(api.getRepositoryDiff).mockResolvedValueOnce({
+      ...diffResult(unstaged.path, false),
+      contentUnavailableReason: "untrackedContentUnavailable"
+    });
+    render(<RepositoryView api={api} context={{ projectId }} repository={repository} />);
+
+    await user.click(await screen.findByRole("button", { name: "View diff for src/unstaged.ts" }));
+
+    expect(await screen.findByText(diffTextMatcher)).toBeInTheDocument();
+    expect(screen.getByText("Untracked file content is unavailable.")).toBeVisible();
+  });
+
+  it.each([
+    ["binary", "Binary diff content is not displayed."],
+    ["untrustedRepository", "Trust the repository to view diff content."],
+    ["nonUtf8Content", "Diff content is not valid UTF-8."],
+    ["outputLimit", "Diff content exceeded the safe output limit."],
+    ["untrackedContentUnavailable", "Untracked file content is unavailable."]
+  ] as const)("explains unavailable %s diff content", async (reason, message) => {
+    const user = userEvent.setup();
+    const api = createApi({ changes: [unstaged] });
+    const unavailable = diffResult(unstaged.path, false);
+    vi.mocked(api.getRepositoryDiff).mockResolvedValueOnce({
+      ...unavailable,
+      patch: null,
+      contentUnavailableReason: reason,
+      summary: {
+        ...unavailable.summary,
+        binary: reason === "binary",
+        files: unavailable.summary.files.map((file) => ({
+          ...file,
+          binary: reason === "binary"
+        })),
+        changes: unavailable.summary.changes.map((file) => ({
+          ...file,
+          binary: reason === "binary"
+        })),
+        entries: unavailable.summary.entries.map((file) => ({
+          ...file,
+          binary: reason === "binary"
+        }))
+      }
+    });
+    render(<RepositoryView api={api} context={{ projectId }} repository={repository} />);
+
+    await user.click(await screen.findByRole("button", { name: "View diff for src/unstaged.ts" }));
+
+    expect(await screen.findByText(message)).toBeVisible();
+    expect(screen.queryByText(diffTextMatcher)).not.toBeInTheDocument();
+  });
+
   it("loads persisted Trust before enabling writes and does not request Trust again", async () => {
     const user = userEvent.setup();
     const trustStatus = deferred<{ trusted: boolean }>();
@@ -176,6 +245,31 @@ describe("RepositoryView", () => {
     await user.click(screen.getByRole("button", { name: "Retry Trust status" }));
     expect(await screen.findByText("Trusted on this device")).toBeInTheDocument();
     expect(api.getRepositoryTrustStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries identity state without refreshing repository status", async () => {
+    const user = userEvent.setup();
+    const api = createApi({ changes: [staged] });
+    vi.mocked(api.listIdentities)
+      .mockRejectedValueOnce({
+        ...errorEnvelope(),
+        code: "identity.load-unavailable",
+        message: "Identity temporarily unavailable.",
+        failedStep: "identities.list",
+        recoveryActions: [{ id: "retry", label: "Retry identities", kind: "retry" as const }]
+      })
+      .mockResolvedValueOnce({
+        identities: [identity, secondIdentity],
+        globalIdentityProfileId: profileId
+      });
+    render(<RepositoryView api={api} context={{ projectId }} repository={repository} />);
+
+    await user.click(await screen.findByRole("button", { name: "Retry identities" }));
+
+    await vi.waitFor(() => expect(api.listIdentities).toHaveBeenCalledTimes(2));
+    expect(api.getEffectiveRepositoryIdentity).toHaveBeenCalledTimes(2);
+    expect(api.getRepositoryChanges).toHaveBeenCalledOnce();
+    expect(screen.queryByText("Identity temporarily unavailable.")).not.toBeInTheDocument();
   });
 
   it("requires explicit Trust and commits the complete staged index without path parameters", async () => {
@@ -360,20 +454,15 @@ describe("RepositoryView", () => {
       .mockReturnValueOnce(oldSuccessChanges.promise)
       .mockReturnValueOnce(freshChanges.promise);
     vi.mocked(api.getRepositoryTrustStatus).mockResolvedValue({ trusted: true });
-    vi.mocked(api.listIdentities).mockRejectedValueOnce({
-      ...errorEnvelope(),
-      code: "identity.load-unavailable",
-      message: "Identity temporarily unavailable.",
-      failedStep: "identities.list",
-      recoveryActions: [{ id: "refresh", label: "Refresh repository", kind: "retry" as const }]
-    });
-    render(<RepositoryView api={api} context={{ projectId }} repository={repository} />);
+    const { rerender } = render(
+      <RepositoryView api={api} context={{ projectId }} repository={repository} />
+    );
     const selected = await screen.findByRole("checkbox", { name: "Select src/unstaged.ts" });
     await user.click(selected);
     expect(await screen.findByText("Trusted on this device")).toBeInTheDocument();
-    const retry = await screen.findByRole("button", { name: "Refresh repository" });
-    await user.click(retry);
-    await user.click(retry);
+    rerender(<RepositoryView api={api} context={{ projectId }} repository={repository} />);
+    await vi.waitFor(() => expect(api.getRepositoryChanges).toHaveBeenCalledTimes(2));
+    rerender(<RepositoryView api={api} context={{ projectId }} repository={repository} />);
     await vi.waitFor(() => expect(api.getRepositoryChanges).toHaveBeenCalledTimes(3));
 
     await user.click(screen.getByRole("button", { name: "Stage all" }));
@@ -870,8 +959,8 @@ function diffResult(path: string, stagedDiff: boolean, old = "before", next = "a
     binary: false,
     additions: 1,
     deletions: 1,
-    old,
-    new: next
+    old: `a/${path}`,
+    new: `b/${path}`
   };
   return {
     repositoryId,

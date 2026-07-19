@@ -74,6 +74,7 @@ export function RepositoryView({ api, context, repository, onBack }: RepositoryV
   const [busy, setBusy] = useState(false);
   const [refreshError, setRefreshError] = useState<ErrorEnvelope | null>(null);
   const [trustStatusError, setTrustStatusError] = useState<ErrorEnvelope | null>(null);
+  const [identityError, setIdentityError] = useState<ErrorEnvelope | null>(null);
   const [actionError, setActionError] = useState<ErrorEnvelope | null>(null);
   const [diff, setDiff] = useState<DiffResult | null>(null);
   const [diffError, setDiffError] = useState<ErrorEnvelope | null>(null);
@@ -151,6 +152,9 @@ export function RepositoryView({ api, context, repository, onBack }: RepositoryV
   const loadIdentityState = useCallback(
     async (lifecycle: number) => {
       const load = ++identityLoadGeneration.current;
+      if (lifecycle === identityLifecycleGeneration.current) {
+        setIdentityError(null);
+      }
       try {
         const [identityResult, effective] = await Promise.all([
           api.listIdentities(),
@@ -169,12 +173,13 @@ export function RepositoryView({ api, context, repository, onBack }: RepositoryV
         setRepositoryIdentityProfileId(
           effective.source === "repositoryProfile" ? effective.profileId : null
         );
+        setIdentityError(null);
       } catch (reason: unknown) {
         if (
           lifecycle === identityLifecycleGeneration.current &&
           load === identityLoadGeneration.current
         ) {
-          setActionError(normalizeError(reason, "Commit identity could not be loaded."));
+          setIdentityError(normalizeError(reason, "Commit identity could not be loaded."));
         }
       }
     },
@@ -192,6 +197,7 @@ export function RepositoryView({ api, context, repository, onBack }: RepositoryV
       setSelectedIdentityProfileId(null);
       setRepositoryIdentityProfileId(null);
       setIdentityBindingOperation(null);
+      setIdentityError(null);
       setActionError(null);
       void loadIdentityState(lifecycle);
     });
@@ -213,6 +219,7 @@ export function RepositoryView({ api, context, repository, onBack }: RepositoryV
     }
     identityBindingBusyRef.current = true;
     setIdentityBindingOperation("bind");
+    setIdentityError(null);
     setActionError(null);
     const lifecycle = identityLifecycleGeneration.current;
     try {
@@ -237,6 +244,7 @@ export function RepositoryView({ api, context, repository, onBack }: RepositoryV
     if (boundProfileId === null || identityBindingBusyRef.current) return;
     identityBindingBusyRef.current = true;
     setIdentityBindingOperation("unbind");
+    setIdentityError(null);
     setActionError(null);
     const lifecycle = identityLifecycleGeneration.current;
     try {
@@ -376,6 +384,7 @@ export function RepositoryView({ api, context, repository, onBack }: RepositoryV
     trusted === true &&
     !busy &&
     identityBindingOperation === null &&
+    effectiveIdentity !== null &&
     message.trim().length > 0 &&
     groupedChanges.staged.length > 0;
 
@@ -426,6 +435,12 @@ export function RepositoryView({ api, context, repository, onBack }: RepositoryV
       )}
       {trustStatusError === null ? null : (
         <ErrorNotice error={trustStatusError} onRetry={() => void loadTrustStatus()} />
+      )}
+      {identityError === null ? null : (
+        <ErrorNotice
+          error={identityError}
+          onRetry={() => void loadIdentityState(identityLifecycleGeneration.current)}
+        />
       )}
       {actionError === null ? null : (
         <ErrorNotice error={actionError} onRetry={() => void refresh()} />
@@ -507,13 +522,27 @@ export function RepositoryView({ api, context, repository, onBack }: RepositoryV
             {diff?.summary.files.map((file) => (
               <article key={file.path}>
                 <h3>{file.path}</h3>
-                {file.binary ? (
-                  <p>Binary diff</p>
-                ) : (
-                  <pre>{`${file.old ?? ""}\n${file.new ?? ""}`}</pre>
-                )}
+                <p className="muted">
+                  {file.binary
+                    ? "Binary file"
+                    : `${file.additions ?? "Unknown"} additions · ${
+                        file.deletions ?? "Unknown"
+                      } deletions`}
+                </p>
               </article>
             ))}
+            {diff !== null && diff.contentUnavailableReason !== null ? (
+              <p>{diffContentUnavailableMessage(diff.contentUnavailableReason)}</p>
+            ) : null}
+            {diff?.patch === null && diff.contentUnavailableReason === null ? (
+              <p>No textual diff content was returned.</p>
+            ) : null}
+            {diff !== null && diff.patch !== null ? (
+              <pre aria-label="Diff patch">{diff.patch}</pre>
+            ) : null}
+            {diff?.truncated ? (
+              <p className="muted">Diff content was truncated at the safe display limit.</p>
+            ) : null}
           </section>
 
           <section className="commit-panel">
@@ -580,6 +609,19 @@ function ErrorNotice({ error, onRetry }: { error: ErrorEnvelope; onRetry(): void
       ))}
     </div>
   );
+}
+
+function diffContentUnavailableMessage(
+  reason: NonNullable<DiffResult["contentUnavailableReason"]>
+): string {
+  const messages: Record<NonNullable<DiffResult["contentUnavailableReason"]>, string> = {
+    binary: "Binary diff content is not displayed.",
+    untrustedRepository: "Trust the repository to view diff content.",
+    nonUtf8Content: "Diff content is not valid UTF-8.",
+    outputLimit: "Diff content exceeded the safe output limit.",
+    untrackedContentUnavailable: "Untracked file content is unavailable."
+  };
+  return messages[reason];
 }
 
 function groupChanges(changes: ParsedChangeEntry[]) {

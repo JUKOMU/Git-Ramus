@@ -954,12 +954,24 @@ mod tests {
         );
         assert!(matches!(result, Err(AppError::Timeout)));
         assert!(started.elapsed() < Duration::from_secs(1));
-        assert!(
-            child
+        let terminated_by = Instant::now() + Duration::from_secs(1);
+        let reaped = loop {
+            if child
                 .try_wait()
                 .expect("cleanup child can be queried")
                 .is_some()
-        );
+            {
+                break true;
+            }
+            if Instant::now() >= terminated_by {
+                break false;
+            }
+            thread::sleep(Duration::from_millis(1));
+        };
+        if !reaped {
+            let _ = terminate_and_reap(&mut child);
+        }
+        assert!(reaped, "cleanup did not terminate the helper process");
     }
 
     #[test]

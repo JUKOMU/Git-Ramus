@@ -119,7 +119,8 @@ describe("shared contracts", () => {
     expect(parsed.contributions.navigation.map(({ route }) => route)).toEqual([
       "/overview",
       "/projects",
-      "/workspaces"
+      "/workspaces",
+      "/identities"
     ]);
     expect(parsed.permissions).toEqual([
       { capability: "projects:manage", resources: ["projects"] },
