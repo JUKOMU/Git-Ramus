@@ -1,13 +1,16 @@
 import type { ErrorEnvelope, RpcRequest } from "@git-ramus/contracts";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { HostApi } from "../../lib/hostApi";
-import { dispatchPluginRpc } from "../rpcRouter";
+import { dispatchPluginRpc, isKnownPluginRpcMethod } from "../rpcRouter";
 
 const pluginId = "git-ramus.git-client";
 const projectId = "87a31769-8aaa-47ca-bef3-47e66f0c62fc";
 const workspaceId = "e3d622f1-f1f7-4f7e-8f18-3db8a1e6ffbe";
 const repositoryId = "a032bc9c-8759-45ac-856f-b76f9addb9d1";
 const profileId = "d23957ac-5c0f-4857-9124-7f1599a41f33";
+const providerInstanceId = "6da75ccf-f7df-4bf2-92b7-2c158765726f";
+const providerAccountId = "7f3c0214-373c-4d43-b0c7-cdaed1cbcc50";
+const providerOperationId = "f84223af-c753-4209-be36-12d381375fcb";
 
 function createHostApi(): HostApi {
   return {
@@ -18,6 +21,7 @@ function createHostApi(): HostApi {
     currentTheme: vi.fn(),
     activateTheme: vi.fn(),
     authorizePluginCall: vi.fn(async () => ({ allowed: true })),
+    authorizePluginPermissionRequest: vi.fn(async () => ({ allowed: true })),
     startEchoJob: vi.fn(),
     cancelJob: vi.fn(),
     listProjects: vi.fn(),
@@ -45,7 +49,28 @@ function createHostApi(): HostApi {
     setGlobalIdentity: vi.fn(),
     bindRepositoryIdentity: vi.fn(),
     unbindRepositoryIdentity: vi.fn(),
-    getEffectiveRepositoryIdentity: vi.fn()
+    getEffectiveRepositoryIdentity: vi.fn(),
+    listProviderInstances: vi.fn(),
+    createProviderInstance: vi.fn(),
+    updateProviderInstance: vi.fn(),
+    validateProviderInstance: vi.fn(),
+    deleteProviderInstance: vi.fn(),
+    listProviderAccounts: vi.fn(),
+    connectProviderAccount: vi.fn(),
+    rotateProviderAccount: vi.fn(),
+    validateProviderAccount: vi.fn(),
+    setDefaultProviderAccount: vi.fn(),
+    getProviderAccountDeletionImpact: vi.fn(),
+    deleteProviderAccount: vi.fn(),
+    listAuthorizedProviderAccounts: vi.fn(),
+    requestProviderReadAccess: vi.fn(),
+    revokeProviderReadAccess: vi.fn(),
+    listProviderRepositories: vi.fn(),
+    cancelProviderOperation: vi.fn(),
+    matchLocalProviderRemotes: vi.fn(),
+    listProviderBindings: vi.fn(),
+    bindProviderRemote: vi.fn(),
+    unbindProviderRemote: vi.fn()
   };
 }
 
@@ -500,6 +525,214 @@ describe("Git client RPC routes", () => {
       category: "validation"
     });
     expect(hostApi.authorizePluginCall).not.toHaveBeenCalled();
+  });
+});
+
+describe("Provider RPC routes", () => {
+  let hostApi: HostApi;
+
+  beforeEach(() => {
+    hostApi = createHostApi();
+  });
+
+  it("registers only the explicit Provider RPC surface", () => {
+    const methods = [
+      "providers.listInstances",
+      "providers.createInstance",
+      "providers.updateInstance",
+      "providers.validateInstance",
+      "providers.deleteInstance",
+      "providers.listAccounts",
+      "providers.connectAccount",
+      "providers.rotateAccount",
+      "providers.validateAccount",
+      "providers.setDefaultAccount",
+      "providers.getAccountDeletionImpact",
+      "providers.deleteAccount",
+      "providers.listAuthorizedAccounts",
+      "providers.requestReadAccess",
+      "providers.revokeReadAccess",
+      "providers.listRepositories",
+      "providers.cancelOperation",
+      "providers.matchLocalRemotes",
+      "providers.listBindings",
+      "providers.bindRemote",
+      "providers.unbindRemote"
+    ];
+
+    expect(methods.every(isKnownPluginRpcMethod)).toBe(true);
+    expect(isKnownPluginRpcMethod("providers.request")).toBe(false);
+    expect(isKnownPluginRpcMethod("providers.rawHttp")).toBe(false);
+  });
+
+  it("authorizes account discovery by exact account or built-in Provider family", async () => {
+    const params = {
+      accountId: providerAccountId,
+      query: {
+        search: "skill",
+        visibility: null,
+        namespace: null,
+        archived: "all" as const,
+        sort: "name" as const,
+        direction: "asc" as const,
+        pageSize: 30
+      },
+      cursor: null,
+      operationId: providerOperationId
+    };
+    vi.mocked(hostApi.authorizePluginCall).mockImplementation(async ({ resource }) => ({
+      allowed: resource === "providers"
+    }));
+    vi.mocked(hostApi.listProviderRepositories).mockResolvedValue({} as never);
+
+    await dispatchPluginRpc(pluginId, request("providers.listRepositories", params), hostApi);
+
+    expect(hostApi.authorizePluginCall).toHaveBeenNthCalledWith(1, {
+      pluginId,
+      capability: "providers:read",
+      resource: `provider-account/${providerAccountId}`
+    });
+    expect(hostApi.authorizePluginCall).toHaveBeenNthCalledWith(2, {
+      pluginId,
+      capability: "providers:read",
+      resource: "providers"
+    });
+    expect(hostApi.listProviderRepositories).toHaveBeenCalledWith(pluginId, params);
+  });
+
+  it("requires both Provider account read and repository read before matching", async () => {
+    const params = {
+      instanceId: providerInstanceId,
+      accountId: providerAccountId,
+      operationId: providerOperationId
+    };
+    vi.mocked(hostApi.authorizePluginCall).mockImplementation(async ({ resource }) => ({
+      allowed: resource === `provider-account/${providerAccountId}` || resource === "repositories"
+    }));
+    vi.mocked(hostApi.matchLocalProviderRemotes).mockResolvedValue({ items: [] });
+
+    await dispatchPluginRpc(pluginId, request("providers.matchLocalRemotes", params), hostApi);
+
+    expect(hostApi.authorizePluginCall).toHaveBeenCalledWith({
+      pluginId,
+      capability: "providers:read",
+      resource: `provider-account/${providerAccountId}`
+    });
+    expect(hostApi.authorizePluginCall).toHaveBeenCalledWith({
+      pluginId,
+      capability: "repositories:read",
+      resource: "repositories"
+    });
+    const authorizationOrders = vi.mocked(hostApi.authorizePluginCall).mock.invocationCallOrder;
+    const [handlerOrder] = vi.mocked(hostApi.matchLocalProviderRemotes).mock.invocationCallOrder;
+    expect(Math.max(...authorizationOrders)).toBeLessThan(handlerOrder!);
+  });
+
+  it("uses a declared permission request before opening trusted account access", async () => {
+    vi.mocked(hostApi.requestProviderReadAccess).mockResolvedValue({ items: [] });
+
+    await dispatchPluginRpc(pluginId, request("providers.requestReadAccess", {}), hostApi);
+
+    expect(hostApi.authorizePluginPermissionRequest).toHaveBeenCalledWith({
+      pluginId,
+      capability: "providers:read",
+      resource: "providers"
+    });
+    expect(hostApi.authorizePluginCall).not.toHaveBeenCalled();
+    expect(hostApi.requestProviderReadAccess).toHaveBeenCalledWith(pluginId);
+  });
+
+  it("does not open credential or access prompts when authorization is denied", async () => {
+    vi.mocked(hostApi.authorizePluginCall).mockResolvedValue({ allowed: false });
+    await expect(
+      dispatchPluginRpc(
+        pluginId,
+        request("providers.connectAccount", { instanceId: providerInstanceId }),
+        hostApi
+      )
+    ).rejects.toMatchObject({ code: "permission.denied" });
+    expect(hostApi.connectProviderAccount).not.toHaveBeenCalled();
+
+    vi.mocked(hostApi.authorizePluginPermissionRequest).mockResolvedValue({ allowed: false });
+    await expect(
+      dispatchPluginRpc(pluginId, request("providers.requestReadAccess", {}), hostApi)
+    ).rejects.toMatchObject({ code: "permission.denied" });
+    expect(hostApi.requestProviderReadAccess).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed Provider UUIDs before any authorization call", async () => {
+    await expect(
+      dispatchPluginRpc(
+        pluginId,
+        request("providers.cancelOperation", {
+          accountId: "not-a-uuid",
+          operationId: providerOperationId
+        }),
+        hostApi
+      )
+    ).rejects.toMatchObject({ code: "rpc.invalid-params" });
+    expect(hostApi.authorizePluginCall).not.toHaveBeenCalled();
+    expect(hostApi.cancelProviderOperation).not.toHaveBeenCalled();
+  });
+
+  it("requires Provider management and repository read grants before binding", async () => {
+    const params = {
+      repositoryId,
+      remoteName: "origin",
+      instanceId: providerInstanceId,
+      accountId: null,
+      providerRepositoryId: "4242"
+    };
+    vi.mocked(hostApi.bindProviderRemote).mockResolvedValue({} as never);
+
+    await dispatchPluginRpc(pluginId, request("providers.bindRemote", params), hostApi);
+
+    expect(hostApi.authorizePluginCall).toHaveBeenCalledWith({
+      pluginId,
+      capability: "providers:manage",
+      resource: "providers"
+    });
+    expect(hostApi.authorizePluginCall).toHaveBeenCalledWith({
+      pluginId,
+      capability: "repositories:read",
+      resource: "repositories"
+    });
+    expect(hostApi.bindProviderRemote).toHaveBeenCalledWith(params);
+  });
+
+  it("denies the next repository call after exact account access is revoked", async () => {
+    vi.mocked(hostApi.revokeProviderReadAccess).mockResolvedValue(undefined);
+    await dispatchPluginRpc(
+      pluginId,
+      request("providers.revokeReadAccess", { accountId: providerAccountId }),
+      hostApi
+    );
+    expect(hostApi.revokeProviderReadAccess).toHaveBeenCalledWith(pluginId, {
+      accountId: providerAccountId
+    });
+
+    vi.mocked(hostApi.authorizePluginCall).mockResolvedValue({ allowed: false });
+    await expect(
+      dispatchPluginRpc(
+        pluginId,
+        request("providers.listRepositories", {
+          accountId: providerAccountId,
+          query: {
+            search: "",
+            visibility: null,
+            namespace: null,
+            archived: "all",
+            sort: "name",
+            direction: "asc",
+            pageSize: 30
+          },
+          cursor: null,
+          operationId: providerOperationId
+        }),
+        hostApi
+      )
+    ).rejects.toMatchObject({ code: "permission.denied" });
+    expect(hostApi.listProviderRepositories).not.toHaveBeenCalled();
   });
 });
 

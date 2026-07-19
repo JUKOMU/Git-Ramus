@@ -99,6 +99,7 @@ function createHostApi(plugins: PluginDescriptor[] = []): HostApi {
       themeId === compactState.activeThemeId ? compactState : defaultState
     ),
     authorizePluginCall: vi.fn(async () => ({ allowed: true })),
+    authorizePluginPermissionRequest: vi.fn(async () => ({ allowed: true })),
     startEchoJob: vi.fn(async () => ({
       id: "a032bc9c-8759-45ac-856f-b76f9addb9d1",
       kind: "system.echo",
@@ -136,7 +137,28 @@ function createHostApi(plugins: PluginDescriptor[] = []): HostApi {
     setGlobalIdentity: vi.fn(),
     bindRepositoryIdentity: vi.fn(),
     unbindRepositoryIdentity: vi.fn(async () => undefined),
-    getEffectiveRepositoryIdentity: vi.fn()
+    getEffectiveRepositoryIdentity: vi.fn(),
+    listProviderInstances: vi.fn(),
+    createProviderInstance: vi.fn(),
+    updateProviderInstance: vi.fn(),
+    validateProviderInstance: vi.fn(),
+    deleteProviderInstance: vi.fn(),
+    listProviderAccounts: vi.fn(),
+    connectProviderAccount: vi.fn(),
+    rotateProviderAccount: vi.fn(),
+    validateProviderAccount: vi.fn(),
+    setDefaultProviderAccount: vi.fn(),
+    getProviderAccountDeletionImpact: vi.fn(),
+    deleteProviderAccount: vi.fn(),
+    listAuthorizedProviderAccounts: vi.fn(),
+    requestProviderReadAccess: vi.fn(),
+    revokeProviderReadAccess: vi.fn(),
+    listProviderRepositories: vi.fn(),
+    cancelProviderOperation: vi.fn(),
+    matchLocalProviderRemotes: vi.fn(),
+    listProviderBindings: vi.fn(),
+    bindProviderRemote: vi.fn(),
+    unbindProviderRemote: vi.fn()
   };
 }
 

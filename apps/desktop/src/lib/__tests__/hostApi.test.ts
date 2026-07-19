@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { tauriHostApi } from "../hostApi";
+import providerContracts from "../../../../../packages/contracts/src/__fixtures__/provider-contracts.json";
+import type { HostFileSelectionPort, ProviderPromptPort } from "../../providers/promptPorts";
+import {
+  nativeCertificateFileSelectionPort,
+  unavailableProviderPromptPort
+} from "../../providers/promptPorts";
+import { createTauriHostApi, tauriHostApi } from "../hostApi";
 
 const { invoke, open } = vi.hoisted(() => ({ invoke: vi.fn(), open: vi.fn() }));
 
@@ -10,6 +16,9 @@ const projectId = "87a31769-8aaa-47ca-bef3-47e66f0c62fc";
 const workspaceId = "e3d622f1-f1f7-4f7e-8f18-3db8a1e6ffbe";
 const repositoryId = "a032bc9c-8759-45ac-856f-b76f9addb9d1";
 const profileId = "d23957ac-5c0f-4857-9124-7f1599a41f33";
+const providerInstanceId = "6da75ccf-f7df-4bf2-92b7-2c158765726f";
+const providerAccountId = "7f3c0214-373c-4d43-b0c7-cdaed1cbcc50";
+const providerOperationId = "f84223af-c753-4209-be36-12d381375fcb";
 
 const project = {
   id: projectId,
@@ -197,6 +206,298 @@ describe("tauriHostApi Git client commands", () => {
   });
 });
 
+describe("trusted Provider Host API", () => {
+  let prompts: ProviderPromptPort;
+  let files: HostFileSelectionPort;
+
+  beforeEach(() => {
+    invoke.mockReset();
+    open.mockReset();
+    invoke.mockImplementation(async (command: string) => providerResponses[command]);
+    prompts = {
+      requestCredential: vi.fn(async () => "glpat-host-only"),
+      requestAccountAccess: vi.fn(async ({ accounts }) => [accounts[0]!.account.id])
+    };
+    files = { selectCertificate: vi.fn(async () => "C:/ca/root.pem") };
+  });
+
+  it("adds a PAT only after the plugin request crosses into the trusted host", async () => {
+    const api = createTauriHostApi({ prompts, files });
+    const request = { instanceId: providerInstanceId };
+
+    await expect(api.connectProviderAccount("git-ramus.provider-center", request)).resolves.toEqual(
+      providerContracts.authorizedAccount.account
+    );
+
+    expect(prompts.requestCredential).toHaveBeenCalledWith({
+      providerLabel: "Provider",
+      accountLabel: null,
+      purpose: "connect"
+    });
+    expect(invoke).toHaveBeenCalledWith("provider_account_connect", {
+      request: { instanceId: providerInstanceId, pat: "glpat-host-only" }
+    });
+    expect(JSON.stringify(request)).not.toContain("glpat-host-only");
+  });
+
+  it("does not invoke Rust when a credential prompt is cancelled", async () => {
+    vi.mocked(prompts.requestCredential).mockResolvedValue(null);
+    const api = createTauriHostApi({ prompts, files });
+
+    await expect(
+      api.connectProviderAccount("git-ramus.provider-center", {
+        instanceId: providerInstanceId
+      })
+    ).resolves.toBeNull();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("keeps certificate paths in the trusted host-only command payload", async () => {
+    const api = createTauriHostApi({ prompts, files });
+    const request = {
+      providerKind: "gitlab" as const,
+      displayName: "GitLab Example",
+      baseUrl: "https://gitlab.example",
+      customCaAction: "selectFile" as const
+    };
+
+    await expect(api.createProviderInstance(request)).resolves.toEqual(providerContracts.instance);
+    expect(files.selectCertificate).toHaveBeenCalledOnce();
+    expect(invoke).toHaveBeenCalledWith("provider_instance_create", {
+      request: {
+        providerKind: "gitlab",
+        displayName: "GitLab Example",
+        baseUrl: "https://gitlab.example",
+        customCaPath: "C:/ca/root.pem"
+      }
+    });
+    expect(JSON.stringify(request)).not.toContain("C:/ca/root.pem");
+    expect(JSON.stringify(providerContracts.instance)).not.toContain("customCaPath");
+  });
+
+  it("uses exact scoped Provider commands and injects plugin identity in trusted code", async () => {
+    const api = createTauriHostApi({ prompts, files });
+    const query = {
+      search: "skill",
+      visibility: null,
+      namespace: null,
+      archived: "all" as const,
+      sort: "name" as const,
+      direction: "asc" as const,
+      pageSize: 30
+    };
+
+    await api.listProviderRepositories("example.reader", {
+      accountId: providerAccountId,
+      query,
+      cursor: null,
+      operationId: providerOperationId
+    });
+    await api.cancelProviderOperation("example.reader", {
+      accountId: providerAccountId,
+      operationId: providerOperationId
+    });
+    await api.matchLocalProviderRemotes("example.reader", {
+      instanceId: providerInstanceId,
+      accountId: providerAccountId,
+      operationId: providerOperationId
+    });
+
+    expect(invoke.mock.calls).toEqual([
+      [
+        "provider_repository_list",
+        {
+          request: {
+            pluginId: "example.reader",
+            accountId: providerAccountId,
+            query,
+            cursor: null,
+            operationId: providerOperationId
+          }
+        }
+      ],
+      [
+        "provider_operation_cancel",
+        {
+          request: {
+            pluginId: "example.reader",
+            accountId: providerAccountId,
+            operationId: providerOperationId
+          }
+        }
+      ],
+      [
+        "provider_local_remote_match",
+        {
+          request: {
+            pluginId: "example.reader",
+            instanceId: providerInstanceId,
+            accountId: providerAccountId,
+            operationId: providerOperationId
+          }
+        }
+      ]
+    ]);
+  });
+
+  it("prompts with safe account summaries and grants only selected UUIDs", async () => {
+    const api = createTauriHostApi({ prompts, files });
+
+    await expect(api.requestProviderReadAccess("example.reader")).resolves.toEqual({
+      items: [providerContracts.authorizedAccount]
+    });
+
+    expect(prompts.requestAccountAccess).toHaveBeenCalledWith({
+      pluginId: "example.reader",
+      accounts: [providerContracts.authorizedAccount]
+    });
+    expect(invoke).toHaveBeenLastCalledWith("provider_permission_grant_accounts", {
+      request: { pluginId: "example.reader", accountIds: [providerAccountId] }
+    });
+    expect(JSON.stringify(vi.mocked(prompts.requestAccountAccess).mock.calls)).not.toContain(
+      "secretRef"
+    );
+  });
+
+  it("never grants when account access is cancelled or returns an unknown account", async () => {
+    const api = createTauriHostApi({ prompts, files });
+    vi.mocked(prompts.requestAccountAccess).mockResolvedValueOnce(null);
+
+    await expect(api.requestProviderReadAccess("example.reader")).resolves.toBeNull();
+    expect(invoke.mock.calls.map(([command]) => command)).not.toContain(
+      "provider_permission_grant_accounts"
+    );
+
+    invoke.mockClear();
+    vi.mocked(prompts.requestAccountAccess).mockResolvedValueOnce([
+      "fd52be07-485e-44ae-b57d-0fa69d83772f"
+    ]);
+    await expect(api.requestProviderReadAccess("example.reader")).rejects.toThrow(
+      "invalid account selection"
+    );
+    expect(invoke.mock.calls.map(([command]) => command)).not.toContain(
+      "provider_permission_grant_accounts"
+    );
+  });
+
+  it("maps every remaining Provider operation to its explicit typed Rust command", async () => {
+    const api = createTauriHostApi({ prompts, files });
+    const instanceRequest = { instanceId: providerInstanceId };
+    const accountRequest = { accountId: providerAccountId };
+    const bindingRequest = { accountId: providerAccountId };
+    const bindingMutation = {
+      repositoryId,
+      remoteName: "origin",
+      instanceId: providerInstanceId,
+      accountId: null,
+      providerRepositoryId: "4242"
+    };
+
+    await api.authorizePluginPermissionRequest({
+      pluginId: "example.reader",
+      capability: "providers:read",
+      resource: "providers"
+    });
+    await api.listProviderInstances();
+    await api.updateProviderInstance({
+      ...instanceRequest,
+      displayName: "GitLab Example",
+      baseUrl: "https://gitlab.example",
+      customCaAction: "keep"
+    });
+    await api.validateProviderInstance(instanceRequest);
+    await api.deleteProviderInstance(instanceRequest);
+    await api.listProviderAccounts(instanceRequest);
+    await api.rotateProviderAccount("git-ramus.provider-center", accountRequest);
+    await api.validateProviderAccount(accountRequest);
+    await api.setDefaultProviderAccount({ ...instanceRequest, ...accountRequest });
+    await api.getProviderAccountDeletionImpact(accountRequest);
+    await api.deleteProviderAccount({
+      ...accountRequest,
+      resolution: { kind: "unbind" },
+      newDefaultAccountId: null
+    });
+    await api.listAuthorizedProviderAccounts("example.reader");
+    await api.revokeProviderReadAccess("example.reader", accountRequest);
+    await api.listProviderBindings(bindingRequest);
+    await api.bindProviderRemote(bindingMutation);
+    await api.unbindProviderRemote({ repositoryId, remoteName: "origin" });
+
+    expect(invoke.mock.calls.map(([command]) => command)).toEqual([
+      "provider_permission_is_declared",
+      "provider_instance_list",
+      "provider_instance_update",
+      "provider_instance_validate",
+      "provider_instance_delete",
+      "provider_account_list",
+      "provider_account_rotate",
+      "provider_account_validate",
+      "provider_account_set_default",
+      "provider_account_deletion_impact",
+      "provider_account_delete",
+      "provider_permission_list_authorized_accounts",
+      "provider_permission_revoke_account",
+      "provider_binding_list",
+      "provider_binding_set",
+      "provider_binding_delete"
+    ]);
+  });
+});
+
+describe("trusted Provider native ports", () => {
+  beforeEach(() => {
+    open.mockReset();
+  });
+
+  it("selects only one certificate through the native filtered dialog", async () => {
+    open.mockResolvedValue("C:/ca/root.pem");
+
+    await expect(nativeCertificateFileSelectionPort.selectCertificate()).resolves.toBe(
+      "C:/ca/root.pem"
+    );
+    expect(open).toHaveBeenCalledWith({
+      multiple: false,
+      directory: false,
+      title: "Choose a trusted CA certificate",
+      filters: [
+        {
+          name: "Certificates",
+          extensions: ["pem", "crt", "cer"]
+        }
+      ]
+    });
+  });
+
+  it("rejects invalid native certificate selections and preserves cancellation", async () => {
+    open.mockResolvedValueOnce(null);
+    await expect(nativeCertificateFileSelectionPort.selectCertificate()).resolves.toBeNull();
+    open.mockResolvedValueOnce([]);
+    await expect(nativeCertificateFileSelectionPort.selectCertificate()).rejects.toThrow(
+      "invalid path"
+    );
+    open.mockResolvedValueOnce("");
+    await expect(nativeCertificateFileSelectionPort.selectCertificate()).rejects.toThrow(
+      "invalid path"
+    );
+  });
+
+  it("fails with a stable code until a trusted prompt broker is mounted", async () => {
+    await expect(
+      unavailableProviderPromptPort.requestCredential({
+        providerLabel: "Provider",
+        accountLabel: null,
+        purpose: "connect"
+      })
+    ).rejects.toMatchObject({ code: "provider.prompt-unavailable" });
+    await expect(
+      unavailableProviderPromptPort.requestAccountAccess({
+        pluginId: "example.reader",
+        accounts: []
+      })
+    ).rejects.toMatchObject({ code: "provider.prompt-unavailable" });
+  });
+});
+
 const responses: Record<string, unknown> = {
   list_themes: {
     themes: [
@@ -300,4 +601,39 @@ const responses: Record<string, unknown> = {
     signTags: false,
     drift: null
   }
+};
+
+const providerResponses: Record<string, unknown> = {
+  provider_instance_list: { items: [providerContracts.instance] },
+  provider_instance_create: providerContracts.instance,
+  provider_instance_update: providerContracts.instance,
+  provider_instance_validate: providerContracts.instance,
+  provider_instance_delete: null,
+  provider_account_list: { items: [providerContracts.authorizedAccount.account] },
+  provider_account_connect: providerContracts.authorizedAccount.account,
+  provider_account_rotate: providerContracts.authorizedAccount.account,
+  provider_account_validate: providerContracts.authorizedAccount.account,
+  provider_account_set_default: providerContracts.authorizedAccount.account,
+  provider_account_deletion_impact: {
+    accountId: providerAccountId,
+    instanceId: providerInstanceId,
+    isDefault: true,
+    explicitBindingCount: 0,
+    inheritedBindingCount: 0,
+    siblingAccountIds: [],
+    requiresNewDefault: false
+  },
+  provider_account_delete: null,
+  provider_repository_list: providerContracts.repositoryPage,
+  provider_operation_cancel: null,
+  provider_local_remote_match: { items: [] },
+  provider_permission_is_declared: { allowed: true },
+  provider_permission_list_authorized_accounts: {
+    items: [providerContracts.authorizedAccount]
+  },
+  provider_permission_grant_accounts: { items: [providerContracts.authorizedAccount] },
+  provider_permission_revoke_account: null,
+  provider_binding_list: { items: [providerContracts.binding] },
+  provider_binding_set: providerContracts.binding,
+  provider_binding_delete: null
 };

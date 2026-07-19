@@ -130,6 +130,7 @@ function createHostApi(): HostApi {
       theme: { themeId: "git-ramus.theme.default", density: "comfortable" as const }
     })),
     authorizePluginCall: vi.fn(async () => ({ allowed: true })),
+    authorizePluginPermissionRequest: vi.fn(async () => ({ allowed: true })),
     startEchoJob: vi.fn(),
     cancelJob: vi.fn(async () => undefined),
     listProjects: vi.fn(),
@@ -157,6 +158,27 @@ function createHostApi(): HostApi {
     setGlobalIdentity: vi.fn(),
     bindRepositoryIdentity: vi.fn(),
     unbindRepositoryIdentity: vi.fn(),
-    getEffectiveRepositoryIdentity: vi.fn()
+    getEffectiveRepositoryIdentity: vi.fn(),
+    listProviderInstances: vi.fn(),
+    createProviderInstance: vi.fn(),
+    updateProviderInstance: vi.fn(),
+    validateProviderInstance: vi.fn(),
+    deleteProviderInstance: vi.fn(),
+    listProviderAccounts: vi.fn(),
+    connectProviderAccount: vi.fn(),
+    rotateProviderAccount: vi.fn(),
+    validateProviderAccount: vi.fn(),
+    setDefaultProviderAccount: vi.fn(),
+    getProviderAccountDeletionImpact: vi.fn(),
+    deleteProviderAccount: vi.fn(),
+    listAuthorizedProviderAccounts: vi.fn(),
+    requestProviderReadAccess: vi.fn(),
+    revokeProviderReadAccess: vi.fn(),
+    listProviderRepositories: vi.fn(),
+    cancelProviderOperation: vi.fn(),
+    matchLocalProviderRemotes: vi.fn(),
+    listProviderBindings: vi.fn(),
+    bindProviderRemote: vi.fn(),
+    unbindProviderRemote: vi.fn()
   };
 }
