@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { providerContributionSchema } from "./provider";
 
 const unsafeManifestText = /[<>;{}]|url\s*\(|@import|javascript\s*:|expression\s*\(/iu;
 const safeManifestText = (maximum: number) =>
@@ -81,18 +82,40 @@ export const pluginManifestSchema = z
     sdkVersion: z.string().min(1),
     entrypoints: z
       .object({
-        ui: safeRelativePath
+        ui: safeRelativePath.optional()
       })
       .strict(),
     contributions: z
       .object({
         navigation: z.array(navigationContributionSchema),
-        theme: themeContributionSchema.optional()
+        theme: themeContributionSchema.optional(),
+        providers: z.array(providerContributionSchema).default([])
       })
       .strict(),
     permissions: z.array(permissionRequestSchema)
   })
-  .strict();
+  .strict()
+  .superRefine((manifest, context) => {
+    const providers = manifest.contributions.providers;
+    if (providers.some(({ adapterId }) => adapterId !== manifest.id)) {
+      context.addIssue({ code: "custom", message: "Provider adapterId must match plugin id" });
+    }
+    if (providers.length > 0 && manifest.kind !== "builtin") {
+      context.addIssue({ code: "custom", message: "Provider adapters must be built in" });
+    }
+    if (manifest.entrypoints.ui === undefined && providers.length === 0) {
+      context.addIssue({ code: "custom", message: "plugin has no entrypoint or Provider" });
+    }
+    if (manifest.entrypoints.ui === undefined && manifest.contributions.navigation.length > 0) {
+      context.addIssue({ code: "custom", message: "navigation requires a UI entrypoint" });
+    }
+    if (
+      manifest.kind !== "builtin" &&
+      manifest.permissions.some(({ capability }) => capability === "providers:manage")
+    ) {
+      context.addIssue({ code: "custom", message: "Provider management is built-in only" });
+    }
+  });
 
 export const pluginDescriptorSchema = z
   .object({
@@ -102,6 +125,7 @@ export const pluginDescriptorSchema = z
       .regex(
         /^(?:git-ramus-plugin:\/\/localhost|https?:\/\/git-ramus-plugin\.localhost)\/[a-z0-9.-]+\/ui\.html$/u
       )
+      .nullable()
   })
   .strict();
 

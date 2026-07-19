@@ -1,0 +1,99 @@
+{
+  "instance": {
+    "id": "6da75ccf-f7df-4bf2-92b7-2c158765726f",
+    "providerKind": "gitlab",
+    "displayName": "GitLab Example",
+    "baseUrl": "https://gitlab.example",
+    "customCaConfigured": true,
+    "customCaLabel": "root.pem",
+    "providerEnabled": true,
+    "status": "connected",
+    "lastValidatedAt": "2026-07-19T00:00:00Z",
+    "serverVersion": "18.2.0",
+    "createdAt": "2026-07-19T00:00:00Z",
+    "updatedAt": "2026-07-19T00:00:00Z"
+  },
+  "authorizedAccount": {
+    "instance": {
+      "id": "6da75ccf-f7df-4bf2-92b7-2c158765726f",
+      "providerKind": "gitlab",
+      "displayName": "GitLab Example",
+      "baseUrl": "https://gitlab.example",
+      "customCaConfigured": true,
+      "customCaLabel": "root.pem",
+      "providerEnabled": true,
+      "status": "connected",
+      "lastValidatedAt": "2026-07-19T00:00:00Z",
+      "serverVersion": "18.2.0",
+      "createdAt": "2026-07-19T00:00:00Z",
+      "updatedAt": "2026-07-19T00:00:00Z"
+    },
+    "account": {
+      "id": "7f3c0214-373c-4d43-b0c7-cdaed1cbcc50",
+      "instanceId": "6da75ccf-f7df-4bf2-92b7-2c158765726f",
+      "providerUserId": "9001",
+      "username": "creator",
+      "displayName": "Skill Creator",
+      "avatarUrl": "https://gitlab.example/uploads/avatar.png",
+      "isDefault": true,
+      "status": "connected",
+      "lastValidatedAt": "2026-07-19T00:00:00Z"
+    }
+  },
+  "repositoryPage": {
+    "items": [
+      {
+        "providerKind": "gitlab",
+        "instanceId": "6da75ccf-f7df-4bf2-92b7-2c158765726f",
+        "repositoryId": "4242",
+        "namespace": "skills",
+        "name": "private-skill",
+        "fullName": "skills/private-skill",
+        "webUrl": "https://gitlab.example/skills/private-skill",
+        "httpsUrl": "https://gitlab.example/skills/private-skill.git",
+        "sshUrl": "git@gitlab.example:skills/private-skill.git",
+        "defaultBranch": "main",
+        "visibility": "private",
+        "archived": false,
+        "fork": false,
+        "permission": "write",
+        "updatedAt": "2026-07-19T00:00:00Z"
+      }
+    ],
+    "nextCursor": null,
+    "hasMore": false,
+    "rateLimit": null
+  },
+  "binding": {
+    "repositoryId": "cf7f409b-f5b2-443a-8cff-099cc0bc8032",
+    "remoteName": "origin",
+    "providerInstanceId": "6da75ccf-f7df-4bf2-92b7-2c158765726f",
+    "providerAccountId": null,
+    "providerRepositoryId": "4242",
+    "fullName": "skills/private-skill",
+    "webUrl": "https://gitlab.example/skills/private-skill",
+    "matchedUrl": "gitlab.example/skills/private-skill",
+    "bindingSource": "auto",
+    "boundAt": "2026-07-19T00:00:00Z",
+    "updatedAt": "2026-07-19T00:00:00Z"
+  },
+  "error": {
+    "code": "provider.authentication-required",
+    "category": "userActionRequired",
+    "message": "Provider authentication is required",
+    "operationId": "f84223af-c753-4209-be36-12d381375fcb",
+    "pluginId": "git-ramus.provider-center",
+    "resourceId": "provider-account/7f3c0214-373c-4d43-b0c7-cdaed1cbcc50",
+    "failedStep": "provider.authenticate",
+    "retryable": false,
+    "retryAfterMs": null,
+    "recoveryActions": [
+      {
+        "id": "reauthorize-provider",
+        "label": "Reconnect account",
+        "kind": "reauthorize"
+      }
+    ],
+    "details": null
+  }
+}

@@ -3,6 +3,7 @@ import manifest from "../../../../plugins/builtin-welcome/plugin.json";
 import gitClientManifest from "../../../../plugins/git-client/plugin.json";
 import compactManifest from "../../../../plugins/builtin-compact-theme/plugin.json";
 import compactTheme from "../../../../plugins/builtin-compact-theme/theme.json";
+import providerContracts from "../__fixtures__/provider-contracts.json";
 import type { PersistedRepositorySnapshot, RepositorySnapshot } from "../index";
 import {
   errorEnvelopeSchema,
@@ -42,7 +43,21 @@ import {
   themeChangedSchema,
   themeActivateRequestSchema,
   themeCatalogSchema,
-  themeStateSchema
+  themeStateSchema,
+  providerAccountConnectRequestSchema,
+  providerAccountDeleteRequestSchema,
+  providerAccountSummarySchema,
+  providerAuthorizedAccountSchema,
+  providerBindingListRequestSchema,
+  providerBindingSchema,
+  providerBindingSetRequestSchema,
+  providerContributionSchema,
+  providerInstanceCreateRequestSchema,
+  providerInstanceSchema,
+  providerOperationCancelRequestSchema,
+  providerRepositoryListRequestSchema,
+  providerRepositoryPageSchema,
+  providerRepositoryQuerySchema
 } from "../index";
 
 const validMotionDurations = ["0ms", "1ms", "1.5s", "2000ms"] as const;
@@ -51,6 +66,73 @@ const projectId = "87a31769-8aaa-47ca-bef3-47e66f0c62fc";
 const workspaceId = "e3d622f1-f1f7-4f7e-8f18-3db8a1e6ffbe";
 const repositoryId = "a032bc9c-8759-45ac-856f-b76f9addb9d1";
 const profileId = "d23957ac-5c0f-4857-9124-7f1599a41f33";
+const instanceId = "6da75ccf-f7df-4bf2-92b7-2c158765726f";
+const accountId = "7f3c0214-373c-4d43-b0c7-cdaed1cbcc50";
+const providerOperationId = "f84223af-c753-4209-be36-12d381375fcb";
+
+const backendManifest = {
+  schemaVersion: 1,
+  id: "git-ramus.provider.gitlab",
+  name: "GitLab Provider",
+  version: "0.1.0",
+  publisher: "git-ramus",
+  description: "GitLab API adapter.",
+  kind: "builtin",
+  sdkVersion: "^0.1.0",
+  entrypoints: {},
+  contributions: {
+    navigation: [],
+    providers: [
+      {
+        providerId: "gitlab",
+        adapterId: "git-ramus.provider.gitlab",
+        displayName: "GitLab",
+        icon: "gitlab",
+        instanceModes: ["cloud", "selfHosted"],
+        capabilities: ["repositoryDiscovery", "customCa"]
+      }
+    ]
+  },
+  permissions: []
+} as const;
+
+const externalUiManifest = {
+  schemaVersion: 1,
+  id: "example.provider-reader",
+  name: "Provider Reader",
+  version: "0.1.0",
+  publisher: "example",
+  description: "Reads authorized Provider accounts.",
+  kind: "external",
+  sdkVersion: "^0.1.0",
+  entrypoints: { ui: "ui.html" },
+  contributions: { navigation: [] },
+  permissions: [{ capability: "providers:read", resources: ["providers"] }]
+} as const;
+
+const accountSummary = {
+  id: accountId,
+  instanceId,
+  providerUserId: "9001",
+  username: "creator",
+  displayName: "Skill Creator",
+  avatarUrl: "https://gitlab.example/uploads/avatar.png",
+  isDefault: true,
+  status: "connected" as const,
+  lastValidatedAt: "2026-07-19T00:00:00Z"
+};
+
+const assertNoProviderSecrets = (value: unknown): void => {
+  if (Array.isArray(value)) {
+    value.forEach(assertNoProviderSecrets);
+    return;
+  }
+  if (typeof value !== "object" || value === null) return;
+  for (const [key, child] of Object.entries(value)) {
+    expect(key).not.toMatch(/pat|secretRef|authorization|customCaPath/iu);
+    assertNoProviderSecrets(child);
+  }
+};
 
 const project = {
   id: projectId,
@@ -130,6 +212,166 @@ describe("shared contracts", () => {
       { capability: "identities:read", resources: ["identities"] },
       { capability: "identities:write", resources: ["identities"] }
     ]);
+  });
+
+  it("accepts a backend-only built-in Provider contribution", () => {
+    const parsed = pluginManifestSchema.parse(backendManifest);
+    expect(parsed.entrypoints.ui).toBeUndefined();
+    expect(parsed.contributions.providers).toHaveLength(1);
+  });
+
+  it("rejects external backend adapters and navigation without a UI", () => {
+    expect(() => pluginManifestSchema.parse({ ...backendManifest, kind: "external" })).toThrow();
+    expect(() =>
+      pluginManifestSchema.parse({
+        ...backendManifest,
+        contributions: {
+          ...backendManifest.contributions,
+          navigation: [{ id: "bad", label: "Bad", route: "/bad", icon: "x" }]
+        }
+      })
+    ).toThrow();
+    expect(() =>
+      pluginManifestSchema.parse({
+        ...externalUiManifest,
+        permissions: [{ capability: "providers:manage", resources: ["providers"] }]
+      })
+    ).toThrow();
+  });
+
+  it("parses Provider pages without accepting a secret field", () => {
+    const page = providerRepositoryPageSchema.parse({
+      items: [
+        {
+          providerKind: "gitlab",
+          instanceId,
+          repositoryId: "42",
+          namespace: "group",
+          name: "skill-set",
+          fullName: "group/skill-set",
+          webUrl: "https://gitlab.example/group/skill-set",
+          httpsUrl: "https://gitlab.example/group/skill-set.git",
+          sshUrl: "git@gitlab.example:group/skill-set.git",
+          defaultBranch: "main",
+          visibility: "private",
+          archived: false,
+          fork: false,
+          permission: "write",
+          updatedAt: "2026-07-19T00:00:00Z"
+        }
+      ],
+      nextCursor: null,
+      hasMore: false,
+      rateLimit: null
+    });
+    expect(page.items[0]?.fullName).toBe("group/skill-set");
+    expect(() =>
+      providerAccountSummarySchema.parse({ ...accountSummary, secretRef: "leak" })
+    ).toThrow();
+  });
+
+  it("round-trips the canonical secret-free Provider fixtures", () => {
+    expect(providerInstanceSchema.parse(providerContracts.instance)).toEqual(
+      providerContracts.instance
+    );
+    expect(providerAuthorizedAccountSchema.parse(providerContracts.authorizedAccount)).toEqual(
+      providerContracts.authorizedAccount
+    );
+    expect(providerRepositoryPageSchema.parse(providerContracts.repositoryPage)).toEqual(
+      providerContracts.repositoryPage
+    );
+    expect(providerBindingSchema.parse(providerContracts.binding)).toEqual(
+      providerContracts.binding
+    );
+    expect(errorEnvelopeSchema.parse(providerContracts.error)).toEqual(providerContracts.error);
+    assertNoProviderSecrets(providerContracts);
+  });
+
+  it("enforces the Provider contribution capability matrix and unique lists", () => {
+    expect(
+      providerContributionSchema.parse({
+        ...backendManifest.contributions.providers[0]
+      }).providerId
+    ).toBe("gitlab");
+    expect(() =>
+      providerContributionSchema.parse({
+        ...backendManifest.contributions.providers[0],
+        instanceModes: ["cloud", "cloud"]
+      })
+    ).toThrow();
+    expect(() =>
+      providerContributionSchema.parse({
+        ...backendManifest.contributions.providers[0],
+        providerId: "github",
+        icon: "github",
+        adapterId: "git-ramus.provider.github",
+        instanceModes: ["cloud", "selfHosted"],
+        capabilities: ["repositoryDiscovery", "customCa"]
+      })
+    ).toThrow();
+  });
+
+  it("keeps Provider plugin requests ID-only and strictly bounded", () => {
+    expect(
+      providerInstanceCreateRequestSchema.parse({
+        providerKind: "gitlab",
+        displayName: "Self managed",
+        baseUrl: "https://gitlab.example/root",
+        customCaAction: "selectFile"
+      }).baseUrl
+    ).toBe("https://gitlab.example/root");
+    expect(() =>
+      providerInstanceCreateRequestSchema.parse({
+        providerKind: "gitlab",
+        displayName: "Unsafe",
+        baseUrl: "http://gitlab.example",
+        customCaAction: "none"
+      })
+    ).toThrow();
+    expect(() =>
+      providerAccountConnectRequestSchema.parse({ instanceId, pat: "must-not-cross" })
+    ).toThrow();
+
+    const query = providerRepositoryQuerySchema.parse({
+      search: "  skill  ",
+      visibility: "private",
+      namespace: "  group  ",
+      archived: "active",
+      sort: "updated",
+      direction: "desc",
+      pageSize: 30
+    });
+    expect(query.search).toBe("skill");
+    expect(query.namespace).toBe("group");
+    expect(
+      providerRepositoryListRequestSchema.parse({
+        accountId,
+        query,
+        cursor: null,
+        operationId: providerOperationId
+      }).operationId
+    ).toBe(providerOperationId);
+    expect(
+      providerOperationCancelRequestSchema.parse({ accountId, operationId: providerOperationId })
+        .accountId
+    ).toBe(accountId);
+    expect(providerBindingListRequestSchema.parse({ accountId })).toEqual({ accountId });
+    expect(
+      providerAccountDeleteRequestSchema.parse({
+        accountId,
+        resolution: { kind: "unbind" }
+      }).newDefaultAccountId
+    ).toBeNull();
+    expect(() =>
+      providerBindingSetRequestSchema.parse({
+        repositoryId,
+        remoteName: "origin",
+        instanceId,
+        accountId: null,
+        providerRepositoryId: "42",
+        rootPath: "C:/must-not-cross"
+      })
+    ).toThrow();
   });
 
   it.each(["../secret.html", "..\\secret.html", "C:\\secret.html", "C:secret.html"])(
