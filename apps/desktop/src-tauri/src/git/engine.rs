@@ -42,6 +42,14 @@ pub struct SystemGitRunner {
     max_stdout_bytes: usize,
     max_stderr_bytes: usize,
     poll_interval: Duration,
+    sealed_config: Option<SealedGitConfig>,
+}
+
+#[derive(Debug, Clone)]
+struct SealedGitConfig {
+    home: PathBuf,
+    xdg_config_home: PathBuf,
+    global_config: PathBuf,
 }
 
 const IO_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
@@ -320,7 +328,22 @@ impl SystemGitRunner {
             max_stdout_bytes: DEFAULT_MAX_STDOUT_BYTES,
             max_stderr_bytes: DEFAULT_MAX_STDERR_BYTES,
             poll_interval: Duration::from_millis(10),
+            sealed_config: None,
         }
+    }
+
+    pub fn with_sealed_config(
+        mut self,
+        home: PathBuf,
+        xdg_config_home: PathBuf,
+        global_config: PathBuf,
+    ) -> Self {
+        self.sealed_config = Some(SealedGitConfig {
+            home,
+            xdg_config_home,
+            global_config,
+        });
+        self
     }
 
     pub fn with_output_limits(max_stdout_bytes: usize, max_stderr_bytes: usize) -> Self {
@@ -355,6 +378,17 @@ impl SystemGitRunner {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         clean_environment(&mut command);
+        if let Some(config) = &self.sealed_config {
+            command
+                .env("HOME", &config.home)
+                .env("USERPROFILE", &config.home)
+                .env("XDG_CONFIG_HOME", &config.xdg_config_home)
+                .env("GIT_CONFIG_GLOBAL", &config.global_config)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_ATTR_NOSYSTEM", "1")
+                .env_remove("HOMEDRIVE")
+                .env_remove("HOMEPATH");
+        }
         command
     }
 }

@@ -383,6 +383,32 @@ describe("PluginFrame", () => {
         "*"
       )
     );
+    const frame = screen.getByTitle("Welcome plugin");
+    expect(frame).toHaveAttribute("data-plugin-last-rpc-status", "failed");
+    expect(frame).not.toHaveAttribute("data-plugin-rpc-methods");
+  });
+
+  it("does not report an authorization-rejected method as completed", async () => {
+    const deniedHostApi: HostApi = {
+      ...hostApi,
+      authorizePluginCall: vi.fn(async () => ({ allowed: false }))
+    };
+    const postMessage = await dispatchFrameRequest(deniedHostApi, {
+      method: "app.getInfo",
+      params: {}
+    });
+    await waitFor(() =>
+      expect(postMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          ok: false,
+          error: expect.objectContaining({ code: "permission.denied" })
+        }),
+        "*"
+      )
+    );
+    const frame = screen.getByTitle("Welcome plugin");
+    expect(frame).toHaveAttribute("data-plugin-last-rpc-status", "failed");
+    expect(frame).not.toHaveAttribute("data-plugin-rpc-methods");
   });
 
   it("redacts generic JavaScript errors behind a stable plugin envelope", async () => {

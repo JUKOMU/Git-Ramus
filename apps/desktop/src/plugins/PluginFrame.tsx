@@ -53,15 +53,15 @@ export function PluginFrame({ descriptor, hostApi, route = "/", theme = null }: 
         const observableMethod = isKnownPluginRpcMethod(request.method);
         if (observableMethod) {
           setLastRpc({ method: request.method, status: "pending" });
-          setRpcMethods((current) =>
-            current.includes(request.method) ? current : [...current, request.method].slice(-16)
-          );
         }
         const isHandshakeRpc = readyRef.current && request.method === "app.getInfo";
         void dispatchPluginRpc(descriptor.manifest.id, request, hostApi)
           .then((result) => {
             if (observableMethod) {
               setLastRpc({ method: request.method, status: "complete" });
+              setRpcMethods((current) =>
+                current.includes(request.method) ? current : [...current, request.method].slice(-16)
+              );
             }
             if (isHandshakeRpc) {
               setBridgeStatus("rpc-complete");

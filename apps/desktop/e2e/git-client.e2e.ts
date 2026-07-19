@@ -1,5 +1,10 @@
 import { $, browser, expect } from "@wdio/globals";
-import { cleanupFixture, invokeHost, seedFixture, type GitClientFixture } from "./fixture-project";
+import {
+  cleanupGitClientJourney,
+  invokeHost,
+  seedFixture,
+  type GitClientFixture
+} from "./fixture-project";
 
 describe("Git Client vertical slice", () => {
   let fixture: GitClientFixture | null = null;
@@ -7,13 +12,7 @@ describe("Git Client vertical slice", () => {
   let identityId: string | null = null;
 
   after(async () => {
-    if (workspaceId !== null) {
-      await invokeHost("git_workspace_delete", { request: { workspaceId } });
-    }
-    if (identityId !== null) {
-      await invokeHost("git_identity_delete", { request: { profileId: identityId } });
-    }
-    if (fixture !== null) await cleanupFixture(fixture);
+    await cleanupGitClientJourney({ workspaceId, identityId, fixture });
   });
 
   it("scans, groups, trusts, stages, commits, and updates one opaque plugin frame theme", async () => {

@@ -32,6 +32,12 @@ export interface GitClientFixture {
   };
 }
 
+export interface GitClientJourneyResources {
+  workspaceId: string | null;
+  identityId: string | null;
+  fixture: GitClientFixture | null;
+}
+
 interface InvokeResult {
   ok: boolean;
   value?: unknown;
@@ -39,68 +45,92 @@ interface InvokeResult {
 }
 
 export async function seedFixture(): Promise<GitClientFixture> {
-  await cleanupStaleDatabaseFixtures();
   return parseFixture(await invokeHost("e2e_seed_fixture", {}));
 }
 
 export async function cleanupFixture(fixture: GitClientFixture): Promise<void> {
+  const errors: unknown[] = [];
   for (const project of [...fixture.projects].reverse()) {
-    const result = await invokeHostResult("git_project_delete", {
-      request: { projectId: project.projectId }
-    });
-    if (!result.ok && recordCode(result.error) !== "resource.not-found") throw result.error;
+    try {
+      const result = await invokeHostResult("git_project_delete", {
+        request: { projectId: project.projectId }
+      });
+      if (!result.ok && recordCode(result.error) !== "resource.not-found") {
+        errors.push(result.error);
+      }
+    } catch (error: unknown) {
+      errors.push(error);
+    }
   }
-  const tempRoot = resolve(tmpdir());
-  const target = resolve(fixture.rootPath);
-  const child = relative(tempRoot, target);
-  const targetInfo = await lstat(target);
-  if (
-    dirname(target).toLocaleLowerCase() !== tempRoot.toLocaleLowerCase() ||
-    child.length === 0 ||
-    child.startsWith("..") ||
-    isAbsolute(child) ||
-    !basename(target).startsWith(E2E_TEMP_PREFIX) ||
-    !targetInfo.isDirectory() ||
-    targetInfo.isSymbolicLink()
-  ) {
-    throw new Error("Refusing to remove an unsafe E2E fixture path");
+  try {
+    const tempRoot = resolve(tmpdir());
+    const target = resolve(fixture.rootPath);
+    const child = relative(tempRoot, target);
+    const targetInfo = await lstat(target);
+    if (
+      dirname(target).toLocaleLowerCase() !== tempRoot.toLocaleLowerCase() ||
+      child.length === 0 ||
+      child.startsWith("..") ||
+      isAbsolute(child) ||
+      !basename(target).startsWith(E2E_TEMP_PREFIX) ||
+      !targetInfo.isDirectory() ||
+      targetInfo.isSymbolicLink()
+    ) {
+      throw new Error("Refusing to remove an unsafe E2E fixture path");
+    }
+    await rm(target, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  } catch (error: unknown) {
+    errors.push(error);
   }
-  await rm(target, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  if (errors.length > 0) {
+    throw new AggregateError(errors, "E2E fixture cleanup failed");
+  }
 }
 
-async function cleanupStaleDatabaseFixtures(): Promise<void> {
-  const projectsResponse = await invokeHost("git_project_list", {});
-  const projects = recordArrayField(projectsResponse, "projects");
-  for (const project of projects) {
-    const rootPath = project.rootPath;
-    const projectId = project.id;
-    if (typeof rootPath !== "string" || typeof projectId !== "string") continue;
-    const fixtureRoot = dirname(normalizeFsPath(rootPath));
-    if (isSafeFixtureRoot(fixtureRoot)) {
-      await invokeHost("git_project_delete", { request: { projectId } });
+export async function cleanupGitClientJourney(resources: GitClientJourneyResources): Promise<void> {
+  const errors: unknown[] = [];
+  if (resources.workspaceId !== null) {
+    await collectDeleteFailure(errors, "git_workspace_delete", {
+      request: { workspaceId: resources.workspaceId }
+    });
+  }
+  if (resources.identityId !== null) {
+    await collectDeleteFailure(errors, "git_identity_delete", {
+      request: { profileId: resources.identityId }
+    });
+  }
+  if (resources.fixture !== null) {
+    try {
+      await cleanupFixture(resources.fixture);
+    } catch (error: unknown) {
+      collectError(errors, error);
     }
   }
-
-  const workspacesResponse = await invokeHost("git_workspace_list", {});
-  for (const workspace of recordArrayField(workspacesResponse, "workspaces")) {
-    if (
-      typeof workspace.id === "string" &&
-      typeof workspace.name === "string" &&
-      workspace.name.startsWith("E2E Cross Directory")
-    ) {
-      await invokeHost("git_workspace_delete", { request: { workspaceId: workspace.id } });
-    }
+  if (errors.length > 0) {
+    throw new AggregateError(errors, "Git Client E2E cleanup failed");
   }
+}
 
-  const identitiesResponse = await invokeHost("git_identity_list", {});
-  for (const identity of recordArrayField(identitiesResponse, "identities")) {
-    if (
-      typeof identity.id === "string" &&
-      typeof identity.displayName === "string" &&
-      identity.displayName === "E2E Identity"
-    ) {
-      await invokeHost("git_identity_delete", { request: { profileId: identity.id } });
+async function collectDeleteFailure(
+  errors: unknown[],
+  command: string,
+  args: unknown
+): Promise<void> {
+  try {
+    const result = await invokeHostResult(command, args);
+    if (!result.ok && recordCode(result.error) !== "resource.not-found") {
+      errors.push(result.error);
     }
+  } catch (error: unknown) {
+    errors.push(error);
+  }
+}
+
+function collectError(errors: unknown[], error: unknown): void {
+  if (error instanceof AggregateError) {
+    errors.push(...error.errors);
+  } else {
+    errors.push(error);
   }
 }
 
@@ -227,32 +257,6 @@ function nonEmptyString(value: unknown): string {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
-}
-
-function recordArrayField(value: unknown, field: string): Record<string, unknown>[] {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return [];
-  const entries = (value as Record<string, unknown>)[field];
-  if (!Array.isArray(entries)) return [];
-  return entries.filter(
-    (entry): entry is Record<string, unknown> =>
-      typeof entry === "object" && entry !== null && !Array.isArray(entry)
-  );
-}
-
-function isSafeFixtureRoot(rootPath: string): boolean {
-  const tempRoot = normalizeFsPath(tmpdir());
-  const normalizedRoot = normalizeFsPath(rootPath);
-  return (
-    dirname(normalizedRoot).toLocaleLowerCase() === tempRoot.toLocaleLowerCase() &&
-    basename(normalizedRoot).startsWith(E2E_TEMP_PREFIX)
-  );
-}
-
-function normalizeFsPath(path: string): string {
-  const normalized = resolve(path);
-  return process.platform === "win32" && normalized.startsWith("\\\\?\\")
-    ? normalized.slice(4)
-    : normalized;
 }
 
 function recordCode(value: unknown): string | null {

@@ -1,4 +1,9 @@
 import { resolve } from "node:path";
+import {
+  acquireE2eAppDataProfile,
+  cleanupE2eAppDataProfile,
+  E2E_APP_DATA_ROOT_ENV
+} from "./app-data-profile";
 
 const extension = process.platform === "win32" ? ".exe" : "";
 const binary = resolve(
@@ -6,6 +11,7 @@ const binary = resolve(
   `../src-tauri/target/debug/git-ramus-desktop${extension}`
 );
 const tauriService = resolve(import.meta.dirname, "basic-tauri-service.ts");
+const appDataProfile = acquireE2eAppDataProfile();
 
 export const config: WebdriverIO.Config = {
   runner: "local",
@@ -29,7 +35,8 @@ export const config: WebdriverIO.Config = {
       {
         appBinaryPath: binary,
         driverProvider: "embedded",
-        embeddedPort: 4445
+        embeddedPort: 4445,
+        env: appDataProfile.env
       }
     ]
   ],
@@ -37,5 +44,11 @@ export const config: WebdriverIO.Config = {
     {
       browserName: "tauri"
     }
-  ]
+  ],
+  async onComplete() {
+    if (appDataProfile.owned) {
+      await cleanupE2eAppDataProfile(appDataProfile.rootPath);
+      delete process.env[E2E_APP_DATA_ROOT_ENV];
+    }
+  }
 };
