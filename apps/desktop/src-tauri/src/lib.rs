@@ -8,6 +8,7 @@ pub mod git;
 pub mod identity;
 pub mod jobs;
 pub mod plugins;
+pub mod providers;
 pub mod secrets;
 pub mod themes;
 

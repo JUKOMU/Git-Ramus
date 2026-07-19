@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use rusqlite::Connection;
+use rusqlite::{Connection, TransactionBehavior};
 
 use crate::error::AppError;
 
@@ -75,6 +75,17 @@ impl Database {
         transaction.commit()?;
         Ok(result)
     }
+
+    pub fn with_immediate_transaction<T>(
+        &self,
+        operation: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T, AppError>,
+    ) -> Result<T, AppError> {
+        let mut guard = self.connection.lock();
+        let transaction = guard.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let result = operation(&transaction)?;
+        transaction.commit()?;
+        Ok(result)
+    }
 }
 
 #[cfg(test)]
@@ -100,7 +111,7 @@ mod tests {
             })
             .expect("version query succeeds");
         assert_eq!(table_count, 4);
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
     }
 
     #[test]
@@ -140,7 +151,7 @@ mod tests {
     }
 
     #[test]
-    fn migration_runner_is_safe_to_run_twice_and_creates_all_v2_tables() {
+    fn migration_runner_is_safe_to_run_twice_and_creates_all_v3_tables() {
         let mut connection = rusqlite::Connection::open_in_memory().unwrap();
         connection.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
         super::migrations::run(&mut connection).unwrap();
@@ -148,7 +159,7 @@ mod tests {
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
         let names = [
             "projects",
             "workspaces",
@@ -162,6 +173,10 @@ mod tests {
             "repository_identity_bindings",
             "global_settings",
             "themes",
+            "provider_instances",
+            "provider_accounts",
+            "provider_repository_bindings",
+            "provider_secret_cleanup",
         ];
         for name in names {
             assert_eq!(
@@ -194,7 +209,37 @@ mod tests {
             connection
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            2
+            3
+        );
+    }
+
+    #[test]
+    fn upgrading_v2_preserves_existing_git_rows() {
+        let mut connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        connection
+            .execute_batch(super::migrations::MIGRATION_1)
+            .unwrap();
+        connection
+            .execute_batch(super::migrations::MIGRATION_2)
+            .unwrap();
+        connection.execute("INSERT INTO repositories(id,canonical_path,display_name,kind,created_at,updated_at) VALUES('legacy-repository','C:/legacy','Legacy','normal','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')", []).unwrap();
+
+        super::migrations::run(&mut connection).unwrap();
+
+        let name: String = connection
+            .query_row(
+                "SELECT display_name FROM repositories WHERE id='legacy-repository'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(name, "Legacy");
+        assert_eq!(
+            connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            3
         );
     }
 
