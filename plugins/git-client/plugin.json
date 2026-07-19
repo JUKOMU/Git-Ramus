@@ -29,6 +29,12 @@
         "label": "Workspaces",
         "route": "/workspaces",
         "icon": "boxes"
+      },
+      {
+        "id": "identities",
+        "label": "Identities",
+        "route": "/identities",
+        "icon": "user-round"
       }
     ]
   },

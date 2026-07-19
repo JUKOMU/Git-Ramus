@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -548,6 +548,203 @@ describe("RepositoryView", () => {
     expect(screen.queryByText(diffMatcher("older-before\nolder-after"))).not.toBeInTheDocument();
   });
 
+  it("binds a repository identity once and refreshes the effective identity", async () => {
+    const user = userEvent.setup();
+    const binding = deferred<{
+      repositoryId: string;
+      identityProfileId: string;
+      managed: boolean;
+      boundAt: string;
+    }>();
+    const globalEffective: EffectiveIdentity = {
+      ...effectiveIdentity,
+      source: "globalProfile"
+    };
+    const repositoryEffective: EffectiveIdentity = {
+      ...effectiveIdentity,
+      profileId: secondIdentity.id,
+      profile: secondIdentity,
+      source: "repositoryProfile",
+      displayName: secondIdentity.displayName,
+      userName: secondIdentity.userName,
+      userEmail: secondIdentity.userEmail,
+      gpgFormat: secondIdentity.gpgFormat,
+      signingKey: secondIdentity.signingKey,
+      signCommits: secondIdentity.signCommits,
+      signTags: secondIdentity.signTags
+    };
+    const api = Object.assign(createApi({ changes: [staged] }), {
+      bindRepositoryIdentity: vi.fn(() => binding.promise),
+      unbindRepositoryIdentity: vi.fn(async () => undefined)
+    });
+    vi.mocked(api.getEffectiveRepositoryIdentity)
+      .mockResolvedValueOnce(globalEffective)
+      .mockResolvedValueOnce(repositoryEffective);
+    render(<RepositoryView api={api} context={{ projectId }} repository={repository} />);
+
+    const repositoryIdentity = await screen.findByRole("combobox", {
+      name: "Repository identity"
+    });
+    await vi.waitFor(() =>
+      expect(
+        within(repositoryIdentity).getByRole("option", { name: /Personal profile/u })
+      ).toBeInTheDocument()
+    );
+    expect(repositoryIdentity).toHaveValue("");
+    await user.selectOptions(repositoryIdentity, secondIdentity.id);
+    await user.dblClick(screen.getByRole("button", { name: "Bind repository identity" }));
+
+    expect(api.bindRepositoryIdentity).toHaveBeenCalledOnce();
+    expect(api.bindRepositoryIdentity).toHaveBeenCalledWith({
+      projectId,
+      repositoryId,
+      identityProfileId: secondIdentity.id
+    });
+    expect(screen.getByRole("button", { name: "Binding repository identity…" })).toBeDisabled();
+
+    await act(async () => {
+      binding.resolve({
+        repositoryId,
+        identityProfileId: secondIdentity.id,
+        managed: true,
+        boundAt: "2026-07-19T00:00:00Z"
+      });
+      await binding.promise;
+    });
+    await vi.waitFor(() => expect(api.getEffectiveRepositoryIdentity).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("combobox", { name: "Repository identity" })).toHaveValue(
+      secondIdentity.id
+    );
+    expect(screen.getByText("Effective source: Repository profile")).toBeInTheDocument();
+  });
+
+  it("unbinds a repository identity once and refreshes the inherited identity", async () => {
+    const user = userEvent.setup();
+    const unbound = deferred<void>();
+    const globalEffective: EffectiveIdentity = {
+      ...effectiveIdentity,
+      source: "globalProfile"
+    };
+    const api = Object.assign(createApi({ changes: [staged] }), {
+      bindRepositoryIdentity: vi.fn(),
+      unbindRepositoryIdentity: vi.fn(() => unbound.promise)
+    });
+    vi.mocked(api.getEffectiveRepositoryIdentity)
+      .mockResolvedValueOnce(effectiveIdentity)
+      .mockResolvedValueOnce(globalEffective);
+    render(<RepositoryView api={api} context={{ projectId }} repository={repository} />);
+
+    const repositoryIdentity = await screen.findByRole("combobox", {
+      name: "Repository identity"
+    });
+    await vi.waitFor(() => expect(repositoryIdentity).toHaveValue(profileId));
+    await user.dblClick(screen.getByRole("button", { name: "Unbind repository identity" }));
+
+    expect(api.unbindRepositoryIdentity).toHaveBeenCalledOnce();
+    expect(api.unbindRepositoryIdentity).toHaveBeenCalledWith({ projectId, repositoryId });
+    expect(screen.getByRole("button", { name: "Unbinding repository identity…" })).toBeDisabled();
+
+    await act(async () => {
+      unbound.resolve();
+      await unbound.promise;
+    });
+    await vi.waitFor(() => expect(api.getEffectiveRepositoryIdentity).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("combobox", { name: "Repository identity" })).toHaveValue("");
+    expect(screen.getByText("Effective source: Global profile")).toBeInTheDocument();
+  });
+
+  it("does not refresh identity state after a pending bind resolves following unmount", async () => {
+    const user = userEvent.setup();
+    const binding = deferred<{
+      repositoryId: string;
+      identityProfileId: string;
+      managed: boolean;
+      boundAt: string;
+    }>();
+    const api = createApi({ changes: [staged] });
+    vi.mocked(api.getEffectiveRepositoryIdentity).mockResolvedValue({
+      ...effectiveIdentity,
+      source: "globalProfile"
+    });
+    vi.mocked(api.bindRepositoryIdentity).mockImplementation(() => binding.promise);
+    const { unmount } = render(
+      <RepositoryView api={api} context={{ projectId }} repository={repository} />
+    );
+
+    const repositoryIdentity = await screen.findByRole("combobox", {
+      name: "Repository identity"
+    });
+    await vi.waitFor(() =>
+      expect(
+        within(repositoryIdentity).getByRole("option", { name: /Personal profile/u })
+      ).toBeInTheDocument()
+    );
+    await user.selectOptions(repositoryIdentity, secondIdentity.id);
+    await user.click(screen.getByRole("button", { name: "Bind repository identity" }));
+    unmount();
+
+    await act(async () => {
+      binding.resolve({
+        repositoryId,
+        identityProfileId: secondIdentity.id,
+        managed: true,
+        boundAt: "2026-07-19T00:00:00Z"
+      });
+      await binding.promise;
+    });
+    expect(api.getEffectiveRepositoryIdentity).toHaveBeenCalledOnce();
+    expect(api.listIdentities).toHaveBeenCalledOnce();
+  });
+
+  it("ignores identity data loaded by an older API", async () => {
+    const staleIdentities = deferred<{
+      identities: IdentityProfile[];
+      globalIdentityProfileId: string | null;
+    }>();
+    const staleEffective = deferred<EffectiveIdentity>();
+    const oldApi = createApi({ changes: [staged] });
+    vi.mocked(oldApi.listIdentities).mockImplementation(() => staleIdentities.promise);
+    vi.mocked(oldApi.getEffectiveRepositoryIdentity).mockImplementation(
+      () => staleEffective.promise
+    );
+    const currentApi = createApi({ changes: [staged] });
+    vi.mocked(currentApi.listIdentities).mockResolvedValue({
+      identities: [secondIdentity],
+      globalIdentityProfileId: secondIdentity.id
+    });
+    vi.mocked(currentApi.getEffectiveRepositoryIdentity).mockResolvedValue({
+      ...effectiveIdentity,
+      profileId: secondIdentity.id,
+      profile: secondIdentity,
+      source: "globalProfile",
+      displayName: secondIdentity.displayName,
+      userName: secondIdentity.userName,
+      userEmail: secondIdentity.userEmail,
+      gpgFormat: secondIdentity.gpgFormat,
+      signingKey: secondIdentity.signingKey,
+      signCommits: secondIdentity.signCommits,
+      signTags: secondIdentity.signTags
+    });
+    const { rerender } = render(
+      <RepositoryView api={oldApi} context={{ projectId }} repository={repository} />
+    );
+
+    rerender(<RepositoryView api={currentApi} context={{ projectId }} repository={repository} />);
+    expect(await screen.findByText("Effective source: Global profile")).toBeInTheDocument();
+
+    await act(async () => {
+      staleIdentities.resolve({
+        identities: [identity],
+        globalIdentityProfileId: identity.id
+      });
+      staleEffective.resolve(effectiveIdentity);
+      await Promise.all([staleIdentities.promise, staleEffective.promise]);
+    });
+    expect(screen.getByRole("combobox", { name: "Repository identity" })).toHaveValue("");
+    expect(screen.getByText("Effective source: Global profile")).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /Work profile/u })).not.toBeInTheDocument();
+  });
+
   it("shows unsupported recovery actions without executing them as retry", async () => {
     const user = userEvent.setup();
     const api = createApi({ changes: [unstaged] });
@@ -632,6 +829,13 @@ function createApi({ changes }: { changes: ParsedChangeEntry[] }): RepositoryApi
       identities: [identity, secondIdentity],
       globalIdentityProfileId: profileId
     })),
+    bindRepositoryIdentity: vi.fn(async () => ({
+      repositoryId,
+      identityProfileId: profileId,
+      managed: true,
+      boundAt: "2026-07-17T00:00:00Z"
+    })),
+    unbindRepositoryIdentity: vi.fn(async () => undefined),
     getEffectiveRepositoryIdentity: vi.fn(async () => effectiveIdentity)
   };
 }
@@ -672,6 +876,9 @@ function diffResult(path: string, stagedDiff: boolean, old = "before", next = "a
   return {
     repositoryId,
     staged: stagedDiff,
+    patch: `${old}\n${next}`,
+    truncated: false,
+    contentUnavailableReason: null,
     summary: {
       files: [file],
       changes: [file],

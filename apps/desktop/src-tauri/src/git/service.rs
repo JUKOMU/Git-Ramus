@@ -7,6 +7,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::fs;
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
@@ -36,6 +37,8 @@ const DEFAULT_GIT_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_SCAN_ENTRIES: usize = 100_000;
 const MAX_PATHS_PER_OPERATION: usize = 4_096;
 const MAX_COMMIT_MESSAGE_BYTES: usize = 128 * 1024;
+pub const MAX_DIFF_PATCH_BYTES: usize = 256 * 1024;
+pub const MAX_DIFF_PATCH_LINES: usize = 4_096;
 // Keep worst-case Windows CreateProcess command lines comfortably below 32 KiB after four
 // command-scope overrides per driver.
 const MAX_FILTER_DRIVERS: usize = 32;
@@ -190,11 +193,24 @@ pub struct ChangesResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum DiffContentUnavailableReason {
+    Binary,
+    UntrustedRepository,
+    UntrackedContentUnavailable,
+    NonUtf8Content,
+    OutputLimit,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DiffResult {
     pub repository_id: String,
     pub staged: bool,
     pub summary: DiffSummary,
+    pub patch: Option<String>,
+    pub truncated: bool,
+    pub content_unavailable_reason: Option<DiffContentUnavailableReason>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -684,7 +700,12 @@ impl GitService {
                         let Some((index, (path, repository))) = item else {
                             break;
                         };
-                        let (record, failure) = match service.refresh_repository_inner(&repository)
+                        let repository_lock = service.write_lock(&repository.id);
+                        let repository_guard = repository_lock
+                            .lock()
+                            .expect("repository write lock is not poisoned");
+                        let (record, failure) = match service
+                            .refresh_repository_inner_locked(&repository)
                         {
                             Ok((snapshot, parsed)) => (
                                 RepositoryScanRecord {
@@ -698,7 +719,7 @@ impl GitService {
                             Err(error) => {
                                 let refresh_summary = stable_error(&error);
                                 let (snapshot, summary) = match service
-                                    .record_refresh_failure(&repository, &error)
+                                    .record_refresh_failure_locked(&repository, &error)
                                 {
                                     Ok(snapshot) => (snapshot, refresh_summary),
                                     Err(persistence_error) => (
@@ -723,6 +744,7 @@ impl GitService {
                                 )
                             }
                         };
+                        drop(repository_guard);
                         callback(&record);
                         records
                             .lock()
@@ -796,7 +818,9 @@ impl GitService {
     ) -> Result<RepositoryScanRecord, AppError> {
         self.ensure_project_membership(project_id, repository_id)?;
         let repository = self.repositories.get(repository_id)?;
-        match self.refresh_repository_inner(&repository) {
+        let lock = self.write_lock(repository_id);
+        let _guard = lock.lock().expect("repository write lock is not poisoned");
+        match self.refresh_repository_inner_locked(&repository) {
             Ok((snapshot, parsed)) => Ok(RepositoryScanRecord {
                 repository,
                 snapshot: Some(snapshot),
@@ -805,7 +829,7 @@ impl GitService {
             }),
             Err(error) => Ok(RepositoryScanRecord {
                 repository: repository.clone(),
-                snapshot: self.record_refresh_failure(&repository, &error)?,
+                snapshot: self.record_refresh_failure_locked(&repository, &error)?,
                 changes: self.cached_status(repository_id),
                 error: Some(stable_error(&error)),
             }),
@@ -894,6 +918,7 @@ impl GitService {
         let repository = self.repositories.get(repository_id)?;
         let parsed = self.latest_or_refresh_status(&repository)?;
         let validated = validate_change_paths(paths, &parsed.changes)?;
+        let safe_summary = safe_diff_summary(&parsed.changes, &validated, staged);
         if !self.trusts.is_trusted(repository_id)? {
             // Git's worktree diff conversion executes filter.<driver>.clean/process even with
             // --no-textconv. Until the user trusts this repository, return the bounded status-
@@ -903,35 +928,147 @@ impl GitService {
             return Ok(DiffResult {
                 repository_id: repository_id.to_owned(),
                 staged,
-                summary: safe_diff_summary(&parsed.changes, &validated, staged),
+                summary: safe_summary,
+                patch: None,
+                truncated: false,
+                content_unavailable_reason: Some(DiffContentUnavailableReason::UntrustedRepository),
             });
         }
-        let mut args = vec![
-            OsString::from("--no-optional-locks"),
-            OsString::from("-c"),
-            OsString::from("core.fsmonitor=false"),
-            OsString::from("diff"),
-        ];
-        if staged {
-            args.push(OsString::from("--cached"));
+        let selected = selected_diff_changes(&parsed.changes, &validated, staged);
+        let untracked_paths = selected
+            .iter()
+            .filter(|change| change.kind == ChangeKind::Untracked)
+            .map(|change| change.path.clone())
+            .collect::<BTreeSet<_>>();
+        let run_tracked_diff = selected.is_empty()
+            || selected
+                .iter()
+                .any(|change| change.kind != ChangeKind::Untracked);
+        let mut patch = PatchAccumulator::default();
+        let mut has_patch = false;
+        let mut summary;
+
+        if run_tracked_diff {
+            let mut args = vec![
+                OsString::from("--no-optional-locks"),
+                OsString::from("-c"),
+                OsString::from("core.fsmonitor=false"),
+                OsString::from("diff"),
+            ];
+            if staged {
+                args.push(OsString::from("--cached"));
+            }
+            args.extend([
+                OsString::from("--no-ext-diff"),
+                OsString::from("--no-textconv"),
+                OsString::from("--binary"),
+            ]);
+            args.push(OsString::from("--"));
+            args.extend(validated.iter().map(OsString::from));
+            // Status and diff use separate permits, but each actual read-only Git process remains
+            // under the same global gate. This prevents concurrent diff calls from escaping the
+            // scan read bound after their status refresh has completed.
+            let _permit = self.read_gate.acquire();
+            let output = match self.run_git(&repository, args, None) {
+                Err(AppError::OutputLimit) => {
+                    return Ok(DiffResult {
+                        repository_id: repository_id.to_owned(),
+                        staged,
+                        summary: safe_summary,
+                        patch: None,
+                        truncated: false,
+                        content_unavailable_reason: Some(DiffContentUnavailableReason::OutputLimit),
+                    });
+                }
+                result => result?,
+            };
+            ensure_success(&output)?;
+            summary = parse_diff_summary(&output.stdout)?;
+            summary = merge_diff_summaries(summary, safe_summary.clone());
+            if summary.binary {
+                return Ok(DiffResult {
+                    repository_id: repository_id.to_owned(),
+                    staged,
+                    summary,
+                    patch: None,
+                    truncated: false,
+                    content_unavailable_reason: Some(DiffContentUnavailableReason::Binary),
+                });
+            }
+            let text = match std::str::from_utf8(&output.stdout) {
+                Ok(text) => text,
+                Err(_) => {
+                    return Ok(DiffResult {
+                        repository_id: repository_id.to_owned(),
+                        staged,
+                        summary,
+                        patch: None,
+                        truncated: false,
+                        content_unavailable_reason: Some(
+                            DiffContentUnavailableReason::NonUtf8Content,
+                        ),
+                    });
+                }
+            };
+            patch.append(text);
+            has_patch = true;
+        } else {
+            summary = safe_summary;
         }
-        args.extend([
-            OsString::from("--no-ext-diff"),
-            OsString::from("--no-textconv"),
-            OsString::from("--binary"),
-        ]);
-        args.push(OsString::from("--"));
-        args.extend(validated.iter().map(OsString::from));
-        // Status and diff use separate permits, but each actual read-only Git process remains
-        // under the same global gate. This prevents concurrent diff calls from escaping the scan
-        // read bound after their status refresh has completed.
-        let _permit = self.read_gate.acquire();
-        let output = self.run_git(&repository, args, None)?;
-        ensure_success(&output)?;
+
+        let mut source_truncated = false;
+        let mut untracked_unavailable = false;
+        for path in untracked_paths {
+            match synthesize_untracked_patch(&repository, &path) {
+                UntrackedPatch::Text {
+                    patch: untracked_patch,
+                    truncated,
+                } => {
+                    patch.append(&untracked_patch);
+                    source_truncated |= truncated;
+                    has_patch = true;
+                }
+                UntrackedPatch::Binary => {
+                    mark_diff_file_binary(&mut summary, &path);
+                    return Ok(DiffResult {
+                        repository_id: repository_id.to_owned(),
+                        staged,
+                        summary,
+                        patch: None,
+                        truncated: false,
+                        content_unavailable_reason: Some(DiffContentUnavailableReason::Binary),
+                    });
+                }
+                UntrackedPatch::NonUtf8 => {
+                    return Ok(DiffResult {
+                        repository_id: repository_id.to_owned(),
+                        staged,
+                        summary,
+                        patch: None,
+                        truncated: false,
+                        content_unavailable_reason: Some(
+                            DiffContentUnavailableReason::NonUtf8Content,
+                        ),
+                    });
+                }
+                UntrackedPatch::Unavailable => {
+                    untracked_unavailable = true;
+                }
+            }
+            if patch.is_full() {
+                source_truncated = true;
+                break;
+            }
+        }
+
         Ok(DiffResult {
             repository_id: repository_id.to_owned(),
             staged,
-            summary: parse_diff_summary(output.stdout)?,
+            summary,
+            patch: has_patch.then_some(patch.text),
+            truncated: patch.truncated || source_truncated,
+            content_unavailable_reason: untracked_unavailable
+                .then_some(DiffContentUnavailableReason::UntrackedContentUnavailable),
         })
     }
 
@@ -1007,14 +1144,14 @@ impl GitService {
         }
         let repository = self.repositories.get(repository_id)?;
         self.require_trust(repository_id)?;
-        let parsed = self.latest_or_refresh_status(&repository)?;
+        let lock = self.write_lock(repository_id);
+        let _guard = lock.lock().expect("repository write lock is not poisoned");
+        let (_, parsed) = self.refresh_repository_recording_failure_locked(&repository)?;
         if parsed.staged_count == 0 {
             return Err(AppError::InvalidInput(
                 "commit requires staged changes".to_owned(),
             ));
         }
-        let lock = self.write_lock(repository_id);
-        let _guard = lock.lock().expect("repository write lock is not poisoned");
         let mut bytes = message.as_bytes().to_vec();
         if !bytes.ends_with(b"\n") {
             bytes.push(b'\n');
@@ -1073,7 +1210,7 @@ impl GitService {
         self.require_trust(repository_id)?;
         let lock = self.write_lock(repository_id);
         let _guard = lock.lock().expect("repository write lock is not poisoned");
-        let parsed = self.latest_or_refresh_status(&repository)?;
+        let (_, parsed) = self.refresh_repository_recording_failure_locked(&repository)?;
         if parsed.staged_count == 0 {
             return Err(AppError::InvalidInput(
                 "commit requires staged changes".to_owned(),
@@ -1167,7 +1304,9 @@ impl GitService {
         self.ensure_context_membership(context, repository_id)?;
         let repository = self.repositories.get(repository_id)?;
         self.require_trust(repository_id)?;
-        let parsed = self.latest_or_refresh_status(&repository)?;
+        let lock = self.write_lock(repository_id);
+        let _guard = lock.lock().expect("repository write lock is not poisoned");
+        let (_, parsed) = self.refresh_repository_recording_failure_locked(&repository)?;
         let validated = if all {
             if !paths.is_empty() {
                 return Err(AppError::InvalidInput(
@@ -1183,8 +1322,6 @@ impl GitService {
                 "at least one path is required".to_owned(),
             ));
         }
-        let lock = self.write_lock(repository_id);
-        let _guard = lock.lock().expect("repository write lock is not poisoned");
         let args = match kind {
             WriteKind::Stage if all => vec![
                 OsString::from("add"),
@@ -1246,7 +1383,8 @@ impl GitService {
         self.repositories.get_or_create(&repository)
     }
 
-    fn refresh_repository_inner(
+    /// Read and publish status while the caller holds this repository's write lock.
+    fn refresh_repository_inner_locked(
         &self,
         repository: &Repository,
     ) -> Result<(RepositorySnapshot, ParsedSnapshot), AppError> {
@@ -1263,13 +1401,22 @@ impl GitService {
         &self,
         repository: &Repository,
     ) -> Result<(RepositorySnapshot, ParsedSnapshot), AppError> {
-        match self.refresh_repository_inner(repository) {
+        let lock = self.write_lock(&repository.id);
+        let _guard = lock.lock().expect("repository write lock is not poisoned");
+        self.refresh_repository_recording_failure_locked(repository)
+    }
+
+    fn refresh_repository_recording_failure_locked(
+        &self,
+        repository: &Repository,
+    ) -> Result<(RepositorySnapshot, ParsedSnapshot), AppError> {
+        match self.refresh_repository_inner_locked(repository) {
             Ok(result) => Ok(result),
             Err(refresh_error) => {
                 // Persist the redacted failure while preserving the last successful fields. If
                 // persistence itself fails, return that storage error rather than hiding it
                 // behind the original Git error.
-                self.record_refresh_failure(repository, &refresh_error)?;
+                self.record_refresh_failure_locked(repository, &refresh_error)?;
                 Err(refresh_error)
             }
         }
@@ -1279,16 +1426,16 @@ impl GitService {
         &self,
         repository: &Repository,
     ) -> Result<Option<RepositorySnapshot>, AppError> {
-        match self.refresh_repository_inner(repository) {
+        match self.refresh_repository_inner_locked(repository) {
             Ok((snapshot, _)) => Ok(Some(snapshot)),
             Err(error) => {
-                let _ = self.record_refresh_failure(repository, &error)?;
+                let _ = self.record_refresh_failure_locked(repository, &error)?;
                 Err(error)
             }
         }
     }
 
-    fn record_refresh_failure(
+    fn record_refresh_failure_locked(
         &self,
         repository: &Repository,
         error: &AppError,
@@ -1650,6 +1797,215 @@ fn validate_change_paths(
     Ok(result)
 }
 
+fn selected_diff_changes<'a>(
+    changes: &'a [ChangeEntry],
+    requested_paths: &[String],
+    staged: bool,
+) -> Vec<&'a ChangeEntry> {
+    let requested = requested_paths
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    changes
+        .iter()
+        .filter(|change| {
+            if staged {
+                change.staged
+            } else {
+                change.unstaged
+            }
+        })
+        .filter(|change| {
+            requested.is_empty()
+                || requested.contains(change.path.as_str())
+                || change
+                    .original_path
+                    .as_deref()
+                    .is_some_and(|path| requested.contains(path))
+        })
+        .collect()
+}
+
+#[derive(Debug, Default)]
+struct PatchAccumulator {
+    text: String,
+    lines: usize,
+    truncated: bool,
+}
+
+impl PatchAccumulator {
+    fn append(&mut self, value: &str) {
+        if value.is_empty() || self.truncated {
+            return;
+        }
+        let mut consumed = 0;
+        for line in value.split_inclusive('\n') {
+            if self.lines >= MAX_DIFF_PATCH_LINES || self.text.len() >= MAX_DIFF_PATCH_BYTES {
+                self.truncated = true;
+                break;
+            }
+            let remaining = MAX_DIFF_PATCH_BYTES - self.text.len();
+            let mut end = remaining.min(line.len());
+            while end > 0 && !line.is_char_boundary(end) {
+                end -= 1;
+            }
+            if end > 0 {
+                self.text.push_str(&line[..end]);
+                self.lines += 1;
+                consumed += end;
+            }
+            if end < line.len() {
+                self.truncated = true;
+                break;
+            }
+        }
+        if consumed < value.len() {
+            self.truncated = true;
+        }
+    }
+
+    fn is_full(&self) -> bool {
+        self.truncated
+    }
+}
+
+enum UntrackedPatch {
+    Text { patch: String, truncated: bool },
+    Binary,
+    NonUtf8,
+    Unavailable,
+}
+
+fn synthesize_untracked_patch(repository: &Repository, path: &str) -> UntrackedPatch {
+    let Ok(root) = fs::canonicalize(&repository.canonical_path) else {
+        return UntrackedPatch::Unavailable;
+    };
+    let candidate = root.join(path);
+    let Ok(link_metadata) = fs::symlink_metadata(&candidate) else {
+        return UntrackedPatch::Unavailable;
+    };
+    if link_metadata.file_type().is_symlink() {
+        return UntrackedPatch::Unavailable;
+    }
+    let Ok(canonical) = fs::canonicalize(&candidate) else {
+        return UntrackedPatch::Unavailable;
+    };
+    if !canonical.starts_with(&root) {
+        return UntrackedPatch::Unavailable;
+    }
+    let Ok(metadata) = fs::metadata(&canonical) else {
+        return UntrackedPatch::Unavailable;
+    };
+    if !metadata.is_file() {
+        return UntrackedPatch::Unavailable;
+    }
+    let Ok(file) = fs::File::open(&canonical) else {
+        return UntrackedPatch::Unavailable;
+    };
+    let mut bytes = Vec::with_capacity(MAX_DIFF_PATCH_BYTES + 4);
+    if file
+        .take((MAX_DIFF_PATCH_BYTES + 4) as u64)
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
+        return UntrackedPatch::Unavailable;
+    }
+    if bytes.contains(&0) {
+        return UntrackedPatch::Binary;
+    }
+    let source_truncated = metadata.len() > bytes.len() as u64;
+    let text = match std::str::from_utf8(&bytes) {
+        Ok(text) => text,
+        Err(error) if source_truncated && error.error_len().is_none() => {
+            std::str::from_utf8(&bytes[..error.valid_up_to()])
+                .expect("UTF-8 valid prefix must decode")
+        }
+        Err(_) => return UntrackedPatch::NonUtf8,
+    };
+    let mut end = MAX_DIFF_PATCH_BYTES.min(text.len());
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let source_truncated = source_truncated || end < text.len();
+    let text = &text[..end];
+    let new_path = format_diff_path("b", path);
+    let line_count = text.split_inclusive('\n').count();
+    let mut patch = format!(
+        "diff --git {} {}\nnew file mode 100644\n--- /dev/null\n+++ {}\n@@ -0,0 +1,{line_count} @@\n",
+        format_diff_path("a", path),
+        new_path,
+        format_diff_path("b", path),
+    );
+    for line in text.split_inclusive('\n') {
+        patch.push('+');
+        patch.push_str(line);
+    }
+    if !text.is_empty() && !text.ends_with('\n') {
+        patch.push_str("\n\\ No newline at end of file\n");
+    }
+    UntrackedPatch::Text {
+        patch,
+        truncated: source_truncated,
+    }
+}
+
+fn format_diff_path(prefix: &str, path: &str) -> String {
+    let value = format!("{prefix}/{path}");
+    if value
+        .chars()
+        .any(|character| character.is_control() || matches!(character, '"' | '\\'))
+    {
+        format!(
+            "\"{}\"",
+            value
+                .chars()
+                .flat_map(char::escape_default)
+                .collect::<String>()
+        )
+    } else {
+        value
+    }
+}
+
+fn merge_diff_summaries(primary: DiffSummary, fallback: DiffSummary) -> DiffSummary {
+    let mut files = primary.files;
+    for file in fallback.files {
+        if !files.iter().any(|candidate| {
+            candidate.path == file.path
+                && candidate.old_path == file.old_path
+                && candidate.new_path == file.new_path
+        }) {
+            files.push(file);
+        }
+    }
+    diff_summary_from_files(files)
+}
+
+fn mark_diff_file_binary(summary: &mut DiffSummary, path: &str) {
+    for file in &mut summary.files {
+        if file.path == path {
+            file.binary = true;
+            file.additions = None;
+            file.deletions = None;
+        }
+    }
+    *summary = diff_summary_from_files(summary.files.clone());
+}
+
+fn diff_summary_from_files(files: Vec<DiffFile>) -> DiffSummary {
+    let binary = files.iter().any(|file| file.binary);
+    let additions = files.iter().filter_map(|file| file.additions).sum();
+    let deletions = files.iter().filter_map(|file| file.deletions).sum();
+    DiffSummary {
+        changes: files.clone(),
+        entries: files.clone(),
+        files,
+        binary,
+        additions,
+        deletions,
+    }
+}
+
 fn safe_diff_summary(
     changes: &[ChangeEntry],
     requested_paths: &[String],
@@ -1665,7 +2021,7 @@ fn safe_diff_summary(
             if staged {
                 change.staged
             } else {
-                change.unstaged && change.kind != ChangeKind::Untracked
+                change.unstaged
             }
         })
         .filter(|change| {
@@ -1702,17 +2058,7 @@ fn safe_diff_summary(
             }
         })
         .collect::<Vec<_>>();
-    let binary = files.iter().any(|file| file.binary);
-    let additions = files.iter().filter_map(|file| file.additions).sum();
-    let deletions = files.iter().filter_map(|file| file.deletions).sum();
-    DiffSummary {
-        changes: files.clone(),
-        entries: files.clone(),
-        files,
-        binary,
-        additions,
-        deletions,
-    }
+    diff_summary_from_files(files)
 }
 
 fn side_change_kind(change: &ChangeEntry, staged: bool) -> ChangeKind {
@@ -1950,6 +2296,10 @@ mod tests {
     use super::*;
     use crate::git::parser::ChangeKind;
     use crate::git::repository::RepositoryWriteLocks;
+    use std::process::{Command, ExitStatus};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
+    use std::time::Duration;
 
     #[test]
     fn git_service_uses_the_injected_repository_write_lock_registry() {
@@ -1965,6 +2315,278 @@ mod tests {
             &locks.lock_for("repository"),
             &service.write_lock("repository")
         ));
+    }
+
+    #[test]
+    fn stale_status_refresh_cannot_publish_after_a_repository_write() {
+        let root = tempfile::tempdir().unwrap();
+        let (runner, status_entered, release_status, write_entered) = BlockingStatusRunner::new();
+        let service = GitService::with_runner(
+            Database::open_in_memory().unwrap(),
+            Arc::new(runner.clone()),
+        );
+        let project = service
+            .create_project(ProjectCreateInput {
+                root_path: root.path().to_string_lossy().into_owned(),
+                name: "status serialization".to_owned(),
+                scan_depth: Some(0),
+                exclude_patterns: Vec::new(),
+            })
+            .unwrap();
+        let repository = service
+            .repositories
+            .get_or_create(&Repository::new(
+                &project.root_path,
+                "repository",
+                super::super::model::RepositoryKind::Normal,
+            ))
+            .unwrap();
+        service
+            .repositories
+            .add_to_project(&project.id, &repository.id, ".")
+            .unwrap();
+        service.trust_repository(&repository.id).unwrap();
+        let context = QueryContext::project(&project.id);
+        service.get_changes(&context, &repository.id).unwrap();
+
+        runner.block_next_status();
+        let refresh_service = service.clone();
+        let refresh_context = context.clone();
+        let refresh_repository_id = repository.id.clone();
+        let refresh = thread::spawn(move || {
+            refresh_service.get_changes(&refresh_context, &refresh_repository_id)
+        });
+        status_entered
+            .recv_timeout(Duration::from_secs(1))
+            .expect("old status refresh started");
+
+        let write_service = service.clone();
+        let write_context = context.clone();
+        let write_repository_id = repository.id.clone();
+        let write = thread::spawn(move || {
+            write_service.stage(
+                &write_context,
+                &write_repository_id,
+                &["tracked.txt".to_owned()],
+                false,
+            )
+        });
+        let write_started_before_release = write_entered
+            .recv_timeout(Duration::from_millis(200))
+            .is_ok();
+        release_status.send(()).unwrap();
+
+        refresh.join().unwrap().unwrap();
+        write.join().unwrap().unwrap();
+        let latest = service.get_snapshot(&context, &repository.id).unwrap();
+        let snapshot = latest.snapshot.expect("latest snapshot");
+        let cached = latest.changes.expect("latest cached status");
+        assert!(
+            !write_started_before_release,
+            "repository write crossed an in-flight status refresh"
+        );
+        assert_eq!(snapshot.staged_count, 1);
+        assert_eq!(snapshot.unstaged_count, 0);
+        assert_eq!(cached.changes.len(), 1);
+        assert!(cached.changes[0].staged);
+        assert!(!cached.changes[0].unstaged);
+    }
+
+    #[test]
+    fn diff_output_limit_returns_an_explicit_unavailable_result() {
+        let root = tempfile::tempdir().unwrap();
+        let service = GitService::with_runner(
+            Database::open_in_memory().unwrap(),
+            Arc::new(OutputLimitDiffRunner),
+        );
+        let project = service
+            .create_project(ProjectCreateInput {
+                root_path: root.path().to_string_lossy().into_owned(),
+                name: "diff output limit".to_owned(),
+                scan_depth: Some(0),
+                exclude_patterns: Vec::new(),
+            })
+            .unwrap();
+        let repository = service
+            .repositories
+            .get_or_create(&Repository::new(
+                &project.root_path,
+                "repository",
+                super::super::model::RepositoryKind::Normal,
+            ))
+            .unwrap();
+        service
+            .repositories
+            .add_to_project(&project.id, &repository.id, ".")
+            .unwrap();
+        service.trust_repository(&repository.id).unwrap();
+        let result = service
+            .get_diff(
+                &QueryContext::project(&project.id),
+                &repository.id,
+                &["tracked.txt".to_owned()],
+                false,
+            )
+            .unwrap();
+        assert_eq!(result.patch, None);
+        assert!(!result.truncated);
+        assert_eq!(
+            result.content_unavailable_reason,
+            Some(DiffContentUnavailableReason::OutputLimit)
+        );
+    }
+
+    #[test]
+    fn diff_unavailable_reasons_serialize_to_contract_values() {
+        for (reason, expected) in [
+            (DiffContentUnavailableReason::Binary, "binary"),
+            (
+                DiffContentUnavailableReason::UntrustedRepository,
+                "untrustedRepository",
+            ),
+            (
+                DiffContentUnavailableReason::UntrackedContentUnavailable,
+                "untrackedContentUnavailable",
+            ),
+            (
+                DiffContentUnavailableReason::NonUtf8Content,
+                "nonUtf8Content",
+            ),
+            (DiffContentUnavailableReason::OutputLimit, "outputLimit"),
+        ] {
+            assert_eq!(
+                serde_json::to_string(&reason).unwrap(),
+                format!("\"{expected}\"")
+            );
+        }
+    }
+
+    #[derive(Clone)]
+    struct BlockingStatusRunner {
+        block_next_status: Arc<AtomicBool>,
+        status_entered: Arc<Mutex<Option<mpsc::Sender<()>>>>,
+        release_status: Arc<Mutex<mpsc::Receiver<()>>>,
+        write_entered: Arc<Mutex<Option<mpsc::Sender<()>>>>,
+        staged: Arc<AtomicBool>,
+    }
+
+    impl BlockingStatusRunner {
+        fn new() -> (
+            Self,
+            mpsc::Receiver<()>,
+            mpsc::Sender<()>,
+            mpsc::Receiver<()>,
+        ) {
+            let (status_entered_tx, status_entered_rx) = mpsc::channel();
+            let (release_status_tx, release_status_rx) = mpsc::channel();
+            let (write_entered_tx, write_entered_rx) = mpsc::channel();
+            (
+                Self {
+                    block_next_status: Arc::new(AtomicBool::new(false)),
+                    status_entered: Arc::new(Mutex::new(Some(status_entered_tx))),
+                    release_status: Arc::new(Mutex::new(release_status_rx)),
+                    write_entered: Arc::new(Mutex::new(Some(write_entered_tx))),
+                    staged: Arc::new(AtomicBool::new(false)),
+                },
+                status_entered_rx,
+                release_status_tx,
+                write_entered_rx,
+            )
+        }
+
+        fn block_next_status(&self) {
+            self.block_next_status.store(true, Ordering::Release);
+        }
+    }
+
+    impl GitRunner for BlockingStatusRunner {
+        fn run(&self, command: GitCommand) -> Result<GitOutput, AppError> {
+            let args = command
+                .args
+                .iter()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            let is_status = args.iter().any(|argument| argument == "status");
+            let is_add = args.iter().any(|argument| argument == "add");
+            let stdout = if is_status {
+                if self.staged.load(Ordering::Acquire) {
+                    staged_status()
+                } else {
+                    unstaged_status()
+                }
+            } else {
+                Vec::new()
+            };
+
+            if is_status && self.block_next_status.swap(false, Ordering::AcqRel) {
+                if let Some(entered) = self.status_entered.lock().unwrap().take() {
+                    entered.send(()).unwrap();
+                }
+                self.release_status.lock().unwrap().recv().unwrap();
+            }
+            if is_add {
+                self.staged.store(true, Ordering::Release);
+                if let Some(entered) = self.write_entered.lock().unwrap().take() {
+                    entered.send(()).unwrap();
+                }
+            }
+
+            Ok(GitOutput {
+                status: successful_exit_status(),
+                stdout,
+                stderr: Vec::new(),
+            })
+        }
+    }
+
+    #[derive(Clone)]
+    struct OutputLimitDiffRunner;
+
+    impl GitRunner for OutputLimitDiffRunner {
+        fn run(&self, command: GitCommand) -> Result<GitOutput, AppError> {
+            if command
+                .args
+                .iter()
+                .any(|argument| argument.to_string_lossy() == "diff")
+            {
+                return Err(AppError::OutputLimit);
+            }
+            Ok(GitOutput {
+                status: successful_exit_status(),
+                stdout: unstaged_status(),
+                stderr: Vec::new(),
+            })
+        }
+    }
+
+    fn unstaged_status() -> Vec<u8> {
+        [
+            b"# branch.oid abcdef1\0# branch.head main\0".as_slice(),
+            b"1 .M N... 100644 100644 100644 abcdef1 abcdef2 tracked.txt\0".as_slice(),
+        ]
+        .concat()
+    }
+
+    fn staged_status() -> Vec<u8> {
+        [
+            b"# branch.oid abcdef1\0# branch.head main\0".as_slice(),
+            b"1 M. N... 100644 100644 100644 abcdef1 abcdef2 tracked.txt\0".as_slice(),
+        ]
+        .concat()
+    }
+
+    fn successful_exit_status() -> ExitStatus {
+        #[cfg(windows)]
+        {
+            Command::new("cmd")
+                .args(["/C", "exit", "0"])
+                .status()
+                .unwrap()
+        }
+        #[cfg(not(windows))]
+        {
+            Command::new("true").status().unwrap()
+        }
     }
 
     #[test]

@@ -13,7 +13,8 @@ use git_ramus_desktop_lib::git::engine::{GitCommand, GitOutput, GitRunner, Syste
 use git_ramus_desktop_lib::git::model::RepositoryKind;
 use git_ramus_desktop_lib::git::repository::RepositoryWriteLocks;
 use git_ramus_desktop_lib::git::service::{
-    GitService, ProjectCreateInput, ProjectUpdateInput, QueryContext, validate_relative_path,
+    DiffContentUnavailableReason, GitService, MAX_DIFF_PATCH_BYTES, MAX_DIFF_PATCH_LINES,
+    ProjectCreateInput, ProjectUpdateInput, QueryContext, validate_relative_path,
 };
 use git_ramus_desktop_lib::identity::{IdentityProfileInput, IdentityService};
 use tempfile::tempdir;
@@ -278,6 +279,115 @@ fn changes_and_diff_refresh_failures_persist_error_snapshots() {
             .refresh_error_summary
             .is_some()
     );
+}
+
+#[test]
+fn trusted_diff_returns_bounded_patch_and_handles_binary_and_untracked_content() {
+    if !git_available() {
+        return;
+    }
+    let root = tempdir().unwrap();
+    run_git(root.path(), &["init", "--quiet"]);
+    run_git(root.path(), &["config", "user.name", "Fixture"]);
+    run_git(
+        root.path(),
+        &["config", "user.email", "fixture@example.test"],
+    );
+    fs::write(root.path().join("tracked.txt"), "before\ncontext\n").unwrap();
+    fs::write(root.path().join("binary.bin"), b"before\0binary").unwrap();
+    fs::write(root.path().join("encoded.txt"), b"before-\xff\n").unwrap();
+    fs::write(root.path().join("large.txt"), "seed\n").unwrap();
+    run_git(
+        root.path(),
+        &[
+            "add",
+            "--",
+            "tracked.txt",
+            "binary.bin",
+            "encoded.txt",
+            "large.txt",
+        ],
+    );
+    run_git(root.path(), &["commit", "--quiet", "-m", "seed"]);
+    fs::write(root.path().join("tracked.txt"), "after\ncontext\n").unwrap();
+    fs::write(root.path().join("binary.bin"), b"after\0binary").unwrap();
+    fs::write(root.path().join("encoded.txt"), b"after-\xfe\n").unwrap();
+    fs::write(
+        root.path().join("untracked.txt"),
+        "new\n+already-plus\nlast",
+    )
+    .unwrap();
+    let large = (0..(MAX_DIFF_PATCH_LINES + 128))
+        .map(|index| format!("{index:04}-{}\n", "x".repeat(96)))
+        .collect::<String>();
+    fs::write(root.path().join("large.txt"), large).unwrap();
+
+    let service = GitService::new(Database::open_in_memory().unwrap());
+    let project = service
+        .create_project(ProjectCreateInput {
+            root_path: root.path().to_string_lossy().into_owned(),
+            name: "bounded diff".to_owned(),
+            scan_depth: Some(0),
+            exclude_patterns: Vec::new(),
+        })
+        .unwrap();
+    let scan = service.scan_project(&project.id).unwrap();
+    let repository_id = scan.repositories[0].repository.id.clone();
+    let context = QueryContext::project(&project.id);
+    service
+        .trust_repository_in_context(&context, &repository_id)
+        .unwrap();
+
+    let text = service
+        .get_diff(&context, &repository_id, &["tracked.txt".to_owned()], false)
+        .unwrap();
+    let patch = text.patch.as_deref().expect("trusted text patch");
+    assert!(patch.contains("-before"));
+    assert!(patch.contains("+after"));
+    assert!(!text.truncated);
+    assert_eq!(text.content_unavailable_reason, None);
+
+    let binary = service
+        .get_diff(&context, &repository_id, &["binary.bin".to_owned()], false)
+        .unwrap();
+    assert!(binary.summary.binary);
+    assert_eq!(binary.patch, None);
+    assert_eq!(
+        binary.content_unavailable_reason,
+        Some(DiffContentUnavailableReason::Binary)
+    );
+
+    let encoded = service
+        .get_diff(&context, &repository_id, &["encoded.txt".to_owned()], false)
+        .unwrap();
+    assert_eq!(encoded.patch, None);
+    assert_eq!(
+        encoded.content_unavailable_reason,
+        Some(DiffContentUnavailableReason::NonUtf8Content)
+    );
+
+    let untracked = service
+        .get_diff(
+            &context,
+            &repository_id,
+            &["untracked.txt".to_owned()],
+            false,
+        )
+        .unwrap();
+    let patch = untracked.patch.as_deref().expect("bounded untracked patch");
+    assert!(patch.contains("new file mode"));
+    assert!(patch.contains("+new"));
+    assert!(patch.contains("++already-plus"));
+    assert!(patch.contains("+last\n\\ No newline at end of file"));
+    assert_eq!(untracked.content_unavailable_reason, None);
+
+    let limited = service
+        .get_diff(&context, &repository_id, &["large.txt".to_owned()], false)
+        .unwrap();
+    let patch = limited.patch.as_deref().expect("truncated text patch");
+    assert!(limited.truncated);
+    assert!(patch.len() <= MAX_DIFF_PATCH_BYTES);
+    assert!(patch.split_inclusive('\n').count() <= MAX_DIFF_PATCH_LINES);
 }
 
 #[test]
@@ -1634,6 +1744,12 @@ fn untrusted_unstaged_diff_does_not_execute_clean_filter() {
         .expect("untrusted clean-filter diff returns a safe summary");
     assert_eq!(diff.summary.files.len(), 1);
     assert_eq!(diff.summary.files[0].path, "tracked.txt");
+    assert_eq!(diff.patch, None);
+    assert!(!diff.truncated);
+    assert_eq!(
+        diff.content_unavailable_reason,
+        Some(DiffContentUnavailableReason::UntrustedRepository)
+    );
     assert!(
         !marker.exists(),
         "untrusted unstaged diff executed repository clean filter"

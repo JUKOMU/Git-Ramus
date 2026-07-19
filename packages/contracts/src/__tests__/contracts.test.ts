@@ -538,6 +538,9 @@ describe("shared contracts", () => {
       diffResultSchema.parse({
         repositoryId,
         staged: false,
+        patch: "diff --git a/src/main.ts b/src/main.ts\n-old\n+new\n",
+        truncated: false,
+        contentUnavailableReason: null,
         summary: {
           files: [],
           changes: [],
@@ -548,6 +551,42 @@ describe("shared contracts", () => {
         }
       }).summary.files
     ).toEqual([]);
+    expect(() =>
+      diffResultSchema.parse({
+        repositoryId,
+        staged: false,
+        patch: null,
+        truncated: false,
+        contentUnavailableReason: "repositoryNotTrusted",
+        summary: {
+          files: [],
+          changes: [],
+          entries: [],
+          binary: false,
+          additions: 0,
+          deletions: 0
+        }
+      })
+    ).toThrow();
+    for (const contentUnavailableReason of ["nonUtf8Content", "outputLimit"] as const) {
+      expect(
+        diffResultSchema.parse({
+          repositoryId,
+          staged: false,
+          patch: null,
+          truncated: false,
+          contentUnavailableReason,
+          summary: {
+            files: [],
+            changes: [],
+            entries: [],
+            binary: false,
+            additions: 0,
+            deletions: 0
+          }
+        }).contentUnavailableReason
+      ).toBe(contentUnavailableReason);
+    }
     expect(
       writeResultSchema.parse({ repositoryId, snapshot: null, output: null }).output
     ).toBeNull();

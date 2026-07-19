@@ -207,6 +207,14 @@ export const diffSummarySchema = z
   })
   .strict();
 
+export const diffContentUnavailableReasonSchema = z.enum([
+  "binary",
+  "untrustedRepository",
+  "untrackedContentUnavailable",
+  "nonUtf8Content",
+  "outputLimit"
+]);
+
 const gpgFormat = z.enum(["openpgp", "ssh", "x509"]);
 const gitEmail = z
   .string()
@@ -480,7 +488,14 @@ export const changesResultSchema = z
   .strict();
 
 export const diffResultSchema = z
-  .object({ repositoryId: uuid, staged: z.boolean(), summary: diffSummarySchema })
+  .object({
+    repositoryId: uuid,
+    staged: z.boolean(),
+    summary: diffSummarySchema,
+    patch: z.string().nullable(),
+    truncated: z.boolean(),
+    contentUnavailableReason: diffContentUnavailableReasonSchema.nullable()
+  })
   .strict();
 
 export const writeResultSchema = z
@@ -530,6 +545,7 @@ export type ChangeEntry = z.infer<typeof changeEntrySchema>;
 export type ParsedChangeEntry = z.infer<typeof parsedChangeEntrySchema>;
 export type DiffFile = z.infer<typeof diffFileSchema>;
 export type DiffSummary = z.infer<typeof diffSummarySchema>;
+export type DiffContentUnavailableReason = z.infer<typeof diffContentUnavailableReasonSchema>;
 export type IdentityProfile = z.infer<typeof identityProfileSchema>;
 export type EffectiveIdentity = z.infer<typeof effectiveIdentitySchema>;
 export type Trust = z.infer<typeof trustSchema>;

@@ -10,6 +10,7 @@ import type { GitClientApi } from "../api";
 import { normalizeError } from "../api";
 import { ChangeList } from "../components/ChangeList";
 import { IdentityPicker } from "../components/IdentityPicker";
+import { RepositoryIdentityBinding } from "../components/RepositoryIdentityBinding";
 
 export type RepositoryApi = Pick<
   GitClientApi,
@@ -22,6 +23,8 @@ export type RepositoryApi = Pick<
   | "commitRepository"
   | "trustRepository"
   | "listIdentities"
+  | "bindRepositoryIdentity"
+  | "unbindRepositoryIdentity"
   | "getEffectiveRepositoryIdentity"
 >;
 
@@ -54,6 +57,12 @@ export function RepositoryView({ api, context, repository, onBack }: RepositoryV
     ReturnType<RepositoryApi["getEffectiveRepositoryIdentity"]>
   > | null>(null);
   const [selectedIdentityProfileId, setSelectedIdentityProfileId] = useState<string | null>(null);
+  const [repositoryIdentityProfileId, setRepositoryIdentityProfileId] = useState<string | null>(
+    null
+  );
+  const [identityBindingOperation, setIdentityBindingOperation] = useState<
+    "bind" | "unbind" | null
+  >(null);
   const [stagedSelection, setStagedSelection] = useState<string[]>([]);
   const [unstagedSelection, setUnstagedSelection] = useState<string[]>([]);
   const [untrackedSelection, setUntrackedSelection] = useState<string[]>([]);
@@ -72,6 +81,9 @@ export function RepositoryView({ api, context, repository, onBack }: RepositoryV
   const diffGeneration = useRef(0);
   const refreshGeneration = useRef(0);
   const trustStatusGeneration = useRef(0);
+  const identityLifecycleGeneration = useRef(0);
+  const identityLoadGeneration = useRef(0);
+  const identityBindingBusyRef = useRef(false);
 
   const groupedChanges = useMemo(() => groupChanges(changes), [changes]);
 
@@ -136,25 +148,112 @@ export function RepositoryView({ api, context, repository, onBack }: RepositoryV
     };
   }, [loadTrustStatus]);
 
-  useEffect(() => {
-    let active = true;
-    void Promise.all([api.listIdentities(), api.getEffectiveRepositoryIdentity(request)])
-      .then(([identityResult, effective]) => {
-        if (!active) return;
+  const loadIdentityState = useCallback(
+    async (lifecycle: number) => {
+      const load = ++identityLoadGeneration.current;
+      try {
+        const [identityResult, effective] = await Promise.all([
+          api.listIdentities(),
+          api.getEffectiveRepositoryIdentity(request)
+        ]);
+        if (
+          lifecycle !== identityLifecycleGeneration.current ||
+          load !== identityLoadGeneration.current
+        ) {
+          return;
+        }
         setIdentities(identityResult.identities);
         setGlobalIdentityProfileId(identityResult.globalIdentityProfileId);
         setEffectiveIdentity(effective);
         setSelectedIdentityProfileId(effective.profileId);
-      })
-      .catch((reason: unknown) => {
-        if (active) {
+        setRepositoryIdentityProfileId(
+          effective.source === "repositoryProfile" ? effective.profileId : null
+        );
+      } catch (reason: unknown) {
+        if (
+          lifecycle === identityLifecycleGeneration.current &&
+          load === identityLoadGeneration.current
+        ) {
           setActionError(normalizeError(reason, "Commit identity could not be loaded."));
         }
-      });
+      }
+    },
+    [api, request]
+  );
+
+  useEffect(() => {
+    const lifecycle = ++identityLifecycleGeneration.current;
+    identityBindingBusyRef.current = false;
+    void Promise.resolve().then(() => {
+      if (lifecycle !== identityLifecycleGeneration.current) return;
+      setIdentities([]);
+      setGlobalIdentityProfileId(null);
+      setEffectiveIdentity(null);
+      setSelectedIdentityProfileId(null);
+      setRepositoryIdentityProfileId(null);
+      setIdentityBindingOperation(null);
+      setActionError(null);
+      void loadIdentityState(lifecycle);
+    });
     return () => {
-      active = false;
+      if (lifecycle === identityLifecycleGeneration.current) {
+        identityLifecycleGeneration.current += 1;
+      }
+      identityLoadGeneration.current += 1;
+      identityBindingBusyRef.current = false;
     };
-  }, [api, request]);
+  }, [loadIdentityState]);
+
+  const bindRepositoryIdentity = async () => {
+    const profileId = repositoryIdentityProfileId;
+    const boundProfileId =
+      effectiveIdentity?.source === "repositoryProfile" ? effectiveIdentity.profileId : null;
+    if (profileId === null || profileId === boundProfileId || identityBindingBusyRef.current) {
+      return;
+    }
+    identityBindingBusyRef.current = true;
+    setIdentityBindingOperation("bind");
+    setActionError(null);
+    const lifecycle = identityLifecycleGeneration.current;
+    try {
+      await api.bindRepositoryIdentity({ ...request, identityProfileId: profileId });
+      if (lifecycle !== identityLifecycleGeneration.current) return;
+      await loadIdentityState(lifecycle);
+    } catch (reason: unknown) {
+      if (lifecycle === identityLifecycleGeneration.current) {
+        setActionError(normalizeError(reason, "Repository identity could not be bound."));
+      }
+    } finally {
+      if (lifecycle === identityLifecycleGeneration.current) {
+        identityBindingBusyRef.current = false;
+        setIdentityBindingOperation(null);
+      }
+    }
+  };
+
+  const unbindRepositoryIdentity = async () => {
+    const boundProfileId =
+      effectiveIdentity?.source === "repositoryProfile" ? effectiveIdentity.profileId : null;
+    if (boundProfileId === null || identityBindingBusyRef.current) return;
+    identityBindingBusyRef.current = true;
+    setIdentityBindingOperation("unbind");
+    setActionError(null);
+    const lifecycle = identityLifecycleGeneration.current;
+    try {
+      await api.unbindRepositoryIdentity(request);
+      if (lifecycle !== identityLifecycleGeneration.current) return;
+      await loadIdentityState(lifecycle);
+    } catch (reason: unknown) {
+      if (lifecycle === identityLifecycleGeneration.current) {
+        setActionError(normalizeError(reason, "Repository identity could not be unbound."));
+      }
+    } finally {
+      if (lifecycle === identityLifecycleGeneration.current) {
+        identityBindingBusyRef.current = false;
+        setIdentityBindingOperation(null);
+      }
+    }
+  };
 
   const showDiff = async (change: ParsedChangeEntry, staged: boolean) => {
     const generation = ++diffGeneration.current;
@@ -274,7 +373,11 @@ export function RepositoryView({ api, context, repository, onBack }: RepositoryV
     new Set([...unstagedSelection, ...untrackedSelection, ...conflictSelection])
   );
   const canCommit =
-    trusted === true && !busy && message.trim().length > 0 && groupedChanges.staged.length > 0;
+    trusted === true &&
+    !busy &&
+    identityBindingOperation === null &&
+    message.trim().length > 0 &&
+    groupedChanges.staged.length > 0;
 
   return (
     <section className="view repository-view">
@@ -421,6 +524,19 @@ export function RepositoryView({ api, context, repository, onBack }: RepositoryV
               effectiveIdentity={effectiveIdentity}
               selectedIdentityProfileId={selectedIdentityProfileId}
               onChange={setSelectedIdentityProfileId}
+            />
+            <RepositoryIdentityBinding
+              identities={identities}
+              boundIdentityProfileId={
+                effectiveIdentity?.source === "repositoryProfile"
+                  ? effectiveIdentity.profileId
+                  : null
+              }
+              selectedIdentityProfileId={repositoryIdentityProfileId}
+              operation={identityBindingOperation}
+              onSelectionChange={setRepositoryIdentityProfileId}
+              onBind={() => void bindRepositoryIdentity()}
+              onUnbind={() => void unbindRepositoryIdentity()}
             />
             <label>
               Commit message

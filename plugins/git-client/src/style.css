@@ -209,6 +209,15 @@ td {
   gap: var(--gr-spacing-md, 12px);
 }
 
+.repository-identity-binding {
+  padding-top: var(--gr-spacing-md, 12px);
+  border-top: 1px solid var(--gr-colors-border, #2c3a52);
+}
+
+.repository-identity-actions {
+  justify-content: flex-start;
+}
+
 .change-selection {
   display: flex;
   flex: 1;
@@ -219,9 +228,44 @@ td {
 }
 
 .change-selection input,
-.select-all input {
+.select-all input,
+.checkbox-label input {
   width: auto;
   margin: 0;
+}
+
+.identity-editor,
+.identity-list {
+  margin-bottom: var(--gr-spacing-lg, 24px);
+}
+
+.identity-form-grid {
+  grid-template-columns: repeat(3, minmax(180px, 1fr));
+}
+
+.checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gr-spacing-sm, 8px);
+  color: inherit;
+  font-size: inherit;
+}
+
+.identity-form-actions {
+  justify-content: flex-start;
+  margin-top: var(--gr-spacing-md, 12px);
+}
+
+.identity-signing-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gr-spacing-md, 12px);
+  margin-bottom: var(--gr-spacing-sm, 8px);
+}
+
+.signing-validation {
+  margin-bottom: var(--gr-spacing-sm, 8px);
+  color: var(--gr-colors-warning, #f59e0b);
 }
 
 .change-kind {
@@ -294,7 +338,8 @@ pre {
   }
 
   .filters,
-  .form-grid {
+  .form-grid,
+  .identity-form-grid {
     grid-template-columns: 1fr;
   }
 }

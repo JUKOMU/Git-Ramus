@@ -1,6 +1,7 @@
 import type { GitContextRequest, Repository } from "@git-ramus/contracts";
 import { useState } from "react";
 import type { GitClientApi } from "./api";
+import { IdentitiesView } from "./views/IdentitiesView";
 import { OverviewView } from "./views/OverviewView";
 import { ProjectsView } from "./views/ProjectsView";
 import { RepositoryView } from "./views/RepositoryView";
@@ -44,6 +45,8 @@ export function App({ api, route }: AppProps) {
       return <ProjectsView api={api} onOpenRepository={openRepository} />;
     case "/workspaces":
       return <WorkspacesView api={api} />;
+    case "/identities":
+      return <IdentitiesView api={api} />;
     default:
       return (
         <section className="view empty-view">

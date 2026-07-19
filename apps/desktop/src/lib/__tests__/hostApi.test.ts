@@ -251,6 +251,9 @@ const responses: Record<string, unknown> = {
   git_repository_diff: {
     repositoryId,
     staged: false,
+    patch: "diff --git a/src/main.ts b/src/main.ts\n-old\n+new\n",
+    truncated: false,
+    contentUnavailableReason: null,
     summary: {
       files: [],
       changes: [],
