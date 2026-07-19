@@ -378,7 +378,11 @@ pub struct SecretCleanupRecord {
 
 #[cfg(test)]
 mod tests {
-    use super::AccountDeletionResolution;
+    use chrono::Utc;
+
+    use super::{
+        AccountDeletionResolution, ProviderConnectionStatus, ProviderInstance, ProviderKind,
+    };
 
     #[test]
     fn account_deletion_resolution_uses_camel_case_fields() {
@@ -393,5 +397,28 @@ mod tests {
                 "accountId": "7f3c0214-373c-4d43-b0c7-cdaed1cbcc50"
             })
         );
+    }
+
+    #[test]
+    fn instance_summary_exposes_only_the_custom_ca_file_name() {
+        let now = Utc::now();
+        let summary = ProviderInstance {
+            id: "instance".to_owned(),
+            provider_kind: ProviderKind::Gitlab,
+            display_name: "GitLab".to_owned(),
+            base_url: "https://gitlab.example".to_owned(),
+            api_base_url: "https://gitlab.example/api/v4".to_owned(),
+            custom_ca_path: Some("/private/certificates/company-root.pem".to_owned()),
+            last_validated_at: Some(now),
+            server_version: None,
+            created_at: now,
+            updated_at: now,
+        }
+        .summary(true, ProviderConnectionStatus::Connected);
+        let serialized = serde_json::to_string(&summary).unwrap();
+        assert!(summary.custom_ca_configured);
+        assert_eq!(summary.custom_ca_label.as_deref(), Some("company-root.pem"));
+        assert!(!serialized.contains("private"));
+        assert!(!serialized.contains("certificates"));
     }
 }

@@ -12,6 +12,9 @@ use crate::jobs::JobService;
 use crate::plugins::PluginRegistry;
 use crate::plugins::manifest::PluginKind;
 use crate::plugins::permissions::PermissionGateway;
+use crate::providers::adapter::ProviderAdapterRegistry;
+use crate::providers::service::ProviderService;
+use crate::providers::store::ProviderStore;
 use crate::secrets::{KeyringSecretStore, SecretStore};
 use crate::themes::ThemeManager;
 
@@ -23,6 +26,7 @@ pub struct AppState {
     pub jobs: JobService,
     pub plugins: PluginRegistry,
     pub permissions: PermissionGateway,
+    pub providers: ProviderService,
     pub themes: ThemeManager,
     #[cfg(all(feature = "e2e", debug_assertions))]
     pub(crate) e2e_app_data_root: PathBuf,
@@ -105,13 +109,23 @@ impl AppState {
             }
         }
         let write_locks = RepositoryWriteLocks::default();
+        let secrets: Arc<dyn SecretStore> =
+            Arc::new(KeyringSecretStore::new("io.git-ramus.desktop"));
+        let provider_adapters = ProviderAdapterRegistry::from_plugins(database.clone(), &plugins)?;
+        let providers = ProviderService::new(
+            ProviderStore::new(database.clone()),
+            Arc::clone(&secrets),
+            provider_adapters,
+        );
+        providers.retry_secret_cleanup()?;
         Ok(Self {
             jobs: JobService::new(database.clone()),
             git: GitService::with_write_locks(database.clone(), write_locks.clone()),
             identities: IdentityService::with_write_locks(database.clone(), write_locks),
-            secrets: Arc::new(KeyringSecretStore::new("io.git-ramus.desktop")),
+            secrets,
             plugins,
             permissions,
+            providers,
             themes,
             database,
             #[cfg(all(feature = "e2e", debug_assertions))]

@@ -13,9 +13,7 @@ impl SensitiveString {
         Self(value)
     }
 
-    // This is consumed by the Provider service once secrets are handed to an adapter. Keeping
-    // it crate-private prevents UI/plugin serialization from acquiring an escape hatch.
-    #[allow(dead_code)]
+    // Keeping this crate-private prevents UI/plugin serialization from acquiring an escape hatch.
     pub(crate) fn as_str(&self) -> &str {
         &self.0
     }

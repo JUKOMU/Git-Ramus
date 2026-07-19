@@ -3,18 +3,25 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use chrono::Utc;
+use futures_util::future::BoxFuture;
+use git_ramus_desktop_lib::db::Database;
 use git_ramus_desktop_lib::error::{AppError, ErrorEnvelope};
 use git_ramus_desktop_lib::providers::adapter::{
-    AdapterAccountContext, RepositoryDiscoveryProvider,
+    AdapterAccountContext, ProviderAdapterRegistry, RepositoryDiscoveryProvider,
 };
 use git_ramus_desktop_lib::providers::github::GithubProvider;
 use git_ramus_desktop_lib::providers::gitlab::GitlabProvider;
 use git_ramus_desktop_lib::providers::http::ScopedHttpClient;
 use git_ramus_desktop_lib::providers::model::{
-    AdapterCursor, AdapterListRequest, ProviderArchivedFilter, ProviderInstance, ProviderKind,
-    ProviderPermission, ProviderRepositoryDirection, ProviderRepositoryQuery,
-    ProviderRepositorySort, ProviderVisibility, RemoteRepositoryIdentity,
+    AccountIdentity, AdapterCursor, AdapterListRequest, AdapterPage, InstanceMetadata,
+    ProviderArchivedFilter, ProviderInstance, ProviderKind, ProviderPermission,
+    ProviderRepositoryDirection, ProviderRepositoryQuery, ProviderRepositorySort,
+    ProviderVisibility, RemoteRepository, RemoteRepositoryIdentity,
 };
+use git_ramus_desktop_lib::providers::service::{CreateInstanceInput, ProviderService};
+use git_ramus_desktop_lib::providers::store::ProviderStore;
+use git_ramus_desktop_lib::providers::url::{NormalizedInstance, NormalizedRemoteUrl};
+use git_ramus_desktop_lib::secrets::{MemorySecretStore, SecretStore, SensitiveString};
 use httpmock::{Method::GET, MockServer};
 use rcgen::{CertifiedKey, generate_simple_self_signed};
 use reqwest::StatusCode;
@@ -1185,4 +1192,124 @@ async fn gitlab_maps_authentication_malformed_json_and_cross_origin_links() {
         .await
         .expect_err("malformed JSON is normalized");
     assert_eq!(error_code(error), "provider.response-invalid");
+}
+
+struct ServiceFakeProvider;
+
+impl RepositoryDiscoveryProvider for ServiceFakeProvider {
+    fn kind(&self) -> ProviderKind {
+        ProviderKind::Gitlab
+    }
+
+    fn validate_instance<'a>(
+        &'a self,
+        _client: &'a ScopedHttpClient,
+    ) -> BoxFuture<'a, Result<InstanceMetadata, AppError>> {
+        Box::pin(async {
+            Ok(InstanceMetadata {
+                server_version: Some("18.2.0-test".to_owned()),
+            })
+        })
+    }
+
+    fn authenticate_account<'a>(
+        &'a self,
+        _client: &'a ScopedHttpClient,
+        _secret: &'a str,
+    ) -> BoxFuture<'a, Result<AccountIdentity, AppError>> {
+        Box::pin(async {
+            Ok(AccountIdentity {
+                provider_user_id: "provider-user-7".to_owned(),
+                username: "tempest".to_owned(),
+                display_name: Some("Yozora Tempest".to_owned()),
+                avatar_url: None,
+            })
+        })
+    }
+
+    fn list_repositories<'a>(
+        &'a self,
+        _context: AdapterAccountContext<'a>,
+        _request: AdapterListRequest,
+    ) -> BoxFuture<'a, Result<AdapterPage, AppError>> {
+        Box::pin(async {
+            Ok(AdapterPage {
+                items: Vec::new(),
+                next_cursor: None,
+                rate_limit: None,
+            })
+        })
+    }
+
+    fn get_repository<'a>(
+        &'a self,
+        _context: AdapterAccountContext<'a>,
+        _identity: RemoteRepositoryIdentity,
+    ) -> BoxFuture<'a, Result<RemoteRepository, AppError>> {
+        Box::pin(async { Err(AppError::NotFound("fake repository".to_owned())) })
+    }
+
+    fn detect_remote(
+        &self,
+        _instance: &NormalizedInstance,
+        _remote: &NormalizedRemoteUrl,
+    ) -> Option<RemoteRepositoryIdentity> {
+        None
+    }
+}
+
+#[tokio::test]
+async fn service_connects_without_persisting_the_pat_and_respects_provider_enabled_state() {
+    let database = Database::open_in_memory().expect("database opens");
+    database
+        .with_connection(|connection| {
+            connection.execute(
+                "INSERT INTO plugin_installations(plugin_id,version,kind,root_path,enabled,installed_at,updated_at) VALUES('git-ramus.provider.gitlab','0.1.0','builtin','/builtin/gitlab',1,?1,?1)",
+                [Utc::now().to_rfc3339()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let store = ProviderStore::new(database.clone());
+    let secrets = Arc::new(MemorySecretStore::default());
+    let adapters = ProviderAdapterRegistry::for_test(
+        database.clone(),
+        ProviderKind::Gitlab,
+        Arc::new(ServiceFakeProvider),
+    );
+    let service = ProviderService::new(store.clone(), secrets.clone(), adapters);
+    let instance = service
+        .create_instance(CreateInstanceInput {
+            provider_kind: ProviderKind::Gitlab,
+            display_name: "Private GitLab".to_owned(),
+            base_url: "https://gitlab.example".to_owned(),
+            custom_ca_path: None,
+        })
+        .await
+        .unwrap();
+    let account = service
+        .connect_account(
+            &instance.id,
+            SensitiveString::new("glpat-integration-secret".to_owned()),
+        )
+        .await
+        .unwrap();
+    let persisted = store.get_account(&account.id).unwrap();
+
+    assert!(!persisted.secret_ref.contains("glpat-integration-secret"));
+    assert_eq!(
+        secrets.get(&persisted.secret_ref).unwrap().as_deref(),
+        Some("glpat-integration-secret")
+    );
+    database
+        .with_connection(|connection| {
+            connection.execute(
+                "UPDATE plugin_installations SET enabled=0 WHERE plugin_id='git-ramus.provider.gitlab'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(service.validate_account(&account.id).await.is_err());
+    assert_eq!(store.list_accounts(&instance.id).unwrap().len(), 1);
 }
