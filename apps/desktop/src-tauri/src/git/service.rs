@@ -21,7 +21,8 @@ use super::engine::{GitCommand, GitOutput, GitRunner, SystemGitRunner};
 use super::model::{Project, Repository, RepositorySnapshot, Trust, Workspace};
 use super::parser::{
     ChangeEntry, ChangeKind, DetectedRepository, DiffFile, DiffSummary,
-    RepositorySnapshot as ParsedSnapshot, detect_repository, parse_diff_summary, parse_status_v2,
+    RepositorySnapshot as ParsedSnapshot, detect_repository, parse_diff_summary,
+    parse_remote_config, parse_status_v2,
 };
 use super::repository::{
     ProjectRepository, RepositoryRepository, RepositoryWriteLocks, SnapshotRepository,
@@ -1389,6 +1390,7 @@ impl GitService {
         repository: &Repository,
     ) -> Result<(RepositorySnapshot, ParsedSnapshot), AppError> {
         let parsed = self.read_status(repository)?;
+        let _ = self.refresh_remotes(repository);
         let snapshot = db_snapshot(repository.id.as_str(), &parsed, None);
         self.snapshots.upsert(&snapshot)?;
         if let Ok(mut cache) = self.status_cache.lock() {
@@ -1522,6 +1524,35 @@ impl GitService {
             ensure_success(&output)?;
         }
         parse_filter_driver_names(&output.stdout)
+    }
+
+    fn refresh_remotes(&self, repository: &Repository) -> Result<(), AppError> {
+        let _permit = self.read_gate.acquire();
+        let output = self.run_git(
+            repository,
+            vec![
+                OsString::from("--no-pager"),
+                OsString::from("--no-optional-locks"),
+                OsString::from("config"),
+                OsString::from("--local"),
+                OsString::from("--null"),
+                OsString::from("--get-regexp"),
+                OsString::from("^remote\\..*\\.(url|pushurl)$"),
+            ],
+            None,
+        )?;
+        let remotes = if output.status.success() {
+            parse_remote_config(&repository.id, &output.stdout)?
+        } else if output.status.code() == Some(1)
+            && output.stdout.is_empty()
+            && output.stderr.is_empty()
+        {
+            Vec::new()
+        } else {
+            ensure_success(&output)?;
+            unreachable!("successful Git output handled above")
+        };
+        self.repositories.replace_remotes(&repository.id, &remotes)
     }
 
     fn latest_or_refresh_status(

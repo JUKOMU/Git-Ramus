@@ -316,6 +316,57 @@ impl RepositoryRepository {
     pub fn add_remote(&self, remote: &Remote) -> Result<(), AppError> {
         self.db.with_connection(|c| c.execute("INSERT INTO repository_remotes(repository_id,name,fetch_url,push_url) VALUES(?1,?2,?3,?4) ON CONFLICT(repository_id,name) DO UPDATE SET fetch_url=excluded.fetch_url,push_url=excluded.push_url", params![remote.repository_id, remote.name, remote.fetch_url, remote.push_url]).map(|_|())).map_err(|e| map_constraint_error(e, "repository remote"))
     }
+    pub fn replace_remotes(&self, repository_id: &str, remotes: &[Remote]) -> Result<(), AppError> {
+        if remotes
+            .iter()
+            .any(|remote| remote.repository_id != repository_id)
+        {
+            return Err(AppError::InvalidInput(
+                "remote belongs to another repository".to_owned(),
+            ));
+        }
+        let mut incoming_names = std::collections::BTreeSet::new();
+        if remotes
+            .iter()
+            .any(|remote| !incoming_names.insert(remote.name.as_str()))
+        {
+            return Err(AppError::InvalidInput(
+                "remote names must be unique".to_owned(),
+            ));
+        }
+        self.db
+            .with_transaction(|transaction| {
+                let existing_names = {
+                    let mut statement = transaction.prepare(
+                        "SELECT name FROM repository_remotes WHERE repository_id=?1",
+                    )?;
+                    statement
+                        .query_map([repository_id], |row| row.get::<_, String>(0))?
+                        .collect::<Result<Vec<_>, _>>()?
+                };
+                for remote in remotes {
+                    transaction.execute(
+                        "INSERT INTO repository_remotes(repository_id,name,fetch_url,push_url) VALUES(?1,?2,?3,?4) ON CONFLICT(repository_id,name) DO UPDATE SET fetch_url=excluded.fetch_url,push_url=excluded.push_url",
+                        params![
+                            remote.repository_id,
+                            remote.name,
+                            remote.fetch_url,
+                            remote.push_url
+                        ],
+                    )?;
+                }
+                for stale_name in existing_names {
+                    if !incoming_names.contains(stale_name.as_str()) {
+                        transaction.execute(
+                            "DELETE FROM repository_remotes WHERE repository_id=?1 AND name=?2",
+                            params![repository_id, stale_name],
+                        )?;
+                    }
+                }
+                Ok(())
+            })
+            .map_err(|error| map_constraint_error(error, "repository remotes"))
+    }
     pub fn get_remote(&self, repository_id: &str, name: &str) -> Result<Remote, AppError> {
         self.db.with_connection(|c| c.query_row("SELECT repository_id,name,fetch_url,push_url FROM repository_remotes WHERE repository_id=?1 AND name=?2", params![repository_id, name], |r| Ok(Remote { repository_id: r.get(0)?, name: r.get(1)?, fetch_url: r.get(2)?, push_url: r.get(3)? })).optional()).and_then(|v| v.ok_or_else(|| AppError::NotFound(format!("remote {repository_id}/{name}"))))
     }

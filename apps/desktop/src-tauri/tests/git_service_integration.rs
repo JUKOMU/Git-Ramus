@@ -11,7 +11,7 @@ use git_ramus_desktop_lib::db::Database;
 use git_ramus_desktop_lib::error::{AppError, ErrorCategory, ErrorEnvelope};
 use git_ramus_desktop_lib::git::engine::{GitCommand, GitOutput, GitRunner, SystemGitRunner};
 use git_ramus_desktop_lib::git::model::RepositoryKind;
-use git_ramus_desktop_lib::git::repository::RepositoryWriteLocks;
+use git_ramus_desktop_lib::git::repository::{RepositoryRepository, RepositoryWriteLocks};
 use git_ramus_desktop_lib::git::service::{
     DiffContentUnavailableReason, GitService, MAX_DIFF_PATCH_BYTES, MAX_DIFF_PATCH_LINES,
     ProjectCreateInput, ProjectUpdateInput, QueryContext, validate_relative_path,
@@ -70,6 +70,72 @@ fn scan_project_discovers_repositories_and_returns_partial_records() {
         result.failures.is_empty(),
         "candidate failures are non-fatal"
     );
+}
+
+#[test]
+fn scan_synchronizes_effective_remote_urls_into_sqlite() {
+    if !git_available() {
+        eprintln!("git executable unavailable; skipping service integration test");
+        return;
+    }
+    let root = tempdir().expect("temporary root");
+    run_git(root.path(), &["init", "--quiet"]);
+    run_git(
+        root.path(),
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://gitlab.example/group/repository.git",
+        ],
+    );
+    run_git(
+        root.path(),
+        &[
+            "remote",
+            "set-url",
+            "--push",
+            "origin",
+            "git@gitlab.example:group/fork.git",
+        ],
+    );
+    run_git(
+        root.path(),
+        &[
+            "remote",
+            "add",
+            "team.upstream",
+            "ssh://git@gitlab.example/group/upstream.git",
+        ],
+    );
+    let database = Database::open_in_memory().unwrap();
+    let service = GitService::new(database.clone());
+    let project = service
+        .create_project(ProjectCreateInput {
+            root_path: root.path().to_string_lossy().into_owned(),
+            name: "Remote fixture".to_owned(),
+            scan_depth: Some(0),
+            exclude_patterns: Vec::new(),
+        })
+        .unwrap();
+
+    let scan = service.scan_project(&project.id).unwrap();
+    let repository_id = &scan.repositories[0].repository.id;
+    let remotes = RepositoryRepository::new(database)
+        .list_remotes(repository_id)
+        .unwrap();
+    assert_eq!(remotes.len(), 2);
+    assert_eq!(remotes[0].name, "origin");
+    assert_eq!(
+        remotes[0].fetch_url.as_deref(),
+        Some("https://gitlab.example/group/repository.git")
+    );
+    assert_eq!(
+        remotes[0].push_url.as_deref(),
+        Some("git@gitlab.example:group/fork.git")
+    );
+    assert_eq!(remotes[1].name, "team.upstream");
+    assert_eq!(remotes[1].fetch_url, remotes[1].push_url);
 }
 
 #[test]
@@ -1638,9 +1704,15 @@ fn untrusted_status_disables_every_discovered_filter_driver() {
     assert!(
         !trusted_calls
             .iter()
-            .any(|args| args.iter().any(|arg| arg == "config")),
+            .any(|args| args.iter().any(|arg| arg.starts_with("^filter\\."))),
         "trusted status should retain repository filter semantics"
     );
+    assert!(trusted_calls.iter().any(|args| {
+        args.iter().any(|arg| arg == "--local")
+            && args
+                .iter()
+                .any(|arg| arg == "^remote\\..*\\.(url|pushurl)$")
+    }));
     let trusted_status = trusted_calls
         .iter()
         .find(|args| args.iter().any(|arg| arg == "status"))

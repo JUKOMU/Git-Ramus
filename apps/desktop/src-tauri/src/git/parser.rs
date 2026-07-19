@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::model::RepositoryKind;
+use super::model::{Remote, RepositoryKind};
 use crate::error::AppError;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -1086,7 +1086,7 @@ pub fn parse_git_config(input: impl AsRef<[u8]>) -> Result<GitConfig, AppError> 
             }
             let key = decode_config_key(&record[..separator])?;
             let value = decode_config_value(&record[separator + 1..])?;
-            config.insert(key, value);
+            config.entry(key).or_insert(value);
             entries += 1;
             saw_record = true;
         } else {
@@ -1101,12 +1101,62 @@ pub fn parse_git_config(input: impl AsRef<[u8]>) -> Result<GitConfig, AppError> 
             if entries >= MAX_CONFIG_ENTRIES {
                 return Err(AppError::OutputLimit);
             }
-            config.insert(decode_config_key(record)?, decode_config_value(value)?);
+            config
+                .entry(decode_config_key(record)?)
+                .or_insert(decode_config_value(value)?);
             entries += 1;
             saw_record = true;
         }
     }
     Ok(config)
+}
+
+/// Parse effective remote fetch/push URLs emitted by
+/// `git config --local --null --get-regexp ^remote\..*\.(url|pushurl)$`.
+pub fn parse_remote_config(repository_id: &str, bytes: &[u8]) -> Result<Vec<Remote>, AppError> {
+    let config = parse_git_config(bytes)?;
+    let mut remotes = BTreeMap::<String, (Option<String>, Option<String>)>::new();
+    for (key, value) in config {
+        let Some(remote_key) = key.strip_prefix("remote.") else {
+            return Err(AppError::InvalidInput(
+                "unexpected remote config key".to_owned(),
+            ));
+        };
+        let (name, is_push) = if let Some(name) = remote_key.strip_suffix(".pushurl") {
+            (name, true)
+        } else if let Some(name) = remote_key.strip_suffix(".url") {
+            (name, false)
+        } else {
+            return Err(AppError::InvalidInput(
+                "unexpected remote config key".to_owned(),
+            ));
+        };
+        if name.is_empty()
+            || name.len() > 256
+            || name.chars().any(char::is_control)
+            || value.is_empty()
+            || value.chars().any(char::is_control)
+        {
+            return Err(AppError::InvalidInput(
+                "remote config contains an invalid name or URL".to_owned(),
+            ));
+        }
+        let entry = remotes.entry(name.to_owned()).or_default();
+        if is_push {
+            entry.1.get_or_insert(value);
+        } else {
+            entry.0.get_or_insert(value);
+        }
+    }
+    Ok(remotes
+        .into_iter()
+        .map(|(name, (fetch_url, push_url))| Remote {
+            repository_id: repository_id.to_owned(),
+            name,
+            push_url: push_url.or_else(|| fetch_url.clone()),
+            fetch_url,
+        })
+        .collect())
 }
 
 /// Canonicalize a path and classify a normal, bare, or linked worktree repository.
@@ -1247,4 +1297,46 @@ fn decode_config_value(value: &[u8]) -> Result<String, AppError> {
     std::str::from_utf8(value)
         .map(str::to_owned)
         .map_err(|_| invalid_path())
+}
+
+#[cfg(test)]
+mod remote_tests {
+    use super::parse_remote_config;
+
+    #[test]
+    fn parses_effective_fetch_and_push_urls_without_splitting_dotted_remote_names() {
+        let input = b"remote.origin.url\nhttps://gitlab.example/group/repo.git\0\
+remote.origin.pushurl\ngit@gitlab.example:group/fork.git\0\
+remote.team.upstream.url\nssh://git@gitlab.example/group/upstream.git\0";
+        let remotes = parse_remote_config("repository-id", input).unwrap();
+        assert_eq!(remotes[0].name, "origin");
+        assert_eq!(
+            remotes[0].fetch_url.as_deref(),
+            Some("https://gitlab.example/group/repo.git")
+        );
+        assert_eq!(
+            remotes[0].push_url.as_deref(),
+            Some("git@gitlab.example:group/fork.git")
+        );
+        assert_eq!(remotes[1].name, "team.upstream");
+        assert_eq!(remotes[1].push_url, remotes[1].fetch_url);
+    }
+
+    #[test]
+    fn keeps_the_first_git_reported_url_and_rejects_unsafe_remote_names() {
+        let repeated = b"remote.origin.url\nhttps://first.example/repo.git\0\
+remote.origin.url\nhttps://second.example/repo.git\0";
+        let remotes = parse_remote_config("repository-id", repeated).unwrap();
+        assert_eq!(
+            remotes[0].fetch_url.as_deref(),
+            Some("https://first.example/repo.git")
+        );
+        assert!(
+            parse_remote_config(
+                "repository-id",
+                b"remote.bad\nname.url\nhttps://gitlab.example/repo.git\0"
+            )
+            .is_err()
+        );
+    }
 }

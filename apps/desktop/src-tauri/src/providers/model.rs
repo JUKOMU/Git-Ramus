@@ -218,6 +218,17 @@ pub struct ProviderBinding {
     rename_all = "camelCase",
     rename_all_fields = "camelCase"
 )]
+pub enum RemoteRepositoryIdentity {
+    Id { repository_id: String },
+    Path { path: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum AccountDeletionResolution {
     Reassign { account_id: String },
     Inherit,

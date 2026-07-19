@@ -249,6 +249,60 @@ mod tests {
     }
 
     #[test]
+    fn replacing_remotes_preserves_unchanged_bindings_and_cascades_only_stale_ones() {
+        let db = Database::open_in_memory().unwrap();
+        let repositories = super::repository::RepositoryRepository::new(db.clone());
+        let repository = super::model::Repository::new(
+            "/tmp/provider-remotes",
+            "Provider remotes",
+            super::model::RepositoryKind::Normal,
+        );
+        repositories.create(&repository).unwrap();
+        for name in ["origin", "upstream"] {
+            repositories
+                .add_remote(&super::model::Remote {
+                    repository_id: repository.id.clone(),
+                    name: name.to_owned(),
+                    fetch_url: Some(format!("https://gitlab.example/group/{name}.git")),
+                    push_url: Some(format!("git@gitlab.example:group/{name}.git")),
+                })
+                .unwrap();
+        }
+        db.with_connection(|connection| {
+            connection.execute("INSERT INTO provider_instances(id,provider_kind,display_name,base_url,api_base_url,created_at,updated_at) VALUES('provider-instance','gitlab','GitLab','https://gitlab.example','https://gitlab.example/api/v4','2026-07-19T00:00:00Z','2026-07-19T00:00:00Z')", [])?;
+            for name in ["origin", "upstream"] {
+                connection.execute("INSERT INTO provider_repository_bindings(repository_id,remote_name,provider_instance_id,provider_repository_id,full_name,web_url,matched_url,binding_source,bound_at,updated_at) VALUES(?1,?2,'provider-instance',?2,?2,'https://gitlab.example/group/repository','gitlab.example/group/repository','auto','2026-07-19T00:00:00Z','2026-07-19T00:00:00Z')", rusqlite::params![repository.id, name])?;
+            }
+            Ok(())
+        }).unwrap();
+
+        repositories
+            .replace_remotes(
+                &repository.id,
+                &[super::model::Remote {
+                    repository_id: repository.id.clone(),
+                    name: "origin".to_owned(),
+                    fetch_url: Some("https://gitlab.example/group/renamed.git".to_owned()),
+                    push_url: Some("git@gitlab.example:group/renamed.git".to_owned()),
+                }],
+            )
+            .unwrap();
+
+        let origin_binding: i64 = db
+            .with_connection(|connection| {
+                connection.query_row("SELECT COUNT(*) FROM provider_repository_bindings WHERE repository_id=?1 AND remote_name='origin'", [&repository.id], |row| row.get(0))
+            })
+            .unwrap();
+        let upstream_binding: i64 = db
+            .with_connection(|connection| {
+                connection.query_row("SELECT COUNT(*) FROM provider_repository_bindings WHERE repository_id=?1 AND remote_name='upstream'", [&repository.id], |row| row.get(0))
+            })
+            .unwrap();
+        assert_eq!(origin_binding, 1);
+        assert_eq!(upstream_binding, 0);
+    }
+
+    #[test]
     fn workspace_membership_add_remove_api_preserves_rows_and_maps_fk_errors() {
         let db = Database::open_in_memory().unwrap();
         let projects = super::repository::ProjectRepository::new(db.clone());
@@ -283,5 +337,5 @@ pub mod service;
 pub use engine::{GitCommand, GitOutput, GitRunner, SystemGitRunner};
 pub use parser::{
     ChangeEntry, ChangeKind, DetectedRepository, DiffFile, DiffSummary, RepositorySnapshot,
-    detect_repository, parse_diff_summary, parse_git_config, parse_status_v2,
+    detect_repository, parse_diff_summary, parse_git_config, parse_remote_config, parse_status_v2,
 };
