@@ -79,6 +79,14 @@ jobs:
           wget
           xvfb
       - run: npm ci
+      - name: Run Unix Git process-tree cleanup regression
+        if: runner.os == 'Linux'
+        run: >-
+          cargo test
+          --manifest-path apps/desktop/src-tauri/Cargo.toml
+          --lib
+          git::engine::tests::unix_io_timeout_kills_a_descendant_that_keeps_the_output_pipe_open
+          -- --exact
       - run: npm run build:e2e --workspace @git-ramus/desktop
       - name: Run Windows E2E
         if: runner.os == 'Windows'
