@@ -62,15 +62,27 @@ export async function syncBuiltinPlugins({
 
 async function stagePlugin(plugin, stagingRoot, copyFile) {
   const manifest = JSON.parse(await readFile(resolve(plugin.source, "plugin.json"), "utf8"));
-  if (manifest.id !== plugin.id || manifest.entrypoints?.ui !== "ui.html") {
-    throw new Error(`${plugin.workspace} manifest does not match its staged location`);
+  if (manifest.id !== plugin.id) {
+    throw new Error(`${plugin.id} manifest does not match its staged location`);
+  }
+  const ui = manifest.entrypoints?.ui;
+  if (ui !== undefined && ui !== "ui.html") {
+    throw new Error(`${plugin.id} manifest has an invalid UI entrypoint`);
+  }
+  if (ui === undefined) {
+    const providers = manifest.contributions?.providers;
+    if (!Array.isArray(providers) || providers.length === 0) {
+      throw new Error(`${plugin.id} backend manifest requires a Provider contribution`);
+    }
   }
 
   const destination = containedPath(stagingRoot, plugin.id);
   await rm(destination, { recursive: true, force: true });
   await mkdir(destination, { recursive: true });
   await copyFile(resolve(plugin.source, "plugin.json"), resolve(destination, "plugin.json"));
-  await copyFile(resolve(plugin.source, "dist/index.html"), resolve(destination, "ui.html"));
+  if (ui !== undefined) {
+    await copyFile(resolve(plugin.source, "dist/index.html"), resolve(destination, "ui.html"));
+  }
 
   const theme = manifest.contributions?.theme;
   if (theme !== undefined) {

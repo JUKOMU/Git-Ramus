@@ -21,7 +21,8 @@ const plugin = {
       navigation: [
         { id: "welcome", label: "Welcome", route: "/welcome", icon: "sparkles" },
         { id: "projects", label: "Plugin Projects", route: "/projects", icon: "folder" }
-      ]
+      ],
+      providers: []
     },
     permissions: [
       { capability: "app:read", resources: ["info"] },

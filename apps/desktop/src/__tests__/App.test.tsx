@@ -80,7 +80,8 @@ const gitClient: PluginDescriptor = {
     sdkVersion: "^0.1.0",
     entrypoints: { ui: "ui.html" },
     contributions: {
-      navigation: [{ id: "overview", label: "Overview", route: "/overview", icon: "grid" }]
+      navigation: [{ id: "overview", label: "Overview", route: "/overview", icon: "grid" }],
+      providers: []
     },
     permissions: []
   },

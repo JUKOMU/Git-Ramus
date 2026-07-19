@@ -25,6 +25,16 @@ const plugins = [
     workspace: "@git-ramus/builtin-compact-theme",
     source: resolve(root, "plugins/builtin-compact-theme"),
     id: "git-ramus.compact-theme"
+  },
+  {
+    workspace: null,
+    source: resolve(root, "plugins/provider-github"),
+    id: "git-ramus.provider.github"
+  },
+  {
+    workspace: null,
+    source: resolve(root, "plugins/provider-gitlab"),
+    id: "git-ramus.provider.gitlab"
   }
 ];
 
@@ -32,6 +42,7 @@ await syncBuiltinPlugins({
   plugins,
   destinationRoot: resolve(root, "apps/desktop/src-tauri/resources/plugins"),
   buildPlugin: async (plugin) => {
+    if (plugin.workspace === null) return;
     const npmArguments = ["run", "build", "--workspace", plugin.workspace];
     await run(npmCommand, npmCli === null ? npmArguments : [npmCli, ...npmArguments], {
       cwd: root

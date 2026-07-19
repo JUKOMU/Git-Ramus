@@ -39,13 +39,20 @@ pub fn build_plugin_response(
             b"not found".to_vec(),
         );
     };
+    let Some(ui_html) = descriptor.ui_html.as_deref() else {
+        return response(
+            StatusCode::NOT_FOUND,
+            "text/plain; charset=utf-8",
+            b"not found".to_vec(),
+        );
+    };
     Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "text/html; charset=utf-8")
         .header("content-security-policy", PLUGIN_CSP)
         .header("x-content-type-options", "nosniff")
         .header("cache-control", "no-store")
-        .body(descriptor.ui_html.as_bytes().to_vec())
+        .body(ui_html.as_bytes().to_vec())
         .expect("static plugin response headers are valid")
 }
 
@@ -104,6 +111,18 @@ mod tests {
         PluginRegistry::discover(directory.path()).expect("plugin discovers")
     }
 
+    fn registry_with_backend_provider() -> PluginRegistry {
+        let directory = tempdir().expect("temp directory creates");
+        let plugin = directory.path().join("git-ramus.provider.gitlab");
+        fs::create_dir_all(&plugin).expect("plugin directory creates");
+        fs::write(
+            plugin.join("plugin.json"),
+            r#"{"schemaVersion":1,"id":"git-ramus.provider.gitlab","name":"GitLab Provider","version":"0.1.0","publisher":"git-ramus","description":"GitLab API adapter.","kind":"builtin","sdkVersion":"^0.1.0","entrypoints":{},"contributions":{"navigation":[],"providers":[{"providerId":"gitlab","adapterId":"git-ramus.provider.gitlab","displayName":"GitLab","icon":"gitlab","instanceModes":["cloud","selfHosted"],"capabilities":["repositoryDiscovery","customCa"]}]},"permissions":[]}"#,
+        )
+        .expect("manifest writes");
+        PluginRegistry::discover(directory.path()).expect("provider discovers")
+    }
+
     #[test]
     fn serves_registered_ui_with_a_network_denying_response_csp() {
         let registry = registry_with_plugin();
@@ -142,6 +161,19 @@ mod tests {
         let registry = registry_with_plugin();
         let request = Request::builder()
             .uri(plugin_ui_url("git-ramus.missing"))
+            .body(Vec::new())
+            .expect("request builds");
+
+        let response = build_plugin_response(&registry, &request);
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn rejects_ui_requests_for_backend_only_plugins() {
+        let registry = registry_with_backend_provider();
+        let request = Request::builder()
+            .uri(plugin_ui_url("git-ramus.provider.gitlab"))
             .body(Vec::new())
             .expect("request builds");
 

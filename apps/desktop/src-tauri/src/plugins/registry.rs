@@ -10,9 +10,9 @@ use crate::plugins::protocol::plugin_ui_url;
 #[serde(rename_all = "camelCase")]
 pub struct PluginDescriptor {
     pub manifest: PluginManifest,
-    pub ui_url: String,
+    pub ui_url: Option<String>,
     #[serde(skip_serializing)]
-    pub ui_html: String,
+    pub ui_html: Option<String>,
     #[serde(skip_serializing)]
     pub(crate) root_path: PathBuf,
 }
@@ -67,14 +67,20 @@ impl PluginRegistry {
                     )));
                 }
                 let canonical_root = directory.canonicalize()?;
-                let entrypoint = directory.join(&manifest.entrypoints.ui).canonicalize()?;
-                if !entrypoint.starts_with(&canonical_root) {
-                    return Err(AppError::InvalidInput(
-                        "plugin entrypoint escapes its root".to_owned(),
-                    ));
-                }
-                let ui_html = std::fs::read_to_string(entrypoint)?;
-                let ui_url = plugin_ui_url(&manifest.id);
+                let (ui_url, ui_html) = if let Some(ui) = manifest.entrypoints.ui.as_deref() {
+                    let entrypoint = directory.join(ui).canonicalize()?;
+                    if !entrypoint.starts_with(&canonical_root) {
+                        return Err(AppError::InvalidInput(
+                            "plugin entrypoint escapes its root".to_owned(),
+                        ));
+                    }
+                    (
+                        Some(plugin_ui_url(&manifest.id)),
+                        Some(std::fs::read_to_string(entrypoint)?),
+                    )
+                } else {
+                    (None, None)
+                };
                 descriptors.push(PluginDescriptor {
                     manifest,
                     ui_url,
@@ -122,6 +128,15 @@ mod tests {
         fs::write(directory.join("ui.html"), html).expect("UI writes");
     }
 
+    fn write_backend_provider(root: &std::path::Path, id: &str, provider_id: &str) {
+        let directory = root.join(id);
+        fs::create_dir_all(&directory).expect("plugin directory creates");
+        let manifest = format!(
+            r#"{{"schemaVersion":1,"id":"{id}","name":"GitLab Provider","version":"0.1.0","publisher":"git-ramus","description":"GitLab API adapter.","kind":"builtin","sdkVersion":"^0.1.0","entrypoints":{{}},"contributions":{{"navigation":[],"providers":[{{"providerId":"{provider_id}","adapterId":"{id}","displayName":"GitLab","icon":"gitlab","instanceModes":["cloud","selfHosted"],"capabilities":["repositoryDiscovery","customCa"]}}]}},"permissions":[]}}"#
+        );
+        fs::write(directory.join("plugin.json"), manifest).expect("manifest writes");
+    }
+
     #[test]
     fn discovers_plugins_in_stable_id_order() {
         let directory = tempdir().expect("temp directory creates");
@@ -143,5 +158,18 @@ mod tests {
         write_plugin(first.path(), "git-ramus.same", "<h1>First</h1>");
         write_plugin(second.path(), "git-ramus.same", "<h1>Second</h1>");
         assert!(PluginRegistry::discover_many(&[first.path(), second.path()]).is_err());
+    }
+
+    #[test]
+    fn discovers_a_backend_only_builtin_provider_without_an_iframe_url() {
+        let directory = tempdir().expect("temp directory creates");
+        write_backend_provider(directory.path(), "git-ramus.provider.gitlab", "gitlab");
+        let registry = PluginRegistry::discover(directory.path()).expect("provider discovers");
+        let descriptor = registry
+            .get("git-ramus.provider.gitlab")
+            .expect("descriptor exists");
+        assert!(descriptor.ui_url.is_none());
+        assert!(descriptor.ui_html.is_none());
+        assert_eq!(descriptor.manifest.contributions.providers.len(), 1);
     }
 }

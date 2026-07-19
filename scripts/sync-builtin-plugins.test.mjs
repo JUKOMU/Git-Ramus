@@ -10,7 +10,7 @@ const run = promisify(execFile);
 const root = resolve(import.meta.dirname, "..");
 const resources = resolve(root, "apps/desktop/src-tauri/resources/plugins");
 
-test("sync stages each built-in UI and only the declared theme definition", async () => {
+test("sync stages each built-in UI, backend Provider, and only the declared theme definition", async () => {
   await run(execPath, [resolve(import.meta.dirname, "sync-builtin-plugins.mjs")], {
     cwd: root
   });
@@ -22,6 +22,8 @@ test("sync stages each built-in UI and only the declared theme definition", asyn
     "theme.json",
     "ui.html"
   ]);
+  assert.deepEqual(await sortedEntries("git-ramus.provider.github"), ["plugin.json"]);
+  assert.deepEqual(await sortedEntries("git-ramus.provider.gitlab"), ["plugin.json"]);
   assert.equal(
     await readFile(resolve(resources, "git-ramus.compact-theme/theme.json"), "utf8"),
     await readFile(resolve(root, "plugins/builtin-compact-theme/theme.json"), "utf8")

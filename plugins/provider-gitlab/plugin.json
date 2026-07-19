@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "git-ramus.provider.gitlab",
+  "name": "GitLab Provider",
+  "version": "0.1.0",
+  "publisher": "git-ramus",
+  "description": "GitLab repository discovery adapter.",
+  "kind": "builtin",
+  "sdkVersion": "^0.1.0",
+  "entrypoints": {},
+  "contributions": {
+    "navigation": [],
+    "providers": [
+      {
+        "providerId": "gitlab",
+        "adapterId": "git-ramus.provider.gitlab",
+        "displayName": "GitLab",
+        "icon": "gitlab",
+        "instanceModes": ["cloud", "selfHosted"],
+        "capabilities": ["repositoryDiscovery", "customCa"]
+      }
+    ]
+  },
+  "permissions": []
+}

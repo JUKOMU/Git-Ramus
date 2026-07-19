@@ -12,7 +12,7 @@ import type { HostApi } from "../lib/hostApi";
 import { dispatchPluginRpc, isKnownPluginRpcMethod } from "./rpcRouter";
 
 interface PluginFrameProps {
-  descriptor: PluginDescriptor;
+  descriptor: PluginDescriptor & { uiUrl: string };
   hostApi: HostApi;
   route?: string;
   theme?: ThemeDefinition | null;

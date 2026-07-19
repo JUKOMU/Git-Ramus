@@ -8,6 +8,7 @@ import type {
 } from "@git-ramus/contracts";
 import type { HostApi } from "../../lib/hostApi";
 import { PluginFrame } from "../PluginFrame";
+import { PluginHost } from "../PluginHost";
 import { dispatchPluginRpc } from "../rpcRouter";
 
 afterEach(() => {
@@ -15,7 +16,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-const descriptor: PluginDescriptor = {
+const descriptor: PluginDescriptor & { uiUrl: string } = {
   manifest: {
     schemaVersion: 1,
     id: "git-ramus.welcome",
@@ -26,13 +27,42 @@ const descriptor: PluginDescriptor = {
     kind: "builtin",
     sdkVersion: "^0.1.0",
     entrypoints: { ui: "ui.html" },
-    contributions: { navigation: [] },
+    contributions: { navigation: [], providers: [] },
     permissions: [
       { capability: "app:read", resources: ["info"] },
       { capability: "tasks:create", resources: ["echo"] }
     ]
   },
   uiUrl: "http://git-ramus-plugin.localhost/git-ramus.welcome/ui.html"
+};
+
+const backendDescriptor: PluginDescriptor = {
+  manifest: {
+    schemaVersion: 1,
+    id: "git-ramus.provider.gitlab",
+    name: "GitLab Provider",
+    version: "0.1.0",
+    publisher: "git-ramus",
+    description: "GitLab API adapter.",
+    kind: "builtin",
+    sdkVersion: "^0.1.0",
+    entrypoints: {},
+    contributions: {
+      navigation: [],
+      providers: [
+        {
+          providerId: "gitlab",
+          adapterId: "git-ramus.provider.gitlab",
+          displayName: "GitLab",
+          icon: "gitlab",
+          instanceModes: ["cloud", "selfHosted"],
+          capabilities: ["repositoryDiscovery", "customCa"]
+        }
+      ]
+    },
+    permissions: []
+  },
+  uiUrl: null
 };
 
 const hostApi: HostApi = {
@@ -84,6 +114,13 @@ const hostApi: HostApi = {
 };
 
 describe("PluginFrame", () => {
+  it("does not mount an iframe for a backend-only plugin descriptor", () => {
+    render(<PluginHost descriptor={backendDescriptor} hostApi={hostApi} />);
+    expect(screen.queryByTitle("GitLab Provider plugin")).not.toBeInTheDocument();
+    expect(screen.queryByRole("iframe")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Plugin has no user interface" })).toBeVisible();
+  });
+
   it("loads the host-served plugin document in an opaque-origin scripts-only sandbox", () => {
     render(<PluginFrame descriptor={descriptor} hostApi={hostApi} />);
     const frame = screen.getByTitle("Welcome plugin") as HTMLIFrameElement;

@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "git-ramus.provider.github",
+  "name": "GitHub Provider",
+  "version": "0.1.0",
+  "publisher": "git-ramus",
+  "description": "GitHub.com repository discovery adapter.",
+  "kind": "builtin",
+  "sdkVersion": "^0.1.0",
+  "entrypoints": {},
+  "contributions": {
+    "navigation": [],
+    "providers": [
+      {
+        "providerId": "github",
+        "adapterId": "git-ramus.provider.github",
+        "displayName": "GitHub",
+        "icon": "github",
+        "instanceModes": ["cloud"],
+        "capabilities": ["repositoryDiscovery"]
+      }
+    ]
+  },
+  "permissions": []
+}

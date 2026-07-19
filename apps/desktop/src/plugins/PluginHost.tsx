@@ -18,10 +18,22 @@ export function PluginHost({ descriptor, hostApi, route = "/", theme = null }: P
       </section>
     );
   }
+  if (descriptor.uiUrl === null) {
+    return (
+      <section className="empty-state">
+        <h2>Plugin has no user interface</h2>
+        <p>This built-in plugin contributes a trusted backend capability.</p>
+      </section>
+    );
+  }
+  const uiDescriptor: PluginDescriptor & { uiUrl: string } = {
+    ...descriptor,
+    uiUrl: descriptor.uiUrl
+  };
   return (
     <PluginFrame
       key={`${descriptor.manifest.id}:${route}`}
-      descriptor={descriptor}
+      descriptor={uiDescriptor}
       hostApi={hostApi}
       route={route}
       theme={theme}

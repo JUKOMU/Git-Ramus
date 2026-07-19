@@ -1,3 +1,6 @@
+use std::collections::HashSet;
+use std::hash::Hash;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -23,10 +26,11 @@ pub enum PluginKind {
     External,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct PluginEntrypoints {
-    pub ui: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,6 +39,40 @@ pub struct PluginContributions {
     pub navigation: Vec<NavigationContribution>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<ThemeContribution>,
+    #[serde(default)]
+    pub providers: Vec<ProviderContribution>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderContribution {
+    pub provider_id: ProviderContributionId,
+    pub adapter_id: String,
+    pub display_name: String,
+    pub icon: String,
+    pub instance_modes: Vec<ProviderInstanceMode>,
+    pub capabilities: Vec<ProviderCapability>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderContributionId {
+    Github,
+    Gitlab,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProviderInstanceMode {
+    Cloud,
+    SelfHosted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProviderCapability {
+    RepositoryDiscovery,
+    CustomCa,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,9 +146,20 @@ impl PluginManifest {
         semver::VersionReq::parse(&self.sdk_version).map_err(|error| {
             crate::error::AppError::InvalidInput(format!("sdkVersion is invalid: {error}"))
         })?;
-        if !is_safe_relative_path(&self.entrypoints.ui) {
+        if let Some(ui) = &self.entrypoints.ui {
+            if !is_safe_relative_path(ui) {
+                return Err(crate::error::AppError::InvalidInput(
+                    "plugin UI entrypoint escapes its root".to_owned(),
+                ));
+            }
+        } else if self.contributions.providers.is_empty() {
             return Err(crate::error::AppError::InvalidInput(
-                "plugin UI entrypoint escapes its root".to_owned(),
+                "plugin has no entrypoint or Provider".to_owned(),
+            ));
+        }
+        if self.entrypoints.ui.is_none() && !self.contributions.navigation.is_empty() {
+            return Err(crate::error::AppError::InvalidInput(
+                "navigation requires a UI entrypoint".to_owned(),
             ));
         }
         if let Some(theme) = &self.contributions.theme {
@@ -135,9 +184,73 @@ impl PluginManifest {
                     "plugin permission is invalid".to_owned(),
                 ));
             }
+            if self.kind != PluginKind::Builtin && permission.capability == "providers:manage" {
+                return Err(crate::error::AppError::InvalidInput(
+                    "Provider management is built-in only".to_owned(),
+                ));
+            }
+        }
+        if !self.contributions.providers.is_empty() && self.kind != PluginKind::Builtin {
+            return Err(crate::error::AppError::InvalidInput(
+                "Provider adapters must be built in".to_owned(),
+            ));
+        }
+        for provider in &self.contributions.providers {
+            self.validate_provider(provider)?;
         }
         Ok(())
     }
+
+    fn validate_provider(
+        &self,
+        provider: &ProviderContribution,
+    ) -> Result<(), crate::error::AppError> {
+        if provider.adapter_id != self.id {
+            return Err(crate::error::AppError::InvalidInput(
+                "Provider adapterId must match plugin id".to_owned(),
+            ));
+        }
+        if provider.display_name.is_empty() || provider.display_name.encode_utf16().count() > 64 {
+            return Err(crate::error::AppError::InvalidInput(
+                "Provider display name is invalid".to_owned(),
+            ));
+        }
+        if provider.instance_modes.is_empty()
+            || provider.capabilities.is_empty()
+            || !values_are_unique(&provider.instance_modes)
+            || !values_are_unique(&provider.capabilities)
+            || !provider
+                .capabilities
+                .contains(&ProviderCapability::RepositoryDiscovery)
+        {
+            return Err(crate::error::AppError::InvalidInput(
+                "Provider capabilities are invalid".to_owned(),
+            ));
+        }
+        let expected_icon = match provider.provider_id {
+            ProviderContributionId::Github => "github",
+            ProviderContributionId::Gitlab => "gitlab",
+        };
+        if provider.icon != expected_icon {
+            return Err(crate::error::AppError::InvalidInput(
+                "Provider icon must match its Provider kind".to_owned(),
+            ));
+        }
+        if provider.provider_id == ProviderContributionId::Github
+            && (provider.instance_modes != [ProviderInstanceMode::Cloud]
+                || provider.capabilities != [ProviderCapability::RepositoryDiscovery])
+        {
+            return Err(crate::error::AppError::InvalidInput(
+                "GitHub supports cloud repository discovery only".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn values_are_unique<T: Eq + Hash>(values: &[T]) -> bool {
+    let mut seen = HashSet::with_capacity(values.len());
+    values.iter().all(|value| seen.insert(value))
 }
 
 fn is_plugin_id(value: &str) -> bool {
@@ -219,10 +332,16 @@ fn has_url_scheme(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{PluginManifest, ThemeContribution};
+    use super::{
+        NavigationContribution, PermissionRequest, PluginKind, PluginManifest, ThemeContribution,
+    };
 
     const WELCOME_MANIFEST: &str =
         include_str!("../../../../../plugins/builtin-welcome/plugin.json");
+    const GITHUB_PROVIDER_MANIFEST: &str =
+        include_str!("../../../../../plugins/provider-github/plugin.json");
+    const GITLAB_PROVIDER_MANIFEST: &str =
+        include_str!("../../../../../plugins/provider-gitlab/plugin.json");
 
     #[test]
     fn rust_contract_reads_the_same_welcome_manifest_as_typescript() {
@@ -230,7 +349,56 @@ mod tests {
             serde_json::from_str(WELCOME_MANIFEST).expect("manifest parses");
         manifest.validate().expect("manifest validates");
         assert_eq!(manifest.id, "git-ramus.welcome");
-        assert_eq!(manifest.entrypoints.ui, "ui.html");
+        assert_eq!(manifest.entrypoints.ui.as_deref(), Some("ui.html"));
+    }
+
+    #[test]
+    fn rust_contract_validates_the_shipped_backend_provider_manifests() {
+        for source in [GITHUB_PROVIDER_MANIFEST, GITLAB_PROVIDER_MANIFEST] {
+            let manifest: PluginManifest = serde_json::from_str(source).expect("manifest parses");
+            manifest.validate().expect("manifest validates");
+            assert!(manifest.entrypoints.ui.is_none());
+            assert_eq!(manifest.contributions.providers.len(), 1);
+        }
+
+        let original: PluginManifest =
+            serde_json::from_str(GITLAB_PROVIDER_MANIFEST).expect("GitLab manifest parses");
+        let mut external = original.clone();
+        external.kind = PluginKind::External;
+        assert!(external.validate().is_err());
+
+        let mut mismatched_adapter = original.clone();
+        mismatched_adapter.contributions.providers[0].adapter_id =
+            "git-ramus.provider.other".to_owned();
+        assert!(mismatched_adapter.validate().is_err());
+
+        let mut duplicate_mode = original.clone();
+        let cloud = duplicate_mode.contributions.providers[0].instance_modes[0];
+        duplicate_mode.contributions.providers[0]
+            .instance_modes
+            .push(cloud);
+        assert!(duplicate_mode.validate().is_err());
+
+        let mut navigation_without_ui = original;
+        navigation_without_ui
+            .contributions
+            .navigation
+            .push(NavigationContribution {
+                id: "bad".to_owned(),
+                label: "Bad".to_owned(),
+                route: "/bad".to_owned(),
+                icon: "x".to_owned(),
+            });
+        assert!(navigation_without_ui.validate().is_err());
+
+        let mut external_ui: PluginManifest =
+            serde_json::from_str(WELCOME_MANIFEST).expect("welcome manifest parses");
+        external_ui.kind = PluginKind::External;
+        external_ui.permissions.push(PermissionRequest {
+            capability: "providers:manage".to_owned(),
+            resources: vec!["providers".to_owned()],
+        });
+        assert!(external_ui.validate().is_err());
     }
 
     #[test]
@@ -243,7 +411,7 @@ mod tests {
             r"C:\secret.html",
             "C:secret.html",
         ] {
-            manifest.entrypoints.ui = entrypoint.to_owned();
+            manifest.entrypoints.ui = Some(entrypoint.to_owned());
             assert!(manifest.validate().is_err());
         }
     }
@@ -340,7 +508,7 @@ mod tests {
             "ui.html\0",
             "ui\n.html",
         ] {
-            manifest.entrypoints.ui = entrypoint.to_owned();
+            manifest.entrypoints.ui = Some(entrypoint.to_owned());
             assert!(
                 manifest.validate().is_err(),
                 "unsafe UI entrypoint was accepted: {entrypoint:?}"
