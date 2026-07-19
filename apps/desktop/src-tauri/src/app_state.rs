@@ -24,14 +24,29 @@ pub struct AppState {
     pub plugins: PluginRegistry,
     pub permissions: PermissionGateway,
     pub themes: ThemeManager,
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    pub(crate) e2e_app_data_root: PathBuf,
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    pub(crate) e2e_database_path: PathBuf,
 }
+
+#[cfg(all(feature = "e2e", debug_assertions))]
+pub(crate) const E2E_APP_DATA_PREFIX: &str = "git-ramus-wdio-profile-";
+#[cfg(all(feature = "e2e", debug_assertions))]
+const E2E_APP_DATA_ROOT_ENV: &str = "GIT_RAMUS_WDIO_PROFILE_ROOT";
 
 impl AppState {
     pub fn bootstrap(app: &AppHandle) -> Result<Self, AppError> {
-        let app_data = app
-            .path()
-            .app_data_dir()
-            .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+        #[cfg(all(feature = "e2e", debug_assertions))]
+        let app_data = match resolve_e2e_app_data_override(
+            std::env::var_os(E2E_APP_DATA_ROOT_ENV).as_deref(),
+            &std::env::temp_dir(),
+        )? {
+            Some(path) => path,
+            None => platform_app_data_dir(app)?,
+        };
+        #[cfg(not(all(feature = "e2e", debug_assertions)))]
+        let app_data = platform_app_data_dir(app)?;
         std::fs::create_dir_all(&app_data)?;
         let plugin_root = bundled_plugin_root(app)?;
         let state = Self::from_paths(&app_data.join("git-ramus.db"), &plugin_root)?;
@@ -40,6 +55,13 @@ impl AppState {
     }
 
     pub fn from_paths(database_path: &Path, plugin_root: &Path) -> Result<Self, AppError> {
+        #[cfg(all(feature = "e2e", debug_assertions))]
+        let e2e_app_data_root = database_path
+            .parent()
+            .ok_or_else(|| AppError::InvalidInput("database path has no parent".to_owned()))?
+            .to_path_buf();
+        #[cfg(all(feature = "e2e", debug_assertions))]
+        let e2e_database_path = database_path.to_path_buf();
         let database = Database::open(database_path)?;
         let plugins = PluginRegistry::discover(plugin_root)?;
         let themes = ThemeManager::discover(database.clone(), &plugins)?;
@@ -92,8 +114,68 @@ impl AppState {
             permissions,
             themes,
             database,
+            #[cfg(all(feature = "e2e", debug_assertions))]
+            e2e_app_data_root,
+            #[cfg(all(feature = "e2e", debug_assertions))]
+            e2e_database_path,
         })
     }
+}
+
+fn platform_app_data_dir(app: &AppHandle) -> Result<PathBuf, AppError> {
+    app.path()
+        .app_data_dir()
+        .map_err(|error| AppError::InvalidInput(error.to_string()))
+}
+
+#[cfg(all(feature = "e2e", debug_assertions))]
+fn resolve_e2e_app_data_override(
+    value: Option<&std::ffi::OsStr>,
+    temp_root: &Path,
+) -> Result<Option<PathBuf>, AppError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_empty() {
+        return Err(AppError::InvalidInput(
+            "E2E app-data override is empty".to_owned(),
+        ));
+    }
+    let candidate = PathBuf::from(value);
+    let metadata = std::fs::symlink_metadata(&candidate)?;
+    if !metadata.is_dir() || is_symlink_or_reparse_point(&metadata) {
+        return Err(AppError::InvalidInput(
+            "E2E app-data override is not a safe directory".to_owned(),
+        ));
+    }
+    let canonical_temp = std::fs::canonicalize(temp_root)?;
+    let canonical_candidate = std::fs::canonicalize(candidate)?;
+    let safe_parent = canonical_candidate.parent() == Some(canonical_temp.as_path());
+    let safe_name = canonical_candidate
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with(E2E_APP_DATA_PREFIX));
+    if !safe_parent || !safe_name {
+        return Err(AppError::InvalidInput(
+            "E2E app-data override escaped the guarded temp boundary".to_owned(),
+        ));
+    }
+    Ok(Some(canonical_candidate))
+}
+
+#[cfg(all(feature = "e2e", debug_assertions))]
+fn is_symlink_or_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        return metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+    }
+    #[cfg(not(windows))]
+    false
 }
 
 fn bundled_plugin_root(app: &AppHandle) -> Result<PathBuf, AppError> {
@@ -111,9 +193,56 @@ fn bundled_plugin_root(app: &AppHandle) -> Result<PathBuf, AppError> {
 mod tests {
     use std::{fs, path::Path};
 
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    use std::ffi::OsStr;
+
     use tempfile::tempdir;
 
     use super::AppState;
+
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    use super::{E2E_APP_DATA_PREFIX, resolve_e2e_app_data_override};
+
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    #[test]
+    fn e2e_app_data_override_accepts_only_a_direct_prefixed_temp_directory() {
+        let temp_root = std::env::temp_dir();
+        let profile = tempfile::Builder::new()
+            .prefix(E2E_APP_DATA_PREFIX)
+            .tempdir_in(&temp_root)
+            .expect("profile creates");
+        let resolved =
+            resolve_e2e_app_data_override(Some(profile.path().as_os_str()), temp_root.as_path())
+                .expect("safe profile resolves")
+                .expect("override is present");
+        assert_eq!(
+            resolved,
+            fs::canonicalize(profile.path()).expect("profile canonicalizes")
+        );
+
+        let nested = profile.path().join("nested");
+        fs::create_dir(&nested).expect("nested directory creates");
+        assert!(
+            resolve_e2e_app_data_override(Some(nested.as_os_str()), temp_root.as_path()).is_err()
+        );
+
+        let wrong_prefix = tempfile::Builder::new()
+            .prefix("untrusted-app-data-")
+            .tempdir_in(&temp_root)
+            .expect("wrong-prefix directory creates");
+        assert!(
+            resolve_e2e_app_data_override(
+                Some(wrong_prefix.path().as_os_str()),
+                temp_root.as_path()
+            )
+            .is_err()
+        );
+        assert_eq!(
+            resolve_e2e_app_data_override(None, temp_root.as_path()).expect("absence resolves"),
+            None
+        );
+        assert!(resolve_e2e_app_data_override(Some(OsStr::new("")), temp_root.as_path()).is_err());
+    }
 
     fn write_builtin_plugin(root: &Path) {
         let plugin = root.join("git-ramus.welcome");

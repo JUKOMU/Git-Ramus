@@ -1,4 +1,6 @@
 import TauriWorkerService, { launcher as TauriLaunchService } from "@wdio/tauri-service";
+import { cleanupOwnedE2eAppDataProfile } from "./app-data-profile";
+import { completeLauncherCleanup } from "./launcher-cleanup";
 
 /**
  * The embedded WebDriver server is deliberately HTTP-only. The stock service's
@@ -18,4 +20,17 @@ export default class BasicTauriService extends TauriWorkerService {
   }
 }
 
-export const launcher = TauriLaunchService;
+export class BasicTauriLaunchService extends TauriLaunchService {
+  override async onComplete(
+    exitCode: Parameters<TauriLaunchService["onComplete"]>[0],
+    config: Parameters<TauriLaunchService["onComplete"]>[1],
+    capabilities: Parameters<TauriLaunchService["onComplete"]>[2]
+  ): Promise<void> {
+    await completeLauncherCleanup(
+      () => super.onComplete(exitCode, config, capabilities),
+      () => cleanupOwnedE2eAppDataProfile()
+    );
+  }
+}
+
+export const launcher = BasicTauriLaunchService;

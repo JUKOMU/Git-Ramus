@@ -83,7 +83,10 @@ pub fn run() {
         Ok(())
     });
     #[cfg(all(feature = "e2e", debug_assertions))]
-    let builder = builder.invoke_handler(invoke_handlers![e2e::e2e_seed_fixture]);
+    let builder = builder.invoke_handler(invoke_handlers![
+        e2e::e2e_seed_fixture,
+        e2e::e2e_app_data_paths
+    ]);
     #[cfg(not(all(feature = "e2e", debug_assertions)))]
     let builder = builder.invoke_handler(invoke_handlers![]);
     builder

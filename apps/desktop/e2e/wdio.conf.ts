@@ -1,9 +1,5 @@
 import { resolve } from "node:path";
-import {
-  acquireE2eAppDataProfile,
-  cleanupE2eAppDataProfile,
-  E2E_APP_DATA_ROOT_ENV
-} from "./app-data-profile";
+import { acquireE2eAppDataProfile } from "./app-data-profile";
 
 const extension = process.platform === "win32" ? ".exe" : "";
 const binary = resolve(
@@ -44,11 +40,5 @@ export const config: WebdriverIO.Config = {
     {
       browserName: "tauri"
     }
-  ],
-  async onComplete() {
-    if (appDataProfile.owned) {
-      await cleanupE2eAppDataProfile(appDataProfile.rootPath);
-      delete process.env[E2E_APP_DATA_ROOT_ENV];
-    }
-  }
+  ]
 };

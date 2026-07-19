@@ -1,4 +1,7 @@
 import { $, browser, expect } from "@wdio/globals";
+import { lstat } from "node:fs/promises";
+import { resolve } from "node:path";
+import { E2E_APP_DATA_ROOT_ENV, normalizeE2eFsPath } from "./app-data-profile";
 import {
   cleanupGitClientJourney,
   invokeHost,
@@ -16,6 +19,7 @@ describe("Git Client vertical slice", () => {
   });
 
   it("scans, groups, trusts, stages, commits, and updates one opaque plugin frame theme", async () => {
+    await assertIsolatedAppData();
     await (await $("button=Overview")).click();
     let frame = await $("iframe[title='Git Client plugin']");
     await frame.waitForDisplayed();
@@ -150,6 +154,18 @@ describe("Git Client vertical slice", () => {
     expect(secondaryRepositoryId).not.toBe(primaryRepositoryId);
   });
 });
+
+async function assertIsolatedAppData(): Promise<void> {
+  const expectedRoot = process.env[E2E_APP_DATA_ROOT_ENV];
+  if (expectedRoot === undefined) throw new Error("E2E app-data profile is unavailable");
+  const paths = record(await invokeHost("e2e_app_data_paths", {}));
+  const appDataRoot = normalizeE2eFsPath(resolve(text(paths.appDataRoot)));
+  const databasePath = normalizeE2eFsPath(resolve(text(paths.databasePath)));
+  expect(appDataRoot).toBe(normalizeE2eFsPath(resolve(expectedRoot)));
+  expect(databasePath).toBe(normalizeE2eFsPath(resolve(expectedRoot, "git-ramus.db")));
+  expect((await lstat(databasePath)).isFile()).toBe(true);
+  console.info(`E2E app-data root=${appDataRoot} database=${databasePath}`);
+}
 
 async function waitForFrameRpc(frame: ReturnType<typeof $>, method: string): Promise<void> {
   await browser.waitUntil(

@@ -53,6 +53,13 @@ pub struct E2eChanges {
     pub remain_unstaged_path: String,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct E2eAppDataPaths {
+    pub app_data_root: String,
+    pub database_path: String,
+}
+
 #[derive(Debug)]
 struct SeededFixtureFiles {
     root_path: PathBuf,
@@ -67,6 +74,17 @@ struct SeededFixtureFiles {
 #[tauri::command]
 pub fn e2e_seed_fixture(state: State<'_, AppState>) -> CommandResult<E2eFixture> {
     seed_fixture(&state).map_err(|error| Box::new(ErrorEnvelope::from(error)))
+}
+
+#[tauri::command]
+pub fn e2e_app_data_paths(state: State<'_, AppState>) -> CommandResult<E2eAppDataPaths> {
+    (|| {
+        Ok(E2eAppDataPaths {
+            app_data_root: path_text(&state.e2e_app_data_root)?,
+            database_path: path_text(&state.e2e_database_path)?,
+        })
+    })()
+    .map_err(|error: AppError| Box::new(ErrorEnvelope::from(error)))
 }
 
 fn seed_fixture(state: &AppState) -> Result<E2eFixture, AppError> {
