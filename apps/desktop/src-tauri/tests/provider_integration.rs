@@ -4,8 +4,17 @@ use std::time::Duration;
 
 use chrono::Utc;
 use git_ramus_desktop_lib::error::{AppError, ErrorEnvelope};
+use git_ramus_desktop_lib::providers::adapter::{
+    AdapterAccountContext, RepositoryDiscoveryProvider,
+};
+use git_ramus_desktop_lib::providers::github::GithubProvider;
 use git_ramus_desktop_lib::providers::http::ScopedHttpClient;
-use git_ramus_desktop_lib::providers::model::{ProviderInstance, ProviderKind};
+use git_ramus_desktop_lib::providers::model::{
+    AdapterCursor, AdapterListRequest, ProviderArchivedFilter, ProviderInstance, ProviderKind,
+    ProviderPermission, ProviderRepositoryDirection, ProviderRepositoryQuery,
+    ProviderRepositorySort, ProviderVisibility, RemoteRepositoryIdentity,
+};
+use httpmock::{Method::GET, MockServer};
 use rcgen::{CertifiedKey, generate_simple_self_signed};
 use reqwest::StatusCode;
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
@@ -433,4 +442,349 @@ async fn scoped_http_requires_and_accepts_the_configured_self_signed_ca() {
         .expect("configured custom CA is trusted");
     assert_eq!(response.status, StatusCode::OK);
     assert_eq!(response.body, br#"{"version":"18.2.0"}"#);
+}
+
+fn github_query() -> ProviderRepositoryQuery {
+    ProviderRepositoryQuery {
+        search: String::new(),
+        visibility: None,
+        namespace: None,
+        archived: ProviderArchivedFilter::All,
+        sort: ProviderRepositorySort::Updated,
+        direction: ProviderRepositoryDirection::Desc,
+        page_size: 25,
+    }
+}
+
+fn github_repository_fixture(
+    id: u64,
+    full_name: &str,
+    visibility: &str,
+    archived: bool,
+    fork: bool,
+    permission: ProviderPermission,
+) -> serde_json::Value {
+    let (owner, name) = full_name.split_once('/').expect("fixture has owner/name");
+    let push = matches!(
+        permission,
+        ProviderPermission::Write | ProviderPermission::Admin
+    );
+    let admin = permission == ProviderPermission::Admin;
+    serde_json::json!({
+        "id": id,
+        "name": name,
+        "full_name": format!("{owner}/{name}"),
+        "owner": { "login": owner },
+        "html_url": format!("https://github.com/{owner}/{name}"),
+        "clone_url": format!("https://github.com/{owner}/{name}.git"),
+        "ssh_url": format!("git@github.com:{owner}/{name}.git"),
+        "default_branch": "main",
+        "visibility": visibility,
+        "private": visibility == "private",
+        "archived": archived,
+        "fork": fork,
+        "permissions": { "pull": true, "push": push, "admin": admin },
+        "updated_at": "2026-07-18T12:30:00Z",
+        "unknown_future_field": { "must": "be ignored" },
+        "temp_clone_token": "must-never-leave-the-adapter"
+    })
+}
+
+#[tokio::test]
+async fn github_authenticates_and_maps_account_affiliated_repositories() {
+    let server = MockServer::start_async().await;
+    let user = server
+        .mock_async(|when, then| {
+            when.method(GET)
+                .path("/user")
+                .header("authorization", "Bearer github-test-token")
+                .header("accept", "application/vnd.github+json")
+                .header("x-github-api-version", "2026-03-10")
+                .header("user-agent", "Git-Ramus/0.1");
+            then.status(200).json_body(serde_json::json!({
+                "id": 7,
+                "login": "octo",
+                "name": "Octo Cat",
+                "avatar_url": "https://avatars.githubusercontent.com/u/7",
+                "unknown": true
+            }));
+        })
+        .await;
+    let global_search = server
+        .mock_async(|when, then| {
+            when.method(GET).path("/search/repositories");
+            then.status(200).json_body(serde_json::json!({
+                "items": [github_repository_fixture(
+                    999,
+                    "unrelated/public-skill",
+                    "public",
+                    false,
+                    false,
+                    ProviderPermission::Read
+                )]
+            }));
+        })
+        .await;
+    let next_link = format!("<{}>; rel=\"next\"", server.url("/user/repos?page=2"));
+    let repositories = server
+        .mock_async(|when, then| {
+            when.method(GET)
+                .path("/user/repos")
+                .header("authorization", "Bearer github-test-token")
+                .header("accept", "application/vnd.github+json")
+                .header("x-github-api-version", "2026-03-10")
+                .query_param("affiliation", "owner,collaborator,organization_member")
+                .query_param("visibility", "all")
+                .query_param("sort", "updated")
+                .query_param("direction", "desc")
+                .query_param("per_page", "100")
+                .query_param("page", "1");
+            then.status(200)
+                .header("link", next_link)
+                .header("x-ratelimit-limit", "5000")
+                .header("x-ratelimit-remaining", "4999")
+                .header("x-ratelimit-reset", "1784390400")
+                .json_body(serde_json::json!([
+                    github_repository_fixture(
+                        41,
+                        "octo/private-skill",
+                        "private",
+                        false,
+                        false,
+                        ProviderPermission::Write
+                    ),
+                    github_repository_fixture(
+                        42,
+                        "skills-org/organization-skill",
+                        "private",
+                        false,
+                        false,
+                        ProviderPermission::Admin
+                    ),
+                    github_repository_fixture(
+                        43,
+                        "octo/archived-skill",
+                        "public",
+                        true,
+                        false,
+                        ProviderPermission::Read
+                    ),
+                    github_repository_fixture(
+                        44,
+                        "octo/forked-skill",
+                        "public",
+                        false,
+                        true,
+                        ProviderPermission::Read
+                    )
+                ]));
+        })
+        .await;
+
+    let client = ScopedHttpClient::for_test_http(&server.base_url()).expect("client builds");
+    let provider = GithubProvider;
+    let identity = provider
+        .authenticate_account(&client, "github-test-token")
+        .await
+        .expect("account authenticates");
+    assert_eq!(identity.provider_user_id, "7");
+    assert_eq!(identity.username, "octo");
+    assert_eq!(identity.display_name.as_deref(), Some("Octo Cat"));
+
+    let cancellation = CancellationToken::new();
+    let page = provider
+        .list_repositories(
+            AdapterAccountContext {
+                client: &client,
+                secret: "github-test-token",
+                cancellation: &cancellation,
+            },
+            AdapterListRequest {
+                query: github_query(),
+                cursor: None,
+            },
+        )
+        .await
+        .expect("repositories map");
+
+    assert_eq!(page.items.len(), 4);
+    assert_eq!(page.items[0].repository_id, "41");
+    assert_eq!(page.items[0].full_name, "octo/private-skill");
+    assert_eq!(page.items[0].visibility, ProviderVisibility::Private);
+    assert_eq!(page.items[0].permission, ProviderPermission::Write);
+    assert_eq!(page.items[1].permission, ProviderPermission::Admin);
+    assert!(page.items[2].archived);
+    assert!(page.items[3].fork);
+    assert_eq!(page.next_cursor, Some(AdapterCursor::Page(2)));
+    assert_eq!(page.rate_limit.expect("rate limit").remaining, Some(4999));
+    user.assert_calls_async(1).await;
+    repositories.assert_calls_async(1).await;
+    global_search.assert_calls_async(0).await;
+}
+
+#[tokio::test]
+async fn github_get_repository_and_status_mapping_preserve_private_existence() {
+    let server = MockServer::start_async().await;
+    let success = server
+        .mock_async(|when, then| {
+            when.method(GET)
+                .path("/repos/octo/private-skill")
+                .header("authorization", "Bearer github-test-token");
+            then.status(200).json_body(github_repository_fixture(
+                41,
+                "octo/private-skill",
+                "private",
+                false,
+                false,
+                ProviderPermission::Write,
+            ));
+        })
+        .await;
+    server
+        .mock_async(|when, then| {
+            when.method(GET).path("/repos/octo/forbidden");
+            then.status(403).header("x-ratelimit-remaining", "12");
+        })
+        .await;
+    server
+        .mock_async(|when, then| {
+            when.method(GET).path("/repos/octo/rate-limited");
+            then.status(403)
+                .header("x-ratelimit-remaining", "0")
+                .header("retry-after", "3");
+        })
+        .await;
+    server
+        .mock_async(|when, then| {
+            when.method(GET).path("/repos/octo/hidden");
+            then.status(404);
+        })
+        .await;
+    let client = ScopedHttpClient::for_test_http(&server.base_url()).expect("client builds");
+    let provider = GithubProvider;
+    let cancellation = CancellationToken::new();
+
+    let repository = provider
+        .get_repository(
+            AdapterAccountContext {
+                client: &client,
+                secret: "github-test-token",
+                cancellation: &cancellation,
+            },
+            RemoteRepositoryIdentity::Path {
+                path: "octo/private-skill".to_owned(),
+            },
+        )
+        .await
+        .expect("repository verifies");
+    assert_eq!(repository.repository_id, "41");
+    success.assert_calls_async(1).await;
+
+    for (name, expected) in [
+        ("forbidden", "provider.permission-insufficient"),
+        ("rate-limited", "provider.rate-limited"),
+        ("hidden", "provider.permission-insufficient"),
+    ] {
+        let error = provider
+            .get_repository(
+                AdapterAccountContext {
+                    client: &client,
+                    secret: "github-test-token",
+                    cancellation: &cancellation,
+                },
+                RemoteRepositoryIdentity::Path {
+                    path: format!("octo/{name}"),
+                },
+            )
+            .await
+            .expect_err("status maps to a redacted Provider error");
+        assert_eq!(error_code(error), expected);
+    }
+}
+
+#[tokio::test]
+async fn github_maps_authentication_and_invalid_json_errors() {
+    let unauthorized_server = MockServer::start_async().await;
+    unauthorized_server
+        .mock_async(|when, then| {
+            when.method(GET).path("/user");
+            then.status(401);
+        })
+        .await;
+    let client =
+        ScopedHttpClient::for_test_http(&unauthorized_server.base_url()).expect("client builds");
+    let error = GithubProvider
+        .authenticate_account(&client, "bad-token")
+        .await
+        .expect_err("401 rejects authentication");
+    assert_eq!(error_code(error), "provider.authentication-required");
+
+    let invalid_server = MockServer::start_async().await;
+    invalid_server
+        .mock_async(|when, then| {
+            when.method(GET).path("/user/repos");
+            then.status(200).body("not-json");
+        })
+        .await;
+    let client =
+        ScopedHttpClient::for_test_http(&invalid_server.base_url()).expect("client builds");
+    let cancellation = CancellationToken::new();
+    let error = GithubProvider
+        .list_repositories(
+            AdapterAccountContext {
+                client: &client,
+                secret: "github-test-token",
+                cancellation: &cancellation,
+            },
+            AdapterListRequest {
+                query: github_query(),
+                cursor: None,
+            },
+        )
+        .await
+        .expect_err("malformed JSON is normalized");
+    assert_eq!(error_code(error), "provider.response-invalid");
+}
+
+#[tokio::test]
+async fn github_rejects_cross_origin_pagination_links() {
+    let target = MockServer::start_async().await;
+    let source = MockServer::start_async().await;
+    source
+        .mock_async(|when, then| {
+            when.method(GET).path("/user/repos");
+            then.status(200)
+                .header(
+                    "link",
+                    format!("<{}>; rel=\"next\"", target.url("/capture?page=2")),
+                )
+                .json_body(serde_json::json!([]));
+        })
+        .await;
+    let target_mock = target
+        .mock_async(|when, then| {
+            when.method(GET).path("/capture");
+            then.status(200);
+        })
+        .await;
+    let client = ScopedHttpClient::for_test_http(&source.base_url()).expect("client builds");
+    let cancellation = CancellationToken::new();
+
+    let error = GithubProvider
+        .list_repositories(
+            AdapterAccountContext {
+                client: &client,
+                secret: "github-test-token",
+                cancellation: &cancellation,
+            },
+            AdapterListRequest {
+                query: github_query(),
+                cursor: None,
+            },
+        )
+        .await
+        .expect_err("cross-origin pagination metadata is rejected");
+
+    assert_eq!(error_code(error), "provider.response-invalid");
+    target_mock.assert_calls_async(0).await;
 }

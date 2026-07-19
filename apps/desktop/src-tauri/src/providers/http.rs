@@ -58,6 +58,7 @@ impl HttpLimits {
 }
 
 pub struct ScopedHttpClient {
+    instance_id: String,
     origin: Url,
     client: Client,
     limits: HttpLimits,
@@ -94,6 +95,7 @@ impl fmt::Debug for BoundedResponse {
 impl ScopedHttpClient {
     pub fn build(instance: &ProviderInstance) -> Result<Self, AppError> {
         Self::build_inner(
+            &instance.id,
             &instance.api_base_url,
             instance.custom_ca_path.as_deref(),
             HttpLimits::production(),
@@ -109,6 +111,7 @@ impl ScopedHttpClient {
         retry_delays: [Duration; 2],
     ) -> Result<Self, AppError> {
         Self::build_inner(
+            &instance.id,
             &instance.api_base_url,
             instance.custom_ca_path.as_deref(),
             HttpLimits::for_test(total_timeout, max_body_bytes, retry_delays),
@@ -119,7 +122,13 @@ impl ScopedHttpClient {
     #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn for_test_http(api_base_url: &str) -> Result<Self, AppError> {
-        Self::build_inner(api_base_url, None, HttpLimits::production(), true)
+        Self::build_inner(
+            "test-instance",
+            api_base_url,
+            None,
+            HttpLimits::production(),
+            true,
+        )
     }
 
     #[cfg(debug_assertions)]
@@ -131,6 +140,7 @@ impl ScopedHttpClient {
         retry_delays: [Duration; 2],
     ) -> Result<Self, AppError> {
         Self::build_inner(
+            "test-instance",
             api_base_url,
             None,
             HttpLimits::for_test(total_timeout, max_body_bytes, retry_delays),
@@ -139,6 +149,7 @@ impl ScopedHttpClient {
     }
 
     fn build_inner(
+        instance_id: &str,
         api_base_url: &str,
         custom_ca_path: Option<&str>,
         limits: HttpLimits,
@@ -171,10 +182,19 @@ impl ScopedHttpClient {
             .build()
             .map_err(|_| AppError::Provider(ProviderFailure::tls()))?;
         Ok(Self {
+            instance_id: instance_id.to_owned(),
             origin,
             client,
             limits,
         })
+    }
+
+    pub(crate) fn instance_id(&self) -> &str {
+        &self.instance_id
+    }
+
+    pub(crate) fn is_same_origin(&self, url: &Url) -> bool {
+        same_origin(&self.origin, url)
     }
 
     pub async fn get(
