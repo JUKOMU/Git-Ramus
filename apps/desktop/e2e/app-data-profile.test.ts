@@ -1,9 +1,10 @@
-import { access, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   acquireE2eAppDataProfile,
+  canonicalizeExistingE2eFsPath,
   cleanupE2eAppDataProfile,
   cleanupOwnedE2eAppDataProfile,
   createE2eAppDataProfile,
@@ -53,6 +54,21 @@ describe("E2E app-data profile", () => {
     }
     await cleanupE2eAppDataProfile(profile.rootPath);
     await expect(access(profile.rootPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("canonicalizes a filesystem alias to the same existing E2E path", async () => {
+    const parent = await mkdtemp(join(tmpdir(), E2E_APP_DATA_PREFIX));
+    const target = join(parent, "physical");
+    const alias = join(parent, "alias");
+    try {
+      await mkdir(target);
+      await symlink(target, alias, process.platform === "win32" ? "junction" : "dir");
+      await expect(canonicalizeExistingE2eFsPath(alias)).resolves.toBe(
+        await canonicalizeExistingE2eFsPath(target)
+      );
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
   });
 
   it("rejects a nested cleanup target without removing it", async () => {
