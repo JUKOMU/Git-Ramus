@@ -131,7 +131,7 @@ npm run test:e2e --workspace @git-ramus/desktop
 - Modify: `packages/contracts/src/index.ts`
 - Test: `packages/contracts/src/__tests__/contracts.test.ts`
 
-- [ ] **Step 1: Write failing profile and network contract tests**
+- [x] **Step 1: Write failing profile and network contract tests**
 
 Add imports from `../transport` and focused cases equivalent to:
 
@@ -195,7 +195,7 @@ it("requires exactly one safe Clone source", () => {
 });
 ```
 
-- [ ] **Step 2: Run the contract test and verify the missing module failure**
+- [x] **Step 2: Run the contract test and verify the missing module failure**
 
 Run:
 
@@ -205,7 +205,7 @@ npm run test --workspace @git-ramus/contracts
 
 Expected: FAIL because `../transport` and the new exported schemas do not exist.
 
-- [ ] **Step 3: Implement exact Zod schemas and inferred types**
+- [x] **Step 3: Implement exact Zod schemas and inferred types**
 
 Create `transport.ts` with these named exports and strict object schemas:
 
@@ -280,7 +280,7 @@ Add strict schemas for profile update/delete impact/delete resolution, bindings,
 
 Export `./transport` from `index.ts`.
 
-- [ ] **Step 4: Run focused tests and typecheck**
+- [x] **Step 4: Run focused tests and typecheck**
 
 Run:
 
@@ -291,7 +291,7 @@ npm run typecheck --workspace @git-ramus/contracts
 
 Expected: all contract tests PASS and TypeScript exits 0.
 
-- [ ] **Step 5: Commit the contract slice**
+- [x] **Step 5: Commit the contract slice**
 
 ```powershell
 git add packages/contracts/src/transport.ts packages/contracts/src/__fixtures__/transport-contracts.json packages/contracts/src/index.ts packages/contracts/src/__tests__/contracts.test.ts
@@ -309,7 +309,7 @@ git commit -m "feat: add git transport contracts"
 - Modify: `apps/desktop/src-tauri/src/db/migrations.rs`
 - Test: `apps/desktop/src-tauri/src/db/mod.rs`
 
-- [ ] **Step 1: Write failing v4 migration tests**
+- [x] **Step 1: Write failing v4 migration tests**
 
 Add tests that open v3 explicitly, insert one Project/Repository/Job, run migrations, and assert preservation plus the new constraints:
 
@@ -344,7 +344,7 @@ fn transport_profile_kind_constraints_reject_mixed_fields() {
 }
 ```
 
-- [ ] **Step 2: Run the focused DB tests and observe the v3 failure**
+- [x] **Step 2: Run the focused DB tests and observe the v3 failure**
 
 Run:
 
@@ -355,7 +355,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml db::tests::transpor
 
 Expected: FAIL because `MIGRATION_4` and the transport tables do not exist.
 
-- [ ] **Step 3: Implement migration v4**
+- [x] **Step 3: Implement migration v4**
 
 Create the migration with these invariants:
 
@@ -434,7 +434,7 @@ COMMIT;
 
 Add `MIGRATION_4`, the `current < 4` runner branch, and update existing version/table-count assertions from 3 to 4.
 
-- [ ] **Step 4: Add typed Rust models and module exports**
+- [x] **Step 4: Add typed Rust models and module exports**
 
 Define `TransportKind`, `TransportProfile`, `TransportProfileSummary`, `RepositoryTransportBinding`, `TransportConfigSnapshot`, `TransportDriftStatus`, `CloneOperation`, `CloneStage`, `CloneProjectTarget`, `EffectiveTransport`, `CloneIntent`, `NetworkOperationResult`, and focused input types. Every serializable public type uses `#[serde(rename_all = "camelCase", deny_unknown_fields)]` where deserialized. Keep full key paths only on internal `TransportProfile`; summaries expose `ssh_key_file_name`.
 
@@ -444,7 +444,7 @@ Export the module from `git/mod.rs`:
 pub mod transport;
 ```
 
-- [ ] **Step 5: Run DB and model tests**
+- [x] **Step 5: Run DB and model tests**
 
 Run:
 
@@ -455,7 +455,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml git::transport::mod
 
 Expected: all focused tests PASS.
 
-- [ ] **Step 6: Commit migration and models**
+- [x] **Step 6: Commit migration and models**
 
 ```powershell
 git add apps/desktop/src-tauri/migrations/0004_git_transport.sql apps/desktop/src-tauri/src/db/migrations.rs apps/desktop/src-tauri/src/db/mod.rs apps/desktop/src-tauri/src/git/mod.rs apps/desktop/src-tauri/src/git/transport/mod.rs apps/desktop/src-tauri/src/git/transport/model.rs
@@ -470,7 +470,7 @@ git commit -m "feat: persist git transport state"
 - Modify: `apps/desktop/src-tauri/src/git/transport/mod.rs`
 - Test: `apps/desktop/src-tauri/src/git/transport/store.rs`
 
-- [ ] **Step 1: Write failing store round-trip and invariant tests**
+- [x] **Step 1: Write failing store round-trip and invariant tests**
 
 Create in-module tests that seed a Repository and assert:
 
@@ -519,7 +519,7 @@ fn bound_profile_and_unresolved_repair_block_destructive_changes() {
 }
 ```
 
-- [ ] **Step 2: Run tests and verify `TransportStore` is missing**
+- [x] **Step 2: Run tests and verify `TransportStore` is missing**
 
 Run:
 
@@ -529,7 +529,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml git::transport::sto
 
 Expected: FAIL because `store.rs` and repository methods do not exist.
 
-- [ ] **Step 3: Implement focused store methods**
+- [x] **Step 3: Implement focused store methods**
 
 Implement exact SQL methods:
 
@@ -541,7 +541,7 @@ Implement exact SQL methods:
 
 All multi-row profile deletion resolutions use `Database::with_immediate_transaction`; map constraint errors through `map_constraint_error`. Parse stored JSON through concrete `TransportConfigSnapshot` and `CloneProjectTarget`, never through untyped `Value` in service code.
 
-- [ ] **Step 4: Run store and DB tests**
+- [x] **Step 4: Run store and DB tests**
 
 ```powershell
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml git::transport::store::tests
@@ -550,7 +550,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml db::tests
 
 Expected: all tests PASS.
 
-- [ ] **Step 5: Commit the store**
+- [x] **Step 5: Commit the store**
 
 ```powershell
 git add apps/desktop/src-tauri/src/git/transport/mod.rs apps/desktop/src-tauri/src/git/transport/store.rs
@@ -569,7 +569,7 @@ git commit -m "feat: add git transport repositories"
 - Test: `apps/desktop/src-tauri/src/git/transport/config.rs`
 - Test: `apps/desktop/src-tauri/src/error.rs`
 
-- [ ] **Step 1: Write failing URL and redaction tests**
+- [x] **Step 1: Write failing URL and redaction tests**
 
 ```rust
 #[test]
@@ -604,7 +604,7 @@ fn transport_failure_envelopes_never_echo_remote_or_key_material() {
 }
 ```
 
-- [ ] **Step 2: Write failing config-plan and quoting tests**
+- [x] **Step 2: Write failing config-plan and quoting tests**
 
 ```rust
 #[test]
@@ -622,7 +622,7 @@ fn ssh_plan_is_built_only_from_typed_fields_and_https_plan_scopes_username() {
 }
 ```
 
-- [ ] **Step 3: Run focused tests and observe missing modules/types**
+- [x] **Step 3: Run focused tests and observe missing modules/types**
 
 ```powershell
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml git::transport::url::tests
@@ -632,7 +632,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml error::tests::trans
 
 Expected: FAIL because URL/config modules and `TransportFailure` do not exist.
 
-- [ ] **Step 4: Implement URL normalization and typed config construction**
+- [x] **Step 4: Implement URL normalization and typed config construction**
 
 `validate_clone_url` must return a `ValidatedRemoteUrl` containing only `kind`, normalized Host/Port/Path, sanitized display value, and the exact execution URL after rejecting control characters, HTTPS UserInfo/Query/Fragment, local paths, unsupported schemes, and `::` Remote Helpers. Reuse Provider URL normalization rules where semantics match, but keep the production Clone allowlist independent so Provider changes cannot widen Git execution.
 
@@ -649,11 +649,11 @@ Build `core.sshCommand` with one platform-tested quoting helper and fixed argume
 
 Add canonical `TransportConfigSnapshot::sha256()` over sorted UTF-8 key/value pairs. Add direct dependency `sha2 = "0.10"` to `Cargo.toml` and let Cargo update `Cargo.lock` in this task; do not rely on a transitive crate.
 
-- [ ] **Step 5: Implement `TransportFailure`**
+- [x] **Step 5: Implement `TransportFailure`**
 
 Add an internal `AppError::Canceled` variant for the generic process layer, with a fixed redacted generic envelope. Mirror `ProviderFailure` with `TransportFailure` fixed constructors for all codes in design section 17. Store only fixed messages and typed context fields; raw stderr stays in an internal classifier input and never in `Debug`, `Display`, or `ErrorEnvelope.details`. Extend `RecoveryActionKind` only if an existing kind cannot express the specified action; prefer current `Retry`, `OpenSettings`, `Reauthorize`, and `ResolveConflict`.
 
-- [ ] **Step 6: Run focused tests and Clippy**
+- [x] **Step 6: Run focused tests and Clippy**
 
 ```powershell
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml git::transport::url::tests
@@ -664,7 +664,7 @@ cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- 
 
 Expected: all tests PASS and Clippy exits 0.
 
-- [ ] **Step 7: Commit URL, config, and error foundations**
+- [x] **Step 7: Commit URL, config, and error foundations**
 
 ```powershell
 git add apps/desktop/src-tauri/Cargo.toml apps/desktop/src-tauri/Cargo.lock apps/desktop/src-tauri/src/error.rs apps/desktop/src-tauri/src/git/transport/mod.rs apps/desktop/src-tauri/src/git/transport/url.rs apps/desktop/src-tauri/src/git/transport/config.rs
@@ -684,7 +684,7 @@ git commit -m "feat: validate git transport inputs"
 - Test: `apps/desktop/src-tauri/src/git/transport/progress.rs`
 - Test: `apps/desktop/src-tauri/src/git/transport/operation.rs`
 
-- [ ] **Step 1: Write failing execution-policy environment tests**
+- [x] **Step 1: Write failing execution-policy environment tests**
 
 Extend the existing `clean_environment_from` test helpers with exact policy expectations:
 
@@ -720,7 +720,7 @@ fn background_network_policy_never_allows_interactive_credentials() {
 }
 ```
 
-- [ ] **Step 2: Write failing cancellation and progress tests**
+- [x] **Step 2: Write failing cancellation and progress tests**
 
 Use the existing child-test technique in `engine.rs` to launch a process that writes one progress line and waits. Assert `GitRunContext::cancel()` terminates the process tree before the absolute timeout and the sink receives only bounded chunks. Add parser tests:
 
@@ -736,7 +736,7 @@ fn parses_receiving_and_writing_progress_without_retaining_raw_remote_text() {
 
 For `TransportOperationRegistry`, assert duplicate Operation IDs and duplicate Repository resource keys are rejected, `cancel` flips the exact token, and `finish` releases both indexes.
 
-- [ ] **Step 3: Run focused tests and observe missing policy/context types**
+- [x] **Step 3: Run focused tests and observe missing policy/context types**
 
 ```powershell
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml git::engine::tests::foreground_network_policy_allows_system_interaction_without_inheriting_attack_overrides -- --exact
@@ -746,7 +746,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml git::transport::ope
 
 Expected: FAIL because the policy, streaming context, parser, and registry do not exist.
 
-- [ ] **Step 4: Add object-safe run context support without breaking existing callers**
+- [x] **Step 4: Add object-safe run context support without breaking existing callers**
 
 Keep `GitCommand` unchanged so current struct literals and `GitRunner` test doubles remain source-compatible. Add:
 
@@ -786,11 +786,11 @@ Override `run_with_context` in `SystemGitRunner`. Refactor command construction 
 
 The environment builder must set `GCM_INTERACTIVE=Auto` only for foreground network policy. It still clears all inherited Git/AskPass/Credential overrides and sets `GIT_TERMINAL_PROMPT=0`. Do not set `StrictHostKeyChecking=no` or inherit `SSH_ASKPASS`.
 
-- [ ] **Step 5: Implement the bounded parser and operation registry**
+- [x] **Step 5: Implement the bounded parser and operation registry**
 
 `GitProgressParser` retains at most one 8 KiB incomplete line and emits only typed `NetworkProgress { stage, fraction, objects, bytes }`. Discard unrecognized raw lines. `TransportOperationRegistry` owns `Arc<AtomicBool>` tokens in maps by Operation ID and resource key; use an RAII registration guard so panic/error paths release indexes.
 
-- [ ] **Step 6: Run engine regressions and focused transport tests**
+- [x] **Step 6: Run engine regressions and focused transport tests**
 
 ```powershell
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml git::engine::tests
@@ -800,7 +800,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml git::transport::ope
 
 Expected: all tests PASS, including existing Windows/Unix process-tree regressions.
 
-- [ ] **Step 7: Commit execution control**
+- [x] **Step 7: Commit execution control**
 
 ```powershell
 git add apps/desktop/src-tauri/src/git/engine.rs apps/desktop/src-tauri/src/git/mod.rs apps/desktop/src-tauri/src/git/transport/mod.rs apps/desktop/src-tauri/src/git/transport/progress.rs apps/desktop/src-tauri/src/git/transport/operation.rs
@@ -817,7 +817,7 @@ git commit -m "feat: add cancellable git network execution"
 - Test: `apps/desktop/src-tauri/src/git/transport/profile_service.rs`
 - Test: `apps/desktop/src-tauri/tests/git_transport_integration.rs`
 
-- [ ] **Step 1: Write failing lifecycle and Trust tests**
+- [x] **Step 1: Write failing lifecycle and Trust tests**
 
 Use a real temporary Git repository and sealed `SystemGitRunner`:
 
@@ -853,7 +853,7 @@ fn switching_then_unbinding_restores_the_original_config_and_drift_blocks_restor
 }
 ```
 
-- [ ] **Step 2: Run the focused tests and verify the missing service failure**
+- [x] **Step 2: Run the focused tests and verify the missing service failure**
 
 ```powershell
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml git::transport::profile_service::tests
@@ -861,11 +861,11 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml git::transport::pro
 
 Expected: FAIL because `TransportProfileService` does not exist.
 
-- [ ] **Step 3: Implement profile CRUD and sanitized summaries**
+- [x] **Step 3: Implement profile CRUD and sanitized summaries**
 
 `TransportProfileService` owns `TransportStore`, `RepositoryRepository`, `TrustRepository`, shared `RepositoryWriteLocks`, and an `Arc<dyn GitRunner>`. Implement typed constructors/update methods that canonicalize and validate SSH Key files in the Host, never accept arbitrary SSH options, and return `TransportProfileSummary` with only the filename. Prevent deletion while bindings remain unless a `ProfileDeletionResolution` covers every affected Repository exactly once.
 
-- [ ] **Step 4: Implement config read/apply/restore with compensation**
+- [x] **Step 4: Implement config read/apply/restore with compensation**
 
 In `config.rs`, execute only these command shapes through argument arrays:
 
@@ -879,7 +879,7 @@ Before writing, read the managed-key snapshot. If a binding does not exist and c
 
 Switching profiles preserves the first binding's `before_config_json`. Unbind compares the live hash to `applied_config_hash`; `DriftResolution::Reject` returns Drift, `KeepExternal` deletes only the binding row, and `Reapply` writes the current Profile again.
 
-- [ ] **Step 5: Run focused and real-Git tests**
+- [x] **Step 5: Run focused and real-Git tests**
 
 ```powershell
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml git::transport::profile_service::tests
@@ -888,7 +888,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --test git_transpor
 
 Expected: profile unit and integration tests PASS.
 
-- [ ] **Step 6: Commit profile management**
+- [x] **Step 6: Commit profile management**
 
 ```powershell
 git add apps/desktop/src-tauri/src/git/transport/config.rs apps/desktop/src-tauri/src/git/transport/mod.rs apps/desktop/src-tauri/src/git/transport/profile_service.rs apps/desktop/src-tauri/tests/git_transport_integration.rs
@@ -905,7 +905,7 @@ git commit -m "feat: manage git transport profiles"
 - Test: `apps/desktop/src-tauri/src/git/transport/service.rs`
 - Test: `apps/desktop/src-tauri/tests/git_transport_integration.rs`
 
-- [ ] **Step 1: Write a failing real-Git Fetch test**
+- [x] **Step 1: Write a failing real-Git Fetch test**
 
 Build a fixture with a Bare Remote and a sealed test Global Config containing `url.<local-bare-path>.insteadOf=https://git.example.test/acme/repository.git`. The persisted Remote stays HTTPS.
 
@@ -929,7 +929,7 @@ fn fetch_updates_remote_refs_and_persisted_ahead_behind() {
 
 Also add unit tests that untrusted repositories, unknown or option-looking Remotes, profile type mismatch, duplicate Operation IDs, and an already-held Repository Write Lock fail before spawning Git.
 
-- [ ] **Step 2: Run Fetch tests and observe the missing service failure**
+- [x] **Step 2: Run Fetch tests and observe the missing service failure**
 
 ```powershell
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --test git_transport_integration fetch_updates_remote_refs_and_persisted_ahead_behind -- --exact
@@ -938,11 +938,11 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml git::transport::ser
 
 Expected: FAIL because `GitTransportService::fetch` is missing.
 
-- [ ] **Step 3: Add caller-owned Job IDs and interruption handling**
+- [x] **Step 3: Add caller-owned Job IDs and interruption handling**
 
 Add `JobService::create_with_id(id, kind, title)` that validates a UUID and refuses duplicates. Add `fail_running_by_kind_prefix("git.transport.", TransportFailure::interrupted().envelope())`, called during AppState construction in Task 10. Do not add new `JobStatus` variants.
 
-- [ ] **Step 4: Implement `GitTransportService` foundation and Fetch**
+- [x] **Step 4: Implement `GitTransportService` foundation and Fetch**
 
 The service owns `Database`, `GitService`, `TransportProfileService`, `TransportStore`, `JobService`, `TransportOperationRegistry`, shared `RepositoryWriteLocks`, and `Arc<dyn GitRunner>`. `fetch` must:
 
@@ -958,7 +958,7 @@ The service owns `Database`, `GitService`, `TransportProfileService`, `Transport
 
 Do not add `--prune`, retry, extra refspecs, or plugin-controlled timeout values.
 
-- [ ] **Step 5: Run Fetch tests, Job tests, and Clippy**
+- [x] **Step 5: Run Fetch tests, Job tests, and Clippy**
 
 ```powershell
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml jobs::service::tests
@@ -969,7 +969,7 @@ cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- 
 
 Expected: all tests PASS and Clippy exits 0.
 
-- [ ] **Step 6: Commit Fetch**
+- [x] **Step 6: Commit Fetch**
 
 ```powershell
 git add apps/desktop/src-tauri/src/git/transport/mod.rs apps/desktop/src-tauri/src/git/transport/service.rs apps/desktop/src-tauri/src/jobs/service.rs apps/desktop/src-tauri/tests/git_transport_integration.rs
@@ -985,7 +985,7 @@ git commit -m "feat: fetch repository remotes"
 - Test: `apps/desktop/src-tauri/src/git/transport/service.rs`
 - Test: `apps/desktop/src-tauri/tests/git_transport_integration.rs`
 
-- [ ] **Step 1: Write failing Pull safety tests**
+- [x] **Step 1: Write failing Pull safety tests**
 
 ```rust
 #[test]
@@ -1008,7 +1008,7 @@ fn pull_fast_forwards_but_divergence_never_creates_a_merge_or_rebase() {
 
 Add focused unit cases for detached HEAD, missing upstream, conflict count, and in-progress Merge/Rebase/Cherry-pick/Revert/Bisect markers.
 
-- [ ] **Step 2: Write failing Push target and non-force tests**
+- [x] **Step 2: Write failing Push target and non-force tests**
 
 ```rust
 #[test]
@@ -1027,7 +1027,7 @@ fn push_sets_upstream_once_and_rejects_non_fast_forward_without_force() {
 }
 ```
 
-- [ ] **Step 3: Run focused tests and observe missing methods**
+- [x] **Step 3: Run focused tests and observe missing methods**
 
 ```powershell
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --test git_transport_integration pull_fast_forwards_but_divergence_never_creates_a_merge_or_rebase -- --exact
@@ -1036,7 +1036,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --test git_transpor
 
 Expected: FAIL because Pull/Push are not implemented.
 
-- [ ] **Step 4: Implement machine-readable preflight**
+- [x] **Step 4: Implement machine-readable preflight**
 
 Use argument-array Git probes only:
 
@@ -1047,13 +1047,13 @@ Use argument-array Git probes only:
 
 Expose the same probes through `GitTransportService::network_state(context, repository_id) -> RepositoryNetworkState`; UI never guesses detached/in-progress state. Never infer these states from localized human `git status` text.
 
-- [ ] **Step 5: Implement Pull and Push command construction**
+- [x] **Step 5: Implement Pull and Push command construction**
 
 Pull executes exactly `git pull --ff-only --progress` after preflight and uses the same operation/job/lock/refresh lifecycle as Fetch. Dirty worktrees are passed to Git; no Stash command is allowed.
 
 Push with upstream resolves the stored upstream into a validated Remote plus Branch and executes `git push --progress -- <remote> HEAD:refs/heads/<validated-upstream-branch>`. Without upstream, validate a selected Remote and Branch, then execute `git push --progress --set-upstream -- <remote> HEAD:refs/heads/<validated-branch>`. The argument separator is mandatory. No public input type contains a raw RefSpec, and no code path adds Force/Delete/Mirror/Tags/All.
 
-- [ ] **Step 6: Run service and real-Git tests**
+- [x] **Step 6: Run service and real-Git tests**
 
 ```powershell
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml git::transport::service::tests
@@ -1063,7 +1063,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --test git_transpor
 
 Expected: Pull/Push safety tests PASS.
 
-- [ ] **Step 7: Commit Pull and Push**
+- [x] **Step 7: Commit Pull and Push**
 
 ```powershell
 git add apps/desktop/src-tauri/src/git/transport/model.rs apps/desktop/src-tauri/src/git/transport/service.rs apps/desktop/src-tauri/tests/git_transport_integration.rs
@@ -1081,7 +1081,7 @@ git commit -m "feat: pull and push repository branches"
 - Test: `apps/desktop/src-tauri/src/git/transport/clone.rs`
 - Test: `apps/desktop/src-tauri/tests/git_transport_integration.rs`
 
-- [ ] **Step 1: Write failing path ownership and Cleanup tests**
+- [x] **Step 1: Write failing path ownership and Cleanup tests**
 
 ```rust
 #[test]
@@ -1103,7 +1103,7 @@ fn clone_owner_marker_is_a_sidecar_and_cleanup_requires_exact_operation_ownershi
 
 Add Windows reparse-point/Unix symlink cases and a race where Final Path appears before rename.
 
-- [ ] **Step 2: Write a failing end-to-end Clone integration test**
+- [x] **Step 2: Write a failing end-to-end Clone integration test**
 
 ```rust
 #[test]
@@ -1129,7 +1129,7 @@ fn clone_uses_staging_registers_project_and_applies_profile_without_leaking_prov
 
 Add failures for unsupported URL, excluded/deeper-than-scan destination, nonempty Final Path, checkout Filter/Hook attack, cancellation, registration failure after Final Rename, and Provider Binding partial failure.
 
-- [ ] **Step 3: Run Clone tests and observe missing coordinator failure**
+- [x] **Step 3: Run Clone tests and observe missing coordinator failure**
 
 ```powershell
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml git::transport::clone::tests
@@ -1138,7 +1138,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --test git_transpor
 
 Expected: FAIL because guarded Clone and intent resolution do not exist.
 
-- [ ] **Step 4: Implement an in-memory one-use Clone intent registry**
+- [x] **Step 4: Implement an in-memory one-use Clone intent registry**
 
 `CloneIntentRegistry` stores a `CloneIntentRecord` by UUID with caller Plugin ID, Account ID, validated `RemoteRepository`, creation time, and consumed flag. Creation calls a new `ProviderService::repository_for_clone(account_id, repository_id)` that reads the account Secret internally, asks the registered Adapter for that exact Repository, then returns only validated repository metadata to the registry. It never returns or stores the PAT.
 
@@ -1150,7 +1150,7 @@ Intent rules:
 - Cancel/expiry removes the record.
 - `https_url`/`ssh_url` are Adapter-validated and rechecked by transport URL validation before Git execution.
 
-- [ ] **Step 5: Implement guarded two-stage Clone**
+- [x] **Step 5: Implement guarded two-stage Clone**
 
 Implement the exact sequence from design section 10:
 
@@ -1167,7 +1167,7 @@ Implement the exact sequence from design section 10:
 
 After Final Rename, failures return `git.transport.partial` and never delete Final Path. Before Final Rename, Cleanup requires canonical parent, exact prefix, non-symlink/non-reparse Staging, matching sidecar Marker, and exact Operation ID.
 
-- [ ] **Step 6: Implement startup recovery classification**
+- [x] **Step 6: Implement startup recovery classification**
 
 For every incomplete Clone record:
 
@@ -1176,7 +1176,7 @@ For every incomplete Clone record:
 - Marker exists but neither path exists → delete stale Marker and fail the Job as interrupted.
 - Any mismatch → `unsafePath`, preserve filesystem, require diagnostics.
 
-- [ ] **Step 7: Run Clone, Provider, and Git integration tests**
+- [x] **Step 7: Run Clone, Provider, and Git integration tests**
 
 ```powershell
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml git::transport::clone::tests
@@ -1186,7 +1186,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml providers::
 
 Expected: all tests PASS and existing Provider tests remain green.
 
-- [ ] **Step 8: Commit Clone**
+- [x] **Step 8: Commit Clone**
 
 ```powershell
 git add apps/desktop/src-tauri/src/git/transport/clone.rs apps/desktop/src-tauri/src/git/transport/mod.rs apps/desktop/src-tauri/src/git/transport/service.rs apps/desktop/src-tauri/src/providers/service.rs apps/desktop/src-tauri/tests/git_transport_integration.rs
@@ -1205,7 +1205,7 @@ git commit -m "feat: clone repositories safely"
 - Test: `apps/desktop/src-tauri/src/app_state.rs`
 - Test: `apps/desktop/src-tauri/src/lib.rs`
 
-- [ ] **Step 1: Write failing command-boundary tests**
+- [x] **Step 1: Write failing command-boundary tests**
 
 Add pure command-core tests that do not require a Tauri runtime:
 
@@ -1236,7 +1236,7 @@ fn clone_native_request_requires_host_injected_absolute_parent() {
 
 Add a `lib.rs` probe asserting the transport E2E command is enabled only under `all(feature = "e2e", debug_assertions)`; Task 15 registers the actual command.
 
-- [ ] **Step 2: Run focused tests and observe missing AppState/command fields**
+- [x] **Step 2: Run focused tests and observe missing AppState/command fields**
 
 ```powershell
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml commands::tests::plugin_transport_requests_cannot_enable_interaction_without_host_confirmation -- --exact
@@ -1245,7 +1245,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml app_state::tests::b
 
 Expected: FAIL because transport composition and commands are missing.
 
-- [ ] **Step 3: Compose services with one shared repository lock set**
+- [x] **Step 3: Compose services with one shared repository lock set**
 
 Add `pub transport: GitTransportService` to `AppState`. Construct one `RepositoryWriteLocks`, then pass clones to `GitService`, `IdentityService`, `TransportProfileService`, and `GitTransportService`. Production uses `SystemGitRunner::new()`; Debug E2E injection is added only in Task 15. Build `CloneIntentRegistry` and `TransportOperationRegistry` before the service. On bootstrap:
 
@@ -1253,7 +1253,7 @@ Add `pub transport: GitTransportService` to `AppState`. Construct one `Repositor
 2. Ask Clone recovery to classify incomplete records without deleting anything automatically.
 3. Continue existing Provider secret cleanup and identity import.
 
-- [ ] **Step 4: Add exact native command DTOs and commands**
+- [x] **Step 4: Add exact native command DTOs and commands**
 
 Every deserialized DTO uses `#[serde(rename_all = "camelCase", deny_unknown_fields)]`. Add and register:
 
@@ -1282,7 +1282,7 @@ git_transport_operation_cancel
 
 Long operations are `async` Tauri commands that run blocking Git work through `tauri::async_runtime::spawn_blocking`, await completion, and emit `job://updated` at create/start/progress/terminal transitions. Commands pass a progress reporter closure into the service. Cancellation calls `TransportOperationRegistry::cancel(operation_id)` before transitioning the Job; it is idempotent for already terminal operations.
 
-- [ ] **Step 5: Enforce command caller and interaction rules**
+- [x] **Step 5: Enforce command caller and interaction rules**
 
 - Profile/key/destination operations require signed built-in caller checks against `PluginRegistry`.
 - Provider Center can call only `git_clone_intent_create`, after exact Provider account permission validation.
@@ -1290,7 +1290,7 @@ Long operations are `async` Tauri commands that run blocking Git work through `t
 - External plugins with future grants still require `interactive_confirmed=true`, which only trusted Host API injects after a trusted dialog.
 - Commands independently revalidate permission/resource/caller even though RPC Router also checks.
 
-- [ ] **Step 6: Run Rust unit and integration suites**
+- [x] **Step 6: Run Rust unit and integration suites**
 
 ```powershell
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml commands::tests
@@ -1301,7 +1301,7 @@ cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- 
 
 Expected: commands, bootstrap, transport integration, and Clippy PASS.
 
-- [ ] **Step 7: Commit native composition**
+- [x] **Step 7: Commit native composition**
 
 ```powershell
 git add apps/desktop/src-tauri/src/app_state.rs apps/desktop/src-tauri/src/commands.rs apps/desktop/src-tauri/src/lib.rs apps/desktop/src-tauri/src/git/transport/mod.rs
@@ -1326,7 +1326,7 @@ git commit -m "feat: expose git transport commands"
 - Modify: `apps/desktop/src/app.css`
 - Modify: `apps/desktop/src/__tests__/App.test.tsx`
 
-- [ ] **Step 1: Write failing trusted-prompt tests**
+- [x] **Step 1: Write failing trusted-prompt tests**
 
 ```tsx
 it("serializes transport confirmations and clears source details after resolution", async () => {
@@ -1345,7 +1345,7 @@ it("serializes transport confirmations and clears source details after resolutio
 
 Add unmount rejection, one shared gate, stale resolution, and no secret fields in listener payloads.
 
-- [ ] **Step 2: Write failing Host API payload tests**
+- [x] **Step 2: Write failing Host API payload tests**
 
 Mock Tauri `invoke`, trusted prompts, and navigation broker. Assert:
 
@@ -1376,7 +1376,7 @@ it("publishes a Git Client clone route after a Provider intent is created", asyn
 });
 ```
 
-- [ ] **Step 3: Run desktop tests and observe missing brokers/routes**
+- [x] **Step 3: Run desktop tests and observe missing brokers/routes**
 
 ```powershell
 npm run test --workspace @git-ramus/desktop -- src/git-transport/__tests__/transportPrompts.test.tsx
@@ -1386,7 +1386,7 @@ npm run test --workspace @git-ramus/desktop -- src/plugins/__tests__/rpcRouter.t
 
 Expected: FAIL because trusted transport dependencies and routes do not exist.
 
-- [ ] **Step 4: Implement trusted ports and brokers**
+- [x] **Step 4: Implement trusted ports and brokers**
 
 Define:
 
@@ -1407,13 +1407,13 @@ export interface GitTransportFilePort {
 
 Use the same atomic gate discipline as Provider prompts: acquire once, resolve/cancel/unmount clears state before settling, and never retain previous request metadata. The production `GitTransportFilePort` calls only `git_transport_select_destination_parent` and `git_transport_select_ssh_key`; test ports return deterministic values. `cloneNavigationBroker` supports one current navigation event and consumes it after `App` selects plugin `git-ramus.git-client` with the exact `/clone/<uuid>` route.
 
-- [ ] **Step 5: Extend HostApi with strict transport methods**
+- [x] **Step 5: Extend HostApi with strict transport methods**
 
 Import every new Schema. Public HostApi methods accept plugin-safe request types. For SSH Profile create/update, `sshKeyAction=selectFile` opens the trusted key picker and injects the path only into the native invoke. For Clone, confirm source/network, select Destination Parent, and inject path/confirmation only into native invoke. If any trusted interaction is canceled, return `null` without invoking Rust.
 
 Provider intent creation invokes Rust with only `{ pluginId, accountId, repositoryId }`, then publishes the Clone route. Network methods confirm through the broker before invoking with `interactiveConfirmed: true`. Parse every native response before returning it.
 
-- [ ] **Step 6: Add permission-aware RPC routes**
+- [x] **Step 6: Add permission-aware RPC routes**
 
 Add `RPC_RESOURCES.transportProfiles = "transport-profiles"` and `RPC_RESOURCES.cloneIntents = "clone-intents"`. Route capabilities use the corrected Manifest form:
 
@@ -1425,11 +1425,11 @@ git.network:execute
 
 Add exact methods matching Task 10, including `repositories.getNetworkState`. Provider intent creation requires both an authorized Provider Account (`providers:read`) and `git.network:execute` on `clone-intents`. Repository operations require `git.network:execute` plus `repositories:read`/`repositories:write` on the fixed repository resource. No route accepts `destinationParent`, `sshKeyPath`, `environment`, `args`, `refspec`, or a generic `path` field.
 
-- [ ] **Step 7: Mount dialogs outside plugin iframes and wire Clone navigation**
+- [x] **Step 7: Mount dialogs outside plugin iframes and wire Clone navigation**
 
 `App` subscribes to `cloneNavigationBroker` and selects `git-ramus.git-client` at the supplied route. Render `TransportConfirmationDialog` in `AppShell` alongside existing trusted Provider dialogs, never inside `PluginHost`. Add semantic-token CSS and an App test asserting the dialog and plugin iframe are siblings under trusted Shell ownership.
 
-- [ ] **Step 8: Run all desktop Host tests and typecheck**
+- [x] **Step 8: Run all desktop Host tests and typecheck**
 
 ```powershell
 npm run test --workspace @git-ramus/desktop
@@ -1438,7 +1438,7 @@ npm run typecheck --workspace @git-ramus/desktop
 
 Expected: desktop tests and typecheck PASS.
 
-- [ ] **Step 9: Commit trusted Host transport flow**
+- [x] **Step 9: Commit trusted Host transport flow**
 
 ```powershell
 git add apps/desktop/src/git-transport apps/desktop/src/lib/hostApi.ts apps/desktop/src/lib/__tests__/hostApi.test.ts apps/desktop/src/plugins/rpcRouter.ts apps/desktop/src/plugins/__tests__/rpcRouter.test.ts apps/desktop/src/App.tsx apps/desktop/src/shell/AppShell.tsx apps/desktop/src/app.css apps/desktop/src/__tests__/App.test.tsx
@@ -1457,7 +1457,7 @@ git commit -m "feat: broker trusted git transport actions"
 - Create: `plugins/git-client/src/__tests__/TransportProfilesView.test.tsx`
 - Modify: `plugins/git-client/src/style.css`
 
-- [ ] **Step 1: Write failing API and view tests**
+- [x] **Step 1: Write failing API and view tests**
 
 Add API route assertions and this user flow:
 
@@ -1487,7 +1487,7 @@ it("creates HTTPS and SSH profiles without rendering a secret or full key path",
 
 Add deletion-impact tests requiring every affected Repository to choose replacement or unbind before delete.
 
-- [ ] **Step 2: Run plugin tests and observe missing methods/views**
+- [x] **Step 2: Run plugin tests and observe missing methods/views**
 
 ```powershell
 npm run test --workspace @git-ramus/git-client -- src/__tests__/TransportProfilesView.test.tsx
@@ -1495,11 +1495,11 @@ npm run test --workspace @git-ramus/git-client -- src/__tests__/TransportProfile
 
 Expected: FAIL because the API and views do not exist.
 
-- [ ] **Step 3: Extend the typed plugin API**
+- [x] **Step 3: Extend the typed plugin API**
 
 Add methods for profile list/create/update/deletion impact/delete, effective transport, Repository Network State, bind/unbind, Clone intent read, Clone, Fetch/Pull/Push, and cancel. Every method validates request and response with transport schemas and calls the exact RPC names from Task 11. Use a shared cancellable helper keyed by `operationId`; cancellation calls `repositories.cancelNetworkOperation` and rejects with `AbortError` without swallowing the original request rejection.
 
-- [ ] **Step 4: Add Manifest permissions and navigation**
+- [x] **Step 4: Add Manifest permissions and navigation**
 
 Add navigation:
 
@@ -1514,11 +1514,11 @@ Add navigation:
 
 Add `git.transport:read`, `git.transport:manage`, and `git.network:execute` permissions with resources `transport-profiles`, `repositories`, and `clone-intents` as appropriate. Do not grant Provider Account read permission to Git Client.
 
-- [ ] **Step 5: Implement focused profile components**
+- [x] **Step 5: Implement focused profile components**
 
 `TransportProfileForm` is a discriminated SSH/HTTPS form. SSH presents Name, `IdentitiesOnly`, and a “Choose private key” action; it never accepts a text path. HTTPS presents Name and Username, with `useHttpPath` fixed on and explained. `TransportProfilesView` owns list/lifecycle/delete-impact state and stale-response generations. It displays Key Filename only and uses existing `ErrorNotice` conventions.
 
-- [ ] **Step 6: Run Git Client tests, typecheck, and build**
+- [x] **Step 6: Run Git Client tests, typecheck, and build**
 
 ```powershell
 npm run test --workspace @git-ramus/git-client
@@ -1528,7 +1528,7 @@ npm run build --workspace @git-ramus/git-client
 
 Expected: all Git Client checks PASS.
 
-- [ ] **Step 7: Commit Transport Identity UI**
+- [x] **Step 7: Commit Transport Identity UI**
 
 ```powershell
 git add plugins/git-client/plugin.json plugins/git-client/src/api.ts plugins/git-client/src/App.tsx plugins/git-client/src/views/TransportProfilesView.tsx plugins/git-client/src/components/TransportProfileForm.tsx plugins/git-client/src/__tests__/TransportProfilesView.test.tsx plugins/git-client/src/style.css
@@ -1548,7 +1548,7 @@ git commit -m "feat: manage transport identities in git client"
 - Modify: `plugins/git-client/src/__tests__/RepositoryView.test.tsx`
 - Modify: `plugins/git-client/src/style.css`
 
-- [ ] **Step 1: Write failing Clone wizard tests**
+- [x] **Step 1: Write failing Clone wizard tests**
 
 ```tsx
 it("consumes a Provider intent and submits a path-free Clone request", async () => {
@@ -1571,7 +1571,7 @@ it("consumes a Provider intent and submits a path-free Clone request", async () 
 
 Add manual URL, new Project, unsafe folder, user cancel, operation cancel, stale intent, Partial registration recovery, and success navigation cases.
 
-- [ ] **Step 2: Write failing Repository Network panel tests**
+- [x] **Step 2: Write failing Repository Network panel tests**
 
 ```tsx
 it("disables unsafe Pull and asks for a Push target only when upstream is absent", async () => {
@@ -1590,7 +1590,7 @@ it("disables unsafe Pull and asks for a Push target only when upstream is absent
 
 Add Fetch Remote choice, ff-only divergence message, Drift actions, operation cancellation, duplicate-click exclusion, and post-terminal refresh tests.
 
-- [ ] **Step 3: Run focused tests and observe missing components**
+- [x] **Step 3: Run focused tests and observe missing components**
 
 ```powershell
 npm run test --workspace @git-ramus/git-client -- src/__tests__/CloneView.test.tsx
@@ -1599,17 +1599,17 @@ npm run test --workspace @git-ramus/git-client -- src/__tests__/RepositoryNetwor
 
 Expected: FAIL because Clone/Network components are missing.
 
-- [ ] **Step 4: Implement Clone routing and wizard**
+- [x] **Step 4: Implement Clone routing and wizard**
 
 `App` recognizes exact `/clone` and `/clone/<uuid>` routes before the regular navigation switch. Validate the UUID using the contract before requesting an intent. `CloneView` owns a single operation generation and `AbortController`, lists Projects/Profiles, derives allowed transport types from the intent, never handles local paths, and displays operation stages from local request state plus Task summaries. A success callback opens the returned Repository in its Project context; Partial errors expose only server-provided recovery actions.
 
-- [ ] **Step 5: Implement a focused Network panel**
+- [x] **Step 5: Implement a focused Network panel**
 
 `RepositoryNetworkPanel` loads Effective Transport and the existing Snapshot/Remote summary. It owns Fetch/Pull/Push and cancellation state; `RepositoryView` passes the Repository, context, trust state, and a post-operation `refresh` callback. Keep Changes/Diff/Commit state in `RepositoryView`; do not copy it into the Network component.
 
 Pull is disabled for detached HEAD, no upstream, conflict/in-progress flags, untrusted Repository, or busy state. Push without upstream opens the target form. No Force/Delete/Tags controls are rendered. The panel displays sanitized URLs only.
 
-- [ ] **Step 6: Run Git Client tests and build**
+- [x] **Step 6: Run Git Client tests and build**
 
 ```powershell
 npm run test --workspace @git-ramus/git-client
@@ -1619,7 +1619,7 @@ npm run build --workspace @git-ramus/git-client
 
 Expected: all Git Client tests and build PASS.
 
-- [ ] **Step 7: Commit Clone and Network UI**
+- [x] **Step 7: Commit Clone and Network UI**
 
 ```powershell
 git add plugins/git-client/src/App.tsx plugins/git-client/src/views/CloneView.tsx plugins/git-client/src/components/RepositoryNetworkPanel.tsx plugins/git-client/src/__tests__/CloneView.test.tsx plugins/git-client/src/__tests__/RepositoryNetworkPanel.test.tsx plugins/git-client/src/views/RepositoryView.tsx plugins/git-client/src/__tests__/RepositoryView.test.tsx plugins/git-client/src/style.css
@@ -1637,7 +1637,7 @@ git commit -m "feat: add clone and repository network views"
 - Test: `plugins/provider-center/src/__tests__/RepositoryBrowser.test.tsx`
 - Modify: `plugins/provider-center/src/style.css`
 
-- [ ] **Step 1: Write failing API boundary tests**
+- [x] **Step 1: Write failing API boundary tests**
 
 ```ts
 it("creates a Clone intent with repository identity only", async () => {
@@ -1655,11 +1655,11 @@ it("creates a Clone intent with repository identity only", async () => {
 });
 ```
 
-- [ ] **Step 2: Write a failing Repository Browser Clone-action test**
+- [x] **Step 2: Write a failing Repository Browser Clone-action test**
 
 Render a writable Provider repository, click `Clone skills/private-skill`, and assert `api.createCloneIntent(account.id, repository.repositoryId)` is called exactly once. Add disabled states for archived/no-read-access entries, duplicate clicks, stale account changes, and API failure surfaced through `ErrorNotice`.
 
-- [ ] **Step 3: Run Provider Center tests and observe missing behavior**
+- [x] **Step 3: Run Provider Center tests and observe missing behavior**
 
 ```powershell
 npm run test --workspace @git-ramus/provider-center -- src/__tests__/api.test.ts src/__tests__/RepositoryBrowser.test.tsx
@@ -1667,7 +1667,7 @@ npm run test --workspace @git-ramus/provider-center -- src/__tests__/api.test.ts
 
 Expected: FAIL because `createCloneIntent` and the Clone button do not exist.
 
-- [ ] **Step 4: Add the exact capability and API method**
+- [x] **Step 4: Add the exact capability and API method**
 
 Add this Manifest permission only:
 
@@ -1680,11 +1680,11 @@ Add this Manifest permission only:
 
 Do not add transport-profile management, repository write, or local filesystem permissions to Provider Center. Implement `createCloneIntent(accountId, repositoryId)` using `providerCloneIntentCreateRequestSchema` and `cloneIntentReferenceSchema`.
 
-- [ ] **Step 5: Add the Clone action with stale-request protection**
+- [x] **Step 5: Add the Clone action with stale-request protection**
 
 Pass the selected Account into each action. Keep a generation/ref keyed by Account ID; if the account changes while intent creation is in flight, discard the result/error for the previous account. Disable only the clicked repository while creating its intent. Host navigation happens through Task 11 after successful RPC; Provider Center must not parse or construct the Git Client route.
 
-- [ ] **Step 6: Run Provider tests, typecheck, and build**
+- [x] **Step 6: Run Provider tests, typecheck, and build**
 
 ```powershell
 npm run test --workspace @git-ramus/provider-center
@@ -1694,7 +1694,7 @@ npm run build --workspace @git-ramus/provider-center
 
 Expected: all Provider Center checks PASS.
 
-- [ ] **Step 7: Commit Provider Clone handoff**
+- [x] **Step 7: Commit Provider Clone handoff**
 
 ```powershell
 git add plugins/provider-center/plugin.json plugins/provider-center/src/api.ts plugins/provider-center/src/components/RepositoryBrowser.tsx plugins/provider-center/src/__tests__/api.test.ts plugins/provider-center/src/__tests__/RepositoryBrowser.test.tsx plugins/provider-center/src/style.css
@@ -1717,7 +1717,7 @@ git commit -m "feat: hand provider repositories to clone"
 - Test: `apps/desktop/src-tauri/src/e2e.rs`
 - Test: `apps/desktop/src-tauri/src/lib.rs`
 
-- [ ] **Step 1: Write failing Rust fixture-boundary tests**
+- [x] **Step 1: Write failing Rust fixture-boundary tests**
 
 ```rust
 #[test]
@@ -1740,7 +1740,7 @@ fn transport_fixture_uses_guarded_temp_paths_and_a_sealed_git_rewrite() {
 }
 ```
 
-- [ ] **Step 2: Add a Debug-only rewrite and destination-selection queue**
+- [x] **Step 2: Add a Debug-only rewrite and destination-selection queue**
 
 Under `cfg(all(feature = "e2e", debug_assertions))`, add an AppState-owned test registry populated by `e2e_seed_transport_fixture`:
 
@@ -1754,7 +1754,7 @@ Production Transport Service receives an empty registry and cannot add `url.*.in
 
 The trusted destination-selection command from Task 10 consumes the queued fixture parent in Debug E2E; its production branch continues to use `tauri_plugin_dialog::DialogExt`. HostApi holds the returned path and never returns it to a plugin.
 
-- [ ] **Step 3: Write the failing native journey**
+- [x] **Step 3: Write the failing native journey**
 
 `fixture-transport.ts` strictly parses only opaque IDs, repository names, expected branch names, and cleanup tokens; it must not return arbitrary deletion paths to TypeScript. `git-transport.e2e.ts` performs:
 
@@ -1770,7 +1770,7 @@ The trusted destination-selection command from Task 10 consumes the queued fixtu
 10. Cancel a deliberately blocked Fetch and assert the Job becomes canceled and no child process remains.
 11. Cleanup through production Project/Binding/Profile APIs, then guarded fixture cleanup.
 
-- [ ] **Step 4: Run the E2E test and observe missing fixture/UI behavior**
+- [x] **Step 4: Run the E2E test and observe missing fixture/UI behavior**
 
 ```powershell
 npm run build:e2e --workspace @git-ramus/desktop
@@ -1779,11 +1779,11 @@ npm run test:e2e --workspace @git-ramus/desktop -- --spec ./e2e/git-transport.e2
 
 Expected before completion: FAIL at the first missing fixture/Clone/network step.
 
-- [ ] **Step 5: Implement the fixture and make the journey pass**
+- [x] **Step 5: Implement the fixture and make the journey pass**
 
 Reuse the existing guarded temp-root checks: fixed prefix, direct child of system Temp, non-symlink/reparse, and exact cleanup token. All fixture Git commands use argument arrays, sealed config, explicit author config, and `commit.gpgSign=false`. Add the new spec to `wdio.conf.ts`; raise Mocha timeout only for this file through suite configuration rather than globally masking hangs.
 
-- [ ] **Step 6: Add exact release-boundary tests and CI commands**
+- [x] **Step 6: Add exact release-boundary tests and CI commands**
 
 Register `e2e_seed_transport_fixture`, remote-advance, local-commit, and cleanup handlers only under `all(feature="e2e", debug_assertions)`. Add a Release test matching existing Provider/Foundation probes. In CI run:
 
@@ -1793,7 +1793,7 @@ cargo test --release --features e2e --manifest-path apps/desktop/src-tauri/Cargo
 
 After `npm run desktop:build`, scan the Release binary for the fixed test URL, temp prefix, handler names, and rewrite key; fail if any are found.
 
-- [ ] **Step 7: Run Rust E2E-feature tests and full native E2E**
+- [x] **Step 7: Run Rust E2E-feature tests and full native E2E**
 
 ```powershell
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --features e2e e2e::tests
@@ -1804,7 +1804,7 @@ npm run test:e2e --workspace @git-ramus/desktop
 
 Expected: Foundation, Git Client, Provider, and Git Transport specs all PASS.
 
-- [ ] **Step 8: Commit native Transport E2E**
+- [x] **Step 8: Commit native Transport E2E**
 
 ```powershell
 git add apps/desktop/src-tauri/src/e2e.rs apps/desktop/src-tauri/src/app_state.rs apps/desktop/src-tauri/src/git/transport/service.rs apps/desktop/src-tauri/src/lib.rs apps/desktop/e2e/fixture-transport.ts apps/desktop/e2e/git-transport.e2e.ts apps/desktop/e2e/wdio.conf.ts apps/desktop/package.json .github/workflows/ci.yml
@@ -1819,7 +1819,7 @@ git commit -m "test: cover git transport journey"
 - Modify only if findings require fixes: files named by Tasks 1–15
 - Update checkboxes: `docs/superpowers/plans/2026-07-20-git-transport-network-operations.md`
 
-- [ ] **Step 1: Document focused tests and real-account smoke checks**
+- [x] **Step 1: Document focused tests and real-account smoke checks**
 
 Add commands for Contract, profile, transport integration, and native E2E tests. Document that:
 
@@ -1831,7 +1831,7 @@ Add commands for Contract, profile, transport integration, and native E2E tests.
 
 Add manual smoke steps for GitHub HTTPS/GCM, GitHub or GitLab SSH Agent, GitLab.com, and one self-managed GitLab Remote on Windows/macOS/Linux.
 
-- [ ] **Step 2: Run the complete JavaScript/TypeScript gate**
+- [x] **Step 2: Run the complete JavaScript/TypeScript gate**
 
 ```powershell
 npm run check
@@ -1840,7 +1840,7 @@ npm audit --audit-level=high
 
 Expected: format, lint, all workspace typechecks/tests PASS; audit reports 0 High/Critical vulnerabilities.
 
-- [ ] **Step 3: Run the complete Rust gate**
+- [x] **Step 3: Run the complete Rust gate**
 
 ```powershell
 cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check
@@ -1851,7 +1851,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 
 Expected: formatting, both Clippy configurations, unit tests, and all integration tests PASS.
 
-- [ ] **Step 4: Prove Release boundaries and build the desktop app**
+- [x] **Step 4: Prove Release boundaries and build the desktop app**
 
 ```powershell
 cargo test --release --features e2e --manifest-path apps/desktop/src-tauri/Cargo.toml --lib tests::e2e_seed_fixture_handler_matches_the_debug_feature_boundary -- --exact
@@ -1865,7 +1865,8 @@ $markers = @(
   "git-ramus-e2e-transport-",
   "https://gitlab.example.test/skills/private-skill.git",
   "GIT_RAMUS_E2E_TRANSPORT_REWRITE",
-  "provider-pat-fixture"
+  "e2e_block_transport_fetch",
+  "e2e-provider-token"
 )
 foreach ($marker in $markers) {
   rg -a -F -- $marker $binary
@@ -1876,7 +1877,7 @@ foreach ($marker in $markers) {
 
 Expected: all boundary probes and Release desktop build PASS; every binary marker scan returns the expected no-match exit code 1.
 
-- [ ] **Step 5: Run full Windows/Linux-equivalent native E2E locally where supported**
+- [x] **Step 5: Run full Windows/Linux-equivalent native E2E locally where supported**
 
 ```powershell
 npm run build:e2e --workspace @git-ramus/desktop
@@ -1885,7 +1886,7 @@ npm run test:e2e --workspace @git-ramus/desktop
 
 Expected: all four specs PASS serially. CI supplies the other operating-system run.
 
-- [ ] **Step 6: Review the implementation against every acceptance criterion**
+- [x] **Step 6: Review the implementation against every acceptance criterion**
 
 Use `superpowers:requesting-code-review`. Reviewer checks:
 
@@ -1899,7 +1900,7 @@ Use `superpowers:requesting-code-review`. Reviewer checks:
 
 Address each concrete finding with a failing regression test first, rerun its focused suite, and commit fixes separately.
 
-- [ ] **Step 7: Check plan completion and commit documentation**
+- [x] **Step 7: Check plan completion and commit documentation**
 
 Only after every corresponding command has passed, mark this plan's checkboxes complete. Then run:
 
@@ -1916,15 +1917,15 @@ Expected: commit succeeds; only intentional review-fix commits remain in history
 
 ## Final acceptance checklist
 
-- [ ] Manual and Provider Clone both use the trusted Git Client wizard.
-- [ ] Clone to existing/new Project registers and opens the Repository.
-- [ ] Foreground HTTPS can use GCM; no background/plugin path can silently show credentials UI.
-- [ ] SSH and HTTPS Profiles are reusable, repository-scoped, externally readable, and secret-free.
-- [ ] Config switch/unbind restores original values; Drift is never overwritten silently.
-- [ ] Fetch refreshes Remote refs and ahead/behind without implicit prune.
-- [ ] Pull is strictly ff-only and never auto-stashes, merges, or rebases.
-- [ ] Push uses upstream or a validated Host-built target and has no Force/RefSpec path.
-- [ ] Cancellation terminates complete process trees and refreshes real Repository state.
-- [ ] Clone staging cleanup requires exact sidecar ownership; successful Final Paths are never deleted after registration failure.
-- [ ] Provider PAT, Git credential, and commit identity remain isolated across DB, logs, IPC, and plugin RPC.
-- [ ] Contracts, migrations, Rust, React, real Git integration, Release boundary, desktop build, and Windows/Linux E2E gates pass.
+- [x] Manual and Provider Clone both use the trusted Git Client wizard.
+- [x] Clone to existing/new Project registers and opens the Repository.
+- [x] Foreground HTTPS can use GCM; no background/plugin path can silently show credentials UI.
+- [x] SSH and HTTPS Profiles are reusable, repository-scoped, externally readable, and secret-free.
+- [x] Config switch/unbind restores original values; Drift is never overwritten silently.
+- [x] Fetch refreshes Remote refs and ahead/behind without implicit prune.
+- [x] Pull is strictly ff-only and never auto-stashes, merges, or rebases.
+- [x] Push uses upstream or a validated Host-built target and has no Force/RefSpec path.
+- [x] Cancellation terminates complete process trees and refreshes real Repository state.
+- [x] Clone staging cleanup requires exact sidecar ownership; successful Final Paths are never deleted after registration failure.
+- [x] Provider PAT, Git credential, and commit identity remain isolated across DB, logs, IPC, and plugin RPC.
+- [x] Contracts, migrations, Rust, React, real Git integration, Release boundary, desktop build, and Windows/Linux E2E gates pass.

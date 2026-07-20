@@ -36,9 +36,10 @@ npm run desktop:dev
 ## Native E2E
 
 The E2E build enables the `e2e` Cargo feature. The embedded WebDriver server,
-`e2e_seed_fixture`, and `e2e_seed_provider_fixture` commands are compiled and registered only
-when both `e2e` and Rust `debug_assertions` are active. A release build does not contain either
-fixture handler, even if it is built with `--features e2e`.
+`e2e_seed_fixture`, `e2e_seed_provider_fixture`, and transport fixture commands are compiled and
+registered only when both `e2e` and Rust `debug_assertions` are active. A release build does not
+contain those fixture handlers or the transport URL rewrite, even if it is built with
+`--features e2e`.
 
 ```powershell
 npm run build:e2e --workspace @git-ramus/desktop
@@ -51,6 +52,75 @@ Provider discovery unit and integration checks can be run without a network acco
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml providers::
 npm run test --workspace @git-ramus/provider-center
 ```
+
+### Git transport focused verification
+
+These commands cover the shared contracts, Transport Profile lifecycle, real-Git orchestration,
+Git Client views, and the native transport journey without requiring a real network account:
+
+```powershell
+npm run test --workspace @git-ramus/contracts -- src/__tests__/contracts.test.ts
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml git::transport::profile_service::tests
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --test git_transport_integration
+npm run test --workspace @git-ramus/git-client -- src/__tests__/TransportProfilesView.test.tsx src/__tests__/CloneView.test.tsx src/__tests__/RepositoryNetworkPanel.test.tsx
+npm run build:e2e --workspace @git-ramus/desktop
+npm run test:e2e:transport --workspace @git-ramus/desktop
+```
+
+The deterministic transport journey uses real local Git repositories and a local bare remote. Its
+fixed HTTPS URL is rewritten only inside a sealed Debug-E2E Git configuration. It never contacts or
+modifies a real account, credential helper, SSH configuration, known-hosts file, or Global Git
+configuration. Release builds contain neither the rewrite nor its fixture data.
+
+### Git authentication and safety boundaries
+
+- Provider PATs authenticate repository discovery APIs only. They are not Git credentials and are
+  never handed to Clone, Fetch, Pull, Push, Git Credential Manager (GCM), or SSH.
+- HTTPS transport runs system Git. GCM or another configured system credential helper may display
+  UI only for a user-confirmed foreground operation; background operations are noninteractive.
+- SSH Profiles select a key file through the trusted picker and reuse the configured SSH Agent for
+  passphrase-backed keys. Git-Ramus stores neither private-key contents nor passphrases and never
+  auto-accepts an unknown host key. Verify the fingerprint outside the app and update the user's
+  known-hosts configuration before retrying.
+- Commit Identity Profiles configure author/signing identity only. They do not contain Provider or
+  transport credentials.
+- Pull always uses fast-forward-only behavior. Divergence is reported for user action; Git-Ramus
+  does not merge, rebase, or auto-stash. Push has no Force or arbitrary RefSpec path.
+
+### Real-account transport smoke check
+
+Use disposable repositories and branches. First confirm the same Clone/Fetch/Push works with system
+Git in a terminal, then create the corresponding HTTPS/System Git or SSH Transport Profile in
+Git-Ramus; load passphrase-backed test keys into the Agent. Trust the repository explicitly and
+confirm each foreground network operation in the trusted Host UI.
+
+1. **GitHub HTTPS with GCM:** clone a private repository through the Git Client wizard, allow the
+   system GCM prompt, Fetch, make a disposable commit, Push with upstream, and Pull a remote
+   fast-forward. Confirm `origin` contains no token and no Provider PAT prompt is involved.
+2. **GitHub or GitLab SSH Agent:** load the test key into the system Agent and verify the server
+   fingerprint before adding it to known hosts. Clone via SSH, then Fetch and Push. With an
+   intentionally unknown test host, confirm the operation stops instead of accepting its key.
+3. **GitLab.com:** repeat the private-repository flow with both repository discovery and Git
+   transport configured. Rotating or removing the Provider PAT must not alter the bound Git
+   Transport Profile or its system credential-helper behavior.
+4. **Self-managed GitLab:** add one HTTPS or SSH GitLab Remote, including the trusted corporate CA
+   or verified SSH host key through the operating-system/system-Git trust setup. Browse a private
+   repository, hand it to the Clone wizard, then Fetch/Pull/Push. Confirm the public remote URL is
+   retained and no CA path, credential, or local destination appears in plugin data.
+5. **Safety cases:** create a divergent branch and confirm Pull refuses it without changing HEAD;
+   confirm no Force Push action exists; modify a Git config value managed by a bound Profile and
+   confirm drift is reported rather than overwritten silently.
+
+Run the smoke set on each release-candidate platform:
+
+- **Windows:** Git for Windows, GCM, and the Windows/OpenSSH Agent.
+- **macOS:** system Git or the supported Git distribution, its configured credential helper, and
+  `ssh-agent`/Keychain-backed keys.
+- **Linux:** system Git, an explicitly configured GCM/credential helper for HTTPS, and `ssh-agent`.
+
+Record the Git version, credential-helper/Agent type, hosting target, transport type, and the result
+of Clone, Fetch, fast-forward Pull, Push, cancellation, and unknown-host handling. Never paste
+credentials, full key paths, or fixture cleanup tokens into the report.
 
 The native Provider journey uses a compiled mock adapter and `MemorySecretStore` in debug E2E
 builds. The fixed PAT exists only transiently in trusted Provider service/IPC memory and is never
