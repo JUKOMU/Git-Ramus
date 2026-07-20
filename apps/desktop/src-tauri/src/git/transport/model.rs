@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::git::model::RepositorySnapshot;
+use crate::git::model::{Project, Repository, RepositoryKind, RepositorySnapshot};
 use crate::git::service::QueryContext;
 use crate::jobs::model::Job;
 use crate::providers::model::RemoteRepository;
@@ -341,6 +341,10 @@ pub struct CloneOperation {
     pub job_id: String,
     pub source_summary: String,
     pub intent_id: Option<String>,
+    pub transport_profile_id: Option<String>,
+    pub provider_instance_id: Option<String>,
+    pub provider_account_id: Option<String>,
+    pub provider_repository_id: Option<String>,
     pub staging_path: String,
     pub owner_marker_path: String,
     pub final_path: String,
@@ -353,6 +357,71 @@ pub struct CloneOperation {
     pub provider_binding_complete: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CloneResultStatus {
+    Completed,
+    Partial,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CloneProjectSummary {
+    pub id: String,
+    pub name: String,
+    pub scan_depth: i64,
+    pub exclude_patterns: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl From<&Project> for CloneProjectSummary {
+    fn from(project: &Project) -> Self {
+        Self {
+            id: project.id.clone(),
+            name: project.name.clone(),
+            scan_depth: project.scan_depth,
+            exclude_patterns: project.exclude_patterns.clone(),
+            created_at: project.created_at,
+            updated_at: project.updated_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CloneRepositorySummary {
+    pub id: String,
+    pub display_name: String,
+    pub kind: RepositoryKind,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl From<&Repository> for CloneRepositorySummary {
+    fn from(repository: &Repository) -> Self {
+        Self {
+            id: repository.id.clone(),
+            display_name: repository.display_name.clone(),
+            kind: repository.kind.clone(),
+            created_at: repository.created_at,
+            updated_at: repository.updated_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CloneResult {
+    pub operation_id: String,
+    pub intent_id: Option<String>,
+    pub status: CloneResultStatus,
+    pub job: Job,
+    pub project: CloneProjectSummary,
+    pub repository: CloneRepositorySummary,
+    pub snapshot: Option<RepositorySnapshot>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -564,7 +633,7 @@ mod tests {
         binding: RepositoryTransportBindingSummary,
         intent: CloneIntent,
         network_state: RepositoryNetworkState,
-        clone_result: serde_json::Value,
+        clone_result: CloneResult,
         non_fast_forward_error: serde_json::Value,
     }
 
@@ -591,7 +660,7 @@ mod tests {
         assert_eq!(fixture.binding.drift_status, TransportDriftStatus::Clean);
         assert_eq!(fixture.intent.repository.full_name, "skills/private-skill");
         assert_eq!(fixture.network_state.branch.as_deref(), Some("main"));
-        assert!(fixture.clone_result.is_object());
+        assert_eq!(fixture.clone_result.status, CloneResultStatus::Completed);
         assert!(fixture.non_fast_forward_error.is_object());
     }
 

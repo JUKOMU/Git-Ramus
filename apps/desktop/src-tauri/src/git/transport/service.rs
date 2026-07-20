@@ -5,11 +5,14 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 
+use super::clone::{
+    CloneCoordinator, CloneIntentRegistry, CloneProviderBinder, CloneRecoveryClassification,
+};
 use super::model::{
-    EffectiveTransportSource, FetchInput, NetworkOperationResult, NetworkProgress, NetworkStage,
-    PullInput, PushInput, RemoteTransportKind, RepositoryNetworkState,
-    RepositoryOperationInProgress, RepositoryRemoteSummary, TransportDriftStatus, TransportKind,
-    UpstreamCandidate,
+    CloneInput, CloneResult, EffectiveTransportSource, FetchInput, NetworkOperationResult,
+    NetworkProgress, NetworkStage, PullInput, PushInput, RemoteTransportKind,
+    RepositoryNetworkState, RepositoryOperationInProgress, RepositoryRemoteSummary,
+    TransportDriftStatus, TransportKind, UpstreamCandidate,
 };
 use super::operation::TransportOperationRegistry;
 use super::profile_service::TransportProfileService;
@@ -71,6 +74,7 @@ pub struct GitTransportService {
     write_locks: RepositoryWriteLocks,
     runner: Arc<dyn GitRunner>,
     repositories: RepositoryRepository,
+    clones: CloneCoordinator,
 }
 
 impl GitTransportService {
@@ -84,6 +88,14 @@ impl GitTransportService {
         write_locks: RepositoryWriteLocks,
         runner: Arc<dyn GitRunner>,
     ) -> Self {
+        let clones = CloneCoordinator::new(
+            database.clone(),
+            git.clone(),
+            profiles.clone(),
+            jobs.clone(),
+            operations.clone(),
+            runner.clone(),
+        );
         Self {
             _database: database.clone(),
             git,
@@ -94,7 +106,33 @@ impl GitTransportService {
             write_locks,
             runner,
             repositories: RepositoryRepository::new(database),
+            clones,
         }
+    }
+
+    pub fn with_clone_support(
+        mut self,
+        intents: CloneIntentRegistry,
+        provider: Option<Arc<dyn CloneProviderBinder>>,
+    ) -> Self {
+        self.clones = self.clones.with_support(intents, provider);
+        self
+    }
+
+    pub fn clone_intents(&self) -> CloneIntentRegistry {
+        self.clones.intents()
+    }
+
+    pub fn clone_repository(
+        &self,
+        input: CloneInput,
+        reporter: Arc<dyn NetworkProgressReporter>,
+    ) -> Result<CloneResult, AppError> {
+        self.clones.clone_repository(input, reporter)
+    }
+
+    pub fn classify_clone_recovery(&self) -> Result<Vec<CloneRecoveryClassification>, AppError> {
+        self.clones.classify_incomplete_recovery()
     }
 
     pub fn fetch(
@@ -550,7 +588,7 @@ impl GitTransportService {
     }
 }
 
-struct ProgressBridge {
+pub(super) struct ProgressBridge {
     operation_id: String,
     parser: Mutex<GitProgressParser>,
     jobs: JobService,
@@ -559,7 +597,7 @@ struct ProgressBridge {
 }
 
 impl ProgressBridge {
-    fn new(
+    pub(super) fn new(
         operation_id: String,
         jobs: JobService,
         reporter: Arc<dyn NetworkProgressReporter>,
@@ -575,8 +613,9 @@ impl ProgressBridge {
 }
 
 impl GitProgressSink for ProgressBridge {
-    fn stderr_chunk(&self, chunk: &[u8]) {
+    fn stderr_chunk(&self, chunk: &[u8]) -> bool {
         let events = self.parser.lock().push(chunk);
+        let observed_progress = !events.is_empty();
         for event in events {
             if let Some(fraction) = event.fraction {
                 let mut maximum = self.maximum_fraction.lock();
@@ -593,6 +632,7 @@ impl GitProgressSink for ProgressBridge {
                 bytes: event.bytes,
             });
         }
+        observed_progress
     }
 }
 
@@ -609,7 +649,7 @@ fn required_refreshed_snapshot(
         .ok_or_else(|| AppError::Transport(TransportFailure::partial()))
 }
 
-fn terminal_progress(operation_id: &str, stage: NetworkStage) -> NetworkProgress {
+pub(super) fn terminal_progress(operation_id: &str, stage: NetworkStage) -> NetworkProgress {
     NetworkProgress {
         operation_id: operation_id.to_owned(),
         stage,
@@ -749,7 +789,7 @@ fn validate_remote_name(value: &str) -> Result<&str, AppError> {
     Ok(value)
 }
 
-fn classify_execution_error(error: AppError) -> (TransportFailure, bool) {
+pub(super) fn classify_execution_error(error: AppError) -> (TransportFailure, bool) {
     match error {
         AppError::Canceled => (TransportFailure::cancelled(), true),
         AppError::Timeout => (TransportFailure::timeout(), false),
@@ -761,7 +801,7 @@ fn classify_execution_error(error: AppError) -> (TransportFailure, bool) {
     }
 }
 
-fn classify_git_failure(stderr: &[u8]) -> TransportFailure {
+pub(super) fn classify_git_failure(stderr: &[u8]) -> TransportFailure {
     let stderr = String::from_utf8_lossy(stderr).to_ascii_lowercase();
     if contains_any(
         &stderr,

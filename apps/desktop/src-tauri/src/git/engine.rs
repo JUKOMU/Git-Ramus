@@ -17,6 +17,8 @@ use crate::error::AppError;
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 pub const DEFAULT_MAX_STDOUT_BYTES: usize = 8 * 1024 * 1024;
 pub const DEFAULT_MAX_STDERR_BYTES: usize = 2 * 1024 * 1024;
+const DEFAULT_AUTHENTICATION_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const DEFAULT_NETWORK_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Clone)]
 pub struct GitCommand {
@@ -41,7 +43,8 @@ pub enum GitExecutionPolicy {
 }
 
 pub trait GitProgressSink: Send + Sync {
-    fn stderr_chunk(&self, chunk: &[u8]);
+    /// Returns true only when the chunk produced a recognized transfer-progress event.
+    fn stderr_chunk(&self, chunk: &[u8]) -> bool;
 }
 
 #[derive(Clone)]
@@ -49,6 +52,13 @@ pub struct GitRunContext {
     pub policy: GitExecutionPolicy,
     pub cancellation: Arc<AtomicBool>,
     pub progress: Option<Arc<dyn GitProgressSink>>,
+    network_timeouts: Option<NetworkTimeouts>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NetworkTimeouts {
+    authentication: Duration,
+    idle: Duration,
 }
 
 impl std::fmt::Debug for GitRunContext {
@@ -58,21 +68,37 @@ impl std::fmt::Debug for GitRunContext {
             .field("policy", &self.policy)
             .field("cancelled", &self.is_cancelled())
             .field("progress_configured", &self.progress.is_some())
+            .field("network_timeouts", &self.network_timeouts)
             .finish()
     }
 }
 
 impl GitRunContext {
     pub fn new(policy: GitExecutionPolicy) -> Self {
+        let network_timeouts =
+            (policy != GitExecutionPolicy::LocalNonInteractive).then_some(NetworkTimeouts {
+                authentication: DEFAULT_AUTHENTICATION_TIMEOUT,
+                idle: DEFAULT_NETWORK_IDLE_TIMEOUT,
+            });
         Self {
             policy,
             cancellation: Arc::new(AtomicBool::new(false)),
             progress: None,
+            network_timeouts,
         }
     }
 
     pub fn with_progress(mut self, progress: Arc<dyn GitProgressSink>) -> Self {
         self.progress = Some(progress);
+        self
+    }
+
+    #[cfg(test)]
+    fn with_network_timeouts(mut self, authentication: Duration, idle: Duration) -> Self {
+        self.network_timeouts = Some(NetworkTimeouts {
+            authentication,
+            idle,
+        });
         self
     }
 
@@ -119,6 +145,26 @@ const IO_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 #[cfg(windows)]
 const CLEANUP_POLL_INTERVAL: Duration = Duration::from_millis(10);
 type StdinWriter = (Receiver<io::Result<()>>, Arc<Mutex<Option<ChildStdin>>>);
+
+#[derive(Default)]
+struct NetworkProgressActivity {
+    last_progress: Mutex<Option<Instant>>,
+}
+
+impl NetworkProgressActivity {
+    fn mark(&self) {
+        if let Ok(mut last_progress) = self.last_progress.lock() {
+            *last_progress = Some(Instant::now());
+        }
+    }
+
+    fn timed_out(&self, started: Instant, timeouts: NetworkTimeouts) -> bool {
+        match self.last_progress.lock().ok().and_then(|value| *value) {
+            Some(last_progress) => last_progress.elapsed() >= timeouts.idle,
+            None => started.elapsed() >= timeouts.authentication,
+        }
+    }
+}
 
 enum ProcessTreeKind {
     #[cfg(windows)]
@@ -475,6 +521,14 @@ impl SystemGitRunner {
                 "Git timeout must be positive".to_owned(),
             ));
         }
+        if context
+            .network_timeouts
+            .is_some_and(|timeouts| timeouts.authentication.is_zero() || timeouts.idle.is_zero())
+        {
+            return Err(AppError::InvalidInput(
+                "Git network timeouts must be positive".to_owned(),
+            ));
+        }
 
         let mut command = self.command(&request, context.policy);
         ProcessTree::configure(&mut command)?;
@@ -506,13 +560,22 @@ impl SystemGitRunner {
         };
         let stdout_limited = Arc::new(AtomicBool::new(false));
         let stderr_limited = Arc::new(AtomicBool::new(false));
-        let stdout_thread =
-            spawn_reader(stdout, self.max_stdout_bytes, stdout_limited.clone(), None);
+        let network_activity = context
+            .network_timeouts
+            .map(|_| Arc::new(NetworkProgressActivity::default()));
+        let stdout_thread = spawn_reader(
+            stdout,
+            self.max_stdout_bytes,
+            stdout_limited.clone(),
+            None,
+            None,
+        );
         let stderr_thread = spawn_reader(
             stderr,
             self.max_stderr_bytes,
             stderr_limited.clone(),
             context.progress.clone(),
+            network_activity.clone(),
         );
 
         let stdin_writer = request.stdin.map(|input| {
@@ -529,9 +592,13 @@ impl SystemGitRunner {
             &guard.tree,
             request.timeout,
             self.poll_interval,
-            &stdout_limited,
-            &stderr_limited,
-            &context.cancellation,
+            WaitControl {
+                stdout_limited: &stdout_limited,
+                stderr_limited: &stderr_limited,
+                cancellation: &context.cancellation,
+                network_timeouts: context.network_timeouts,
+                network_activity: network_activity.as_deref(),
+            },
         );
         let (status, termination) = match wait_result {
             Ok(result) => result,
@@ -610,6 +677,7 @@ fn spawn_reader<R>(
     limit: usize,
     exceeded: Arc<AtomicBool>,
     progress: Option<Arc<dyn GitProgressSink>>,
+    network_activity: Option<Arc<NetworkProgressActivity>>,
 ) -> Receiver<io::Result<Vec<u8>>>
 where
     R: Read + Send + 'static,
@@ -624,8 +692,11 @@ where
                 if read == 0 {
                     break;
                 }
-                if let Some(progress) = &progress {
-                    progress.stderr_chunk(&buffer[..read]);
+                let observed_progress = progress
+                    .as_ref()
+                    .is_some_and(|progress| progress.stderr_chunk(&buffer[..read]));
+                if observed_progress && let Some(activity) = &network_activity {
+                    activity.mark();
                 }
                 if output.len().saturating_add(read) > limit {
                     exceeded.store(true, Ordering::Release);
@@ -770,18 +841,26 @@ enum WaitTermination {
     Canceled,
 }
 
+struct WaitControl<'a> {
+    stdout_limited: &'a AtomicBool,
+    stderr_limited: &'a AtomicBool,
+    cancellation: &'a AtomicBool,
+    network_timeouts: Option<NetworkTimeouts>,
+    network_activity: Option<&'a NetworkProgressActivity>,
+}
+
 fn wait_bounded(
     child: &mut Child,
     tree: &ProcessTree,
     timeout: Duration,
     poll_interval: Duration,
-    stdout_limited: &AtomicBool,
-    stderr_limited: &AtomicBool,
-    cancellation: &AtomicBool,
+    control: WaitControl<'_>,
 ) -> Result<(ExitStatus, WaitTermination), AppError> {
     let started = Instant::now();
     loop {
-        if stdout_limited.load(Ordering::Acquire) || stderr_limited.load(Ordering::Acquire) {
+        if control.stdout_limited.load(Ordering::Acquire)
+            || control.stderr_limited.load(Ordering::Acquire)
+        {
             tree.terminate()?;
             let status = terminate_and_reap(child)?;
             return Ok((status, WaitTermination::Exited));
@@ -792,10 +871,19 @@ fn wait_bounded(
         {
             return Ok((status, WaitTermination::Exited));
         }
-        if cancellation.load(Ordering::Acquire) {
+        if control.cancellation.load(Ordering::Acquire) {
             tree.terminate()?;
             let status = terminate_and_reap(child)?;
             return Ok((status, WaitTermination::Canceled));
+        }
+        if control
+            .network_timeouts
+            .zip(control.network_activity)
+            .is_some_and(|(timeouts, activity)| activity.timed_out(started, timeouts))
+        {
+            tree.terminate()?;
+            let status = terminate_and_reap(child)?;
+            return Ok((status, WaitTermination::TimedOut));
         }
         if started.elapsed() >= timeout {
             tree.terminate()?;
@@ -969,8 +1057,9 @@ mod tests {
     }
 
     impl GitProgressSink for RecordingProgressSink {
-        fn stderr_chunk(&self, chunk: &[u8]) {
+        fn stderr_chunk(&self, chunk: &[u8]) -> bool {
             self.chunks.lock().unwrap().push(chunk.to_vec());
+            !chunk.is_empty()
         }
     }
 
@@ -1011,11 +1100,13 @@ mod tests {
     fn stderr_reader_streams_bounded_chunks_to_the_progress_sink() {
         let sink = Arc::new(RecordingProgressSink::default());
         let limited = Arc::new(AtomicBool::new(false));
+        let activity = Arc::new(NetworkProgressActivity::default());
         let receiver = spawn_reader(
             std::io::Cursor::new(vec![b'x'; 40 * 1024]),
             64 * 1024,
             limited,
             Some(sink.clone()),
+            Some(activity.clone()),
         );
         assert_eq!(
             receive_reader_bounded(receiver, Duration::from_secs(1))
@@ -1026,6 +1117,7 @@ mod tests {
         let chunks = sink.chunks.lock().unwrap();
         assert!(chunks.len() >= 3);
         assert!(chunks.iter().all(|chunk| chunk.len() <= 16 * 1024));
+        assert!(activity.last_progress.lock().unwrap().is_some());
     }
 
     #[test]
@@ -1052,14 +1144,120 @@ mod tests {
             &tree,
             Duration::from_secs(5),
             Duration::from_millis(5),
-            &stdout_limited,
-            &stderr_limited,
-            &cancellation,
+            WaitControl {
+                stdout_limited: &stdout_limited,
+                stderr_limited: &stderr_limited,
+                cancellation: &cancellation,
+                network_timeouts: None,
+                network_activity: None,
+            },
         )
         .unwrap();
         assert_eq!(termination, WaitTermination::Canceled);
         tree.finish_after_reap().unwrap();
         assert!(child.try_wait().unwrap().is_some());
+    }
+
+    #[test]
+    fn network_authentication_timeout_terminates_a_silent_git_process() {
+        let (mut child, tree) = waiting_git_process();
+        let cancellation = AtomicBool::new(false);
+        let stdout_limited = AtomicBool::new(false);
+        let stderr_limited = AtomicBool::new(false);
+        let activity = NetworkProgressActivity::default();
+
+        let (_, termination) = wait_bounded(
+            &mut child,
+            &tree,
+            Duration::from_secs(5),
+            Duration::from_millis(5),
+            WaitControl {
+                stdout_limited: &stdout_limited,
+                stderr_limited: &stderr_limited,
+                cancellation: &cancellation,
+                network_timeouts: Some(NetworkTimeouts {
+                    authentication: Duration::from_millis(30),
+                    idle: Duration::from_secs(1),
+                }),
+                network_activity: Some(&activity),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(termination, WaitTermination::TimedOut);
+        tree.finish_after_reap().unwrap();
+        assert!(child.try_wait().unwrap().is_some());
+    }
+
+    #[test]
+    fn network_context_owns_fixed_timeouts_while_local_git_has_none() {
+        let network = GitRunContext::new(GitExecutionPolicy::ForegroundNetworkInteractive);
+        assert_eq!(
+            network.network_timeouts,
+            Some(NetworkTimeouts {
+                authentication: DEFAULT_AUTHENTICATION_TIMEOUT,
+                idle: DEFAULT_NETWORK_IDLE_TIMEOUT,
+            })
+        );
+        assert!(
+            GitRunContext::new(GitExecutionPolicy::LocalNonInteractive)
+                .network_timeouts
+                .is_none()
+        );
+        assert_eq!(
+            network
+                .with_network_timeouts(Duration::from_secs(1), Duration::from_secs(2))
+                .network_timeouts,
+            Some(NetworkTimeouts {
+                authentication: Duration::from_secs(1),
+                idle: Duration::from_secs(2),
+            })
+        );
+    }
+
+    #[test]
+    fn network_idle_timeout_starts_after_the_first_progress_chunk() {
+        let (mut child, tree) = waiting_git_process();
+        let cancellation = AtomicBool::new(false);
+        let stdout_limited = AtomicBool::new(false);
+        let stderr_limited = AtomicBool::new(false);
+        let activity = NetworkProgressActivity::default();
+        activity.mark();
+
+        let (_, termination) = wait_bounded(
+            &mut child,
+            &tree,
+            Duration::from_secs(5),
+            Duration::from_millis(5),
+            WaitControl {
+                stdout_limited: &stdout_limited,
+                stderr_limited: &stderr_limited,
+                cancellation: &cancellation,
+                network_timeouts: Some(NetworkTimeouts {
+                    authentication: Duration::from_secs(1),
+                    idle: Duration::from_millis(30),
+                }),
+                network_activity: Some(&activity),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(termination, WaitTermination::TimedOut);
+        tree.finish_after_reap().unwrap();
+        assert!(child.try_wait().unwrap().is_some());
+    }
+
+    fn waiting_git_process() -> (Child, ProcessTree) {
+        let mut command = Command::new("git");
+        command
+            .args(["hash-object", "--stdin"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        ProcessTree::configure(&mut command).unwrap();
+        let child = command.spawn().unwrap();
+        let tree = ProcessTree::attach(&child).unwrap();
+        (child, tree)
     }
 
     #[test]

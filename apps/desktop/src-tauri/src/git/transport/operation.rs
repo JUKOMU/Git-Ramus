@@ -92,6 +92,21 @@ impl TransportOperationGuard {
         self.release();
     }
 
+    pub fn finish_if_not_cancelled(mut self) -> bool {
+        if !self.active {
+            return false;
+        }
+        let Some(state) = self.state.upgrade() else {
+            self.active = false;
+            return !self.cancellation.load(Ordering::Acquire);
+        };
+        let mut state = state.lock();
+        let completed = !self.cancellation.load(Ordering::Acquire);
+        remove_registration(&mut state, &self.operation_id, &self.resource_key);
+        self.active = false;
+        completed
+    }
+
     fn release(&mut self) {
         if !self.active {
             return;
@@ -101,20 +116,24 @@ impl TransportOperationGuard {
             return;
         };
         let mut state = state.lock();
-        let owns_operation = state
-            .operations
-            .get(&self.operation_id)
-            .is_some_and(|entry| entry.resource_key == self.resource_key);
-        if owns_operation {
-            state.operations.remove(&self.operation_id);
-        }
-        let owns_resource = state
-            .resources
-            .get(&self.resource_key)
-            .is_some_and(|operation_id| operation_id == &self.operation_id);
-        if owns_resource {
-            state.resources.remove(&self.resource_key);
-        }
+        remove_registration(&mut state, &self.operation_id, &self.resource_key);
+    }
+}
+
+fn remove_registration(state: &mut RegistryState, operation_id: &str, resource_key: &str) {
+    let owns_operation = state
+        .operations
+        .get(operation_id)
+        .is_some_and(|entry| entry.resource_key == resource_key);
+    if owns_operation {
+        state.operations.remove(operation_id);
+    }
+    let owns_resource = state
+        .resources
+        .get(resource_key)
+        .is_some_and(|owner| owner == operation_id);
+    if owns_resource {
+        state.resources.remove(resource_key);
     }
 }
 
@@ -164,5 +183,18 @@ mod tests {
         let replacement = registry.register("operation", "repository").unwrap();
         drop(replacement);
         assert!(registry.register("operation", "repository").is_ok());
+    }
+
+    #[test]
+    fn completion_and_cancellation_have_one_atomic_winner() {
+        let registry = TransportOperationRegistry::default();
+        let completed = registry.register("completed", "repository-one").unwrap();
+        assert!(completed.finish_if_not_cancelled());
+        assert!(!registry.cancel("completed"));
+
+        let canceled = registry.register("canceled", "repository-two").unwrap();
+        assert!(registry.cancel("canceled"));
+        assert!(!canceled.finish_if_not_cancelled());
+        assert!(registry.register("canceled", "repository-two").is_ok());
     }
 }

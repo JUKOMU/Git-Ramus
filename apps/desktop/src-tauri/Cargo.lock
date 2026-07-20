@@ -1606,6 +1606,7 @@ name = "git-ramus-desktop"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "dunce",
  "futures-util",
  "httpmock",
  "keyring",

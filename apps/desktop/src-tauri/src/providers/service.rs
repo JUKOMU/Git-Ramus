@@ -96,6 +96,7 @@ struct ProviderHealth {
     accounts: HashMap<String, ProviderConnectionStatus>,
 }
 
+#[derive(Clone)]
 pub struct ProviderService {
     store: ProviderStore,
     secrets: Arc<dyn SecretStore>,
@@ -745,6 +746,93 @@ impl ProviderService {
         Ok(suggestions)
     }
 
+    pub async fn repository_for_clone(
+        &self,
+        account_id: &str,
+        repository_id: &str,
+    ) -> Result<RemoteRepository, AppError> {
+        if repository_id.trim().is_empty()
+            || repository_id.len() > 256
+            || repository_id.chars().any(char::is_control)
+        {
+            return Err(AppError::InvalidInput(
+                "Provider repository ID is invalid".to_owned(),
+            ));
+        }
+        let account = self.store.get_account(account_id)?;
+        let instance = self.store.get_instance(&account.instance_id)?;
+        let adapter = self.adapters.get(instance.provider_kind)?;
+        let value = self
+            .secrets
+            .get(&account.secret_ref)?
+            .ok_or(AppError::SecretStore)?;
+        let secret = SensitiveString::new(value);
+        let client = ScopedHttpClient::build(&instance)?;
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let repository = adapter
+            .get_repository(
+                AdapterAccountContext {
+                    client: &client,
+                    secret: secret.as_str(),
+                    cancellation: &cancellation,
+                },
+                RemoteRepositoryIdentity::Id {
+                    repository_id: repository_id.to_owned(),
+                },
+            )
+            .await
+            .inspect_err(|error| self.record_account_error(account_id, error))?;
+        if repository.provider_kind != instance.provider_kind
+            || repository.instance_id != instance.id
+            || repository.repository_id != repository_id
+        {
+            return Err(AppError::Provider(ProviderFailure::invalid_response()));
+        }
+        Ok(repository)
+    }
+
+    pub fn bind_clone_remote(
+        &self,
+        repository_id: &str,
+        remote_name: &str,
+        account_id: &str,
+        verified: &RemoteRepository,
+    ) -> Result<ProviderBinding, AppError> {
+        let account = self.store.get_account(account_id)?;
+        let instance = self.store.get_instance(&account.instance_id)?;
+        if verified.instance_id != instance.id || verified.provider_kind != instance.provider_kind {
+            return Err(AppError::Provider(ProviderFailure::invalid_response()));
+        }
+        let local = RepositoryRepository::new(self.store.database().clone());
+        let remote = local.get_remote(repository_id, remote_name)?;
+        let adapter = self.adapters.get(instance.provider_kind)?;
+        let normalized_instance =
+            normalize_instance_base(&instance.base_url, instance.provider_kind)?;
+        let analysis = analyze_remote(adapter.as_ref(), &normalized_instance, &remote);
+        let matched_url = analysis
+            .detected
+            .iter()
+            .find(|candidate| identity_matches_repository(&candidate.identity, verified))
+            .map(|candidate| candidate.sanitized.clone())
+            .ok_or_else(|| {
+                AppError::InvalidInput("Clone Remote does not match Provider metadata".to_owned())
+            })?;
+        let now = Utc::now();
+        self.store.upsert_binding(ProviderBinding {
+            repository_id: repository_id.to_owned(),
+            remote_name: remote_name.to_owned(),
+            provider_instance_id: instance.id,
+            provider_account_id: Some(account.id),
+            provider_repository_id: verified.repository_id.clone(),
+            full_name: verified.full_name.clone(),
+            web_url: verified.web_url.clone(),
+            matched_url,
+            binding_source: BindingSource::Auto,
+            bound_at: now,
+            updated_at: now,
+        })
+    }
+
     pub async fn bind_remote(&self, input: BindRemoteInput) -> Result<ProviderBinding, AppError> {
         if input.provider_repository_id.trim().is_empty()
             || input.provider_repository_id.chars().any(char::is_control)
@@ -1176,6 +1264,8 @@ mod tests {
     struct FakeProvider {
         kind: ProviderKind,
         identity: Mutex<AccountIdentity>,
+        repository: Mutex<Option<RemoteRepository>>,
+        repository_requests: Mutex<Vec<(String, RemoteRepositoryIdentity)>>,
     }
 
     impl FakeProvider {
@@ -1188,11 +1278,21 @@ mod tests {
                     display_name: Some("Yozora Tempest".to_owned()),
                     avatar_url: None,
                 }),
+                repository: Mutex::new(None),
+                repository_requests: Mutex::new(Vec::new()),
             }
         }
 
         fn set_provider_user(&self, provider_user_id: &str) {
             self.identity.lock().provider_user_id = provider_user_id.to_owned();
+        }
+
+        fn serve_repository(&self, repository: RemoteRepository) {
+            *self.repository.lock() = Some(repository);
+        }
+
+        fn repository_requests(&self) -> Vec<(String, RemoteRepositoryIdentity)> {
+            self.repository_requests.lock().clone()
         }
     }
 
@@ -1236,10 +1336,18 @@ mod tests {
 
         fn get_repository<'a>(
             &'a self,
-            _context: AdapterAccountContext<'a>,
-            _identity: RemoteRepositoryIdentity,
+            context: AdapterAccountContext<'a>,
+            identity: RemoteRepositoryIdentity,
         ) -> BoxFuture<'a, Result<RemoteRepository, AppError>> {
-            Box::pin(async { Err(AppError::NotFound("fake repository".to_owned())) })
+            Box::pin(async move {
+                self.repository_requests
+                    .lock()
+                    .push((context.secret.to_owned(), identity));
+                self.repository
+                    .lock()
+                    .clone()
+                    .ok_or_else(|| AppError::NotFound("fake repository".to_owned()))
+            })
         }
 
         fn detect_remote(
@@ -1654,6 +1762,56 @@ mod tests {
                 .secret_ref
                 .contains("token-a")
         );
+    }
+
+    #[tokio::test]
+    async fn repository_for_clone_fetches_the_exact_identity_without_returning_the_pat() {
+        let fixture = Fixture::new();
+        let instance = fixture.create_instance().await;
+        let account = fixture
+            .service
+            .connect_account(
+                &instance.id,
+                SensitiveString::new("provider-pat-fixture".to_owned()),
+            )
+            .await
+            .unwrap();
+        let expected = remote_repository(&instance.id, "42", "acme/repository");
+        fixture.adapter.serve_repository(expected.clone());
+
+        let selected = fixture
+            .service
+            .repository_for_clone(&account.id, "42")
+            .await
+            .unwrap();
+        assert_eq!(selected, expected);
+        assert_eq!(
+            fixture.adapter.repository_requests(),
+            vec![(
+                "provider-pat-fixture".to_owned(),
+                RemoteRepositoryIdentity::Id {
+                    repository_id: "42".to_owned(),
+                },
+            )]
+        );
+        assert!(
+            !serde_json::to_string(&selected)
+                .unwrap()
+                .contains("provider-pat-fixture")
+        );
+
+        fixture
+            .adapter
+            .serve_repository(remote_repository(&instance.id, "other", "acme/other"));
+        let error = fixture
+            .service
+            .repository_for_clone(&account.id, "42")
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            AppError::Provider(failure) if failure.code() == "provider.response-invalid"
+        ));
     }
 
     #[tokio::test]

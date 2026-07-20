@@ -281,12 +281,16 @@ impl TransportStore {
             .with_connection(|connection| {
                 connection
                     .execute(
-                        "INSERT INTO git_clone_operations(operation_id,job_id,source_summary,intent_id,staging_path,owner_marker_path,final_path,project_target_json,current_stage,filesystem_complete,repository_id,project_id,profile_applied,provider_binding_complete,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+                        "INSERT INTO git_clone_operations(operation_id,job_id,source_summary,intent_id,transport_profile_id,provider_instance_id,provider_account_id,provider_repository_id,staging_path,owner_marker_path,final_path,project_target_json,current_stage,filesystem_complete,repository_id,project_id,profile_applied,provider_binding_complete,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
                         params![
                             operation.operation_id,
                             operation.job_id,
                             operation.source_summary,
                             operation.intent_id,
+                            operation.transport_profile_id,
+                            operation.provider_instance_id,
+                            operation.provider_account_id,
+                            operation.provider_repository_id,
                             operation.staging_path,
                             operation.owner_marker_path,
                             operation.final_path,
@@ -313,7 +317,7 @@ impl TransportStore {
         self.database.with_connection(|connection| {
             connection
                 .query_row(
-                    "SELECT operation_id,job_id,source_summary,intent_id,staging_path,owner_marker_path,final_path,project_target_json,current_stage,filesystem_complete,repository_id,project_id,profile_applied,provider_binding_complete,created_at,updated_at FROM git_clone_operations WHERE operation_id=?1",
+                    "SELECT operation_id,job_id,source_summary,intent_id,transport_profile_id,provider_instance_id,provider_account_id,provider_repository_id,staging_path,owner_marker_path,final_path,project_target_json,current_stage,filesystem_complete,repository_id,project_id,profile_applied,provider_binding_complete,created_at,updated_at FROM git_clone_operations WHERE operation_id=?1",
                     [operation_id],
                     map_clone_operation,
                 )
@@ -355,6 +359,21 @@ impl TransportStore {
             connection.execute(
                 "UPDATE git_clone_operations SET repository_id=?2,project_id=?3,updated_at=?4 WHERE operation_id=?1",
                 params![operation_id, repository_id, project_id, updated_at.to_rfc3339()],
+            )
+        })?;
+        ensure_changed(changed, "Git clone operation", operation_id)
+    }
+
+    pub fn mark_clone_project(
+        &self,
+        operation_id: &str,
+        project_id: &str,
+        updated_at: DateTime<Utc>,
+    ) -> Result<(), AppError> {
+        let changed = self.database.with_connection(|connection| {
+            connection.execute(
+                "UPDATE git_clone_operations SET project_id=?2,updated_at=?3 WHERE operation_id=?1",
+                params![operation_id, project_id, updated_at.to_rfc3339()],
             )
         })?;
         ensure_changed(changed, "Git clone operation", operation_id)
@@ -407,7 +426,7 @@ impl TransportStore {
     pub fn list_incomplete_clone_operations(&self) -> Result<Vec<CloneOperation>, AppError> {
         self.database.with_connection(|connection| {
             let mut statement = connection.prepare(
-                "SELECT operation_id,job_id,source_summary,intent_id,staging_path,owner_marker_path,final_path,project_target_json,current_stage,filesystem_complete,repository_id,project_id,profile_applied,provider_binding_complete,created_at,updated_at FROM git_clone_operations WHERE current_stage<>'completed' ORDER BY created_at,operation_id",
+                "SELECT operation_id,job_id,source_summary,intent_id,transport_profile_id,provider_instance_id,provider_account_id,provider_repository_id,staging_path,owner_marker_path,final_path,project_target_json,current_stage,filesystem_complete,repository_id,project_id,profile_applied,provider_binding_complete,created_at,updated_at FROM git_clone_operations WHERE current_stage NOT IN ('completed','failed','cancelled') ORDER BY created_at,operation_id",
             )?;
             statement
                 .query_map([], map_clone_operation)
@@ -485,18 +504,22 @@ fn map_clone_operation(row: &Row<'_>) -> Result<CloneOperation, rusqlite::Error>
         job_id: row.get(1)?,
         source_summary: row.get(2)?,
         intent_id: row.get(3)?,
-        staging_path: row.get(4)?,
-        owner_marker_path: row.get(5)?,
-        final_path: row.get(6)?,
-        project_target: json_value::<CloneProjectTarget>(row.get(7)?)?,
-        current_stage: parse_value(row.get(8)?)?,
-        filesystem_complete: row.get(9)?,
-        repository_id: row.get(10)?,
-        project_id: row.get(11)?,
-        profile_applied: row.get(12)?,
-        provider_binding_complete: row.get(13)?,
-        created_at: date_time(row.get(14)?)?,
-        updated_at: date_time(row.get(15)?)?,
+        transport_profile_id: row.get(4)?,
+        provider_instance_id: row.get(5)?,
+        provider_account_id: row.get(6)?,
+        provider_repository_id: row.get(7)?,
+        staging_path: row.get(8)?,
+        owner_marker_path: row.get(9)?,
+        final_path: row.get(10)?,
+        project_target: json_value::<CloneProjectTarget>(row.get(11)?)?,
+        current_stage: parse_value(row.get(12)?)?,
+        filesystem_complete: row.get(13)?,
+        repository_id: row.get(14)?,
+        project_id: row.get(15)?,
+        profile_applied: row.get(16)?,
+        provider_binding_complete: row.get(17)?,
+        created_at: date_time(row.get(18)?)?,
+        updated_at: date_time(row.get(19)?)?,
     })
 }
 
@@ -566,6 +589,10 @@ mod tests {
             job_id: job_id.to_owned(),
             source_summary: "git.example.test/acme/repository".to_owned(),
             intent_id: None,
+            transport_profile_id: None,
+            provider_instance_id: None,
+            provider_account_id: None,
+            provider_repository_id: None,
             staging_path: "/tmp/.git-ramus-clone-operation".to_owned(),
             owner_marker_path: "/tmp/.git-ramus-clone-operation.owner".to_owned(),
             final_path: "/tmp/repository".to_owned(),
