@@ -137,3 +137,105 @@ button {
 .app-shell.density-compact .task-rail button {
   margin: 2px 0;
 }
+
+.provider-prompt-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: var(--gr-spacing-xl, 28px);
+  background: color-mix(in srgb, var(--gr-colors-background, #080d18) 78%, transparent);
+}
+
+.provider-prompt-dialog {
+  width: min(520px, 100%);
+  max-height: calc(100vh - 56px);
+  overflow: auto;
+  padding: var(--gr-spacing-xl, 28px);
+  border: 1px solid var(--gr-colors-border, #263247);
+  border-radius: var(--gr-shape-radiusLg, 12px);
+  color: var(--gr-colors-text, #e2e8f0);
+  background: var(--gr-colors-surface, #111827);
+  box-shadow: var(--gr-elevation-lg, 0 18px 50px rgb(0 0 0 / 35%));
+}
+
+.provider-prompt-dialog h2 {
+  margin: 0 0 var(--gr-spacing-sm, 8px);
+}
+
+.provider-prompt-dialog p {
+  color: var(--gr-colors-textMuted, #94a3b8);
+}
+
+.provider-prompt-context {
+  margin: var(--gr-spacing-md, 12px) 0;
+}
+
+.provider-prompt-dialog form,
+.provider-prompt-dialog fieldset {
+  display: grid;
+  gap: var(--gr-spacing-sm, 8px);
+}
+
+.provider-prompt-dialog fieldset {
+  min-width: 0;
+  margin: var(--gr-spacing-lg, 20px) 0;
+  padding: var(--gr-spacing-md, 12px);
+  border: 1px solid var(--gr-colors-border, #263247);
+  border-radius: var(--gr-shape-radius, 8px);
+}
+
+.provider-prompt-dialog input[type="password"] {
+  width: 100%;
+  padding: var(--gr-spacing-sm, 8px);
+  border: 1px solid var(--gr-colors-border, #263247);
+  border-radius: var(--gr-shape-radiusSm, 6px);
+  color: var(--gr-colors-text, #e2e8f0);
+  background: var(--gr-colors-background, #080d18);
+}
+
+.provider-account-option {
+  display: flex;
+  gap: var(--gr-spacing-sm, 8px);
+  align-items: center;
+  padding: var(--gr-spacing-sm, 8px);
+  border-radius: var(--gr-shape-radiusSm, 6px);
+}
+
+.provider-account-option:hover {
+  background: var(--gr-colors-surfaceRaised, #1e293b);
+}
+
+.provider-prompt-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--gr-spacing-sm, 8px);
+  margin-top: var(--gr-spacing-lg, 20px);
+}
+
+.provider-prompt-actions button {
+  min-width: 92px;
+  padding: var(--gr-spacing-sm, 8px) var(--gr-spacing-md, 12px);
+  border: 1px solid var(--gr-colors-border, #263247);
+  border-radius: var(--gr-shape-radius, 8px);
+  color: var(--gr-colors-text, #e2e8f0);
+  background: var(--gr-colors-surfaceRaised, #1e293b);
+}
+
+.provider-prompt-actions button[type="submit"],
+.provider-prompt-actions button:last-child:not(:first-child) {
+  border-color: var(--gr-colors-primary, #0c4a6e);
+  background: var(--gr-colors-primary, #0c4a6e);
+}
+
+.provider-prompt-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.provider-prompt-dialog button:focus-visible,
+.provider-prompt-dialog input:focus-visible {
+  outline: 2px solid var(--gr-colors-focusRing, #bae6fd);
+  outline-offset: 2px;
+}

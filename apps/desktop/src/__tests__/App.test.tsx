@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import type { HostApi } from "../lib/hostApi";
 import { tauriHostApi } from "../lib/hostApi";
+import { providerCredentialBroker } from "../providers/promptBroker";
 
 const { listen } = vi.hoisted(() => ({ listen: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen }));
@@ -164,6 +165,7 @@ function createHostApi(plugins: PluginDescriptor[] = []): HostApi {
 
 afterEach(() => {
   cleanup();
+  providerCredentialBroker.cancelAll();
   vi.restoreAllMocks();
   listen.mockReset();
 });
@@ -175,6 +177,19 @@ describe("App", () => {
     expect(await screen.findByText("Host 0.1.0")).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Primary" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Tasks" })).toBeInTheDocument();
+  });
+
+  it("mounts trusted Provider prompts outside plugin iframes", async () => {
+    const pending = providerCredentialBroker.request({
+      providerLabel: "GitLab",
+      accountLabel: null,
+      purpose: "connect"
+    });
+    render(<App hostApi={createHostApi()} />);
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.closest("iframe")).toBeNull();
+    providerCredentialBroker.cancelAll();
+    await expect(pending).resolves.toBeNull();
   });
 
   it("does not render hardcoded no-op navigation entries", async () => {

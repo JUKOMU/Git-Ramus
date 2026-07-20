@@ -9,6 +9,9 @@ import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { HostApi } from "./lib/hostApi";
 import { tauriHostApi } from "./lib/hostApi";
+import { providerAccessBroker, providerCredentialBroker } from "./providers/promptBroker";
+import { ProviderAccessDialog } from "./providers/ProviderAccessDialog";
+import { ProviderCredentialDialog } from "./providers/ProviderCredentialDialog";
 import { PluginHost } from "./plugins/PluginHost";
 import { AppShell } from "./shell/AppShell";
 
@@ -153,26 +156,30 @@ export function App({ hostApi = tauriHostApi }: AppProps) {
   );
 
   return (
-    <AppShell
-      version={version}
-      plugins={plugins}
-      selectedPluginId={selection?.pluginId ?? null}
-      selectedRoute={selection?.route ?? null}
-      jobs={jobs}
-      hostApi={hostApi}
-      themeCatalog={themeCatalog}
-      themeState={themeState}
-      themeActivationPending={themeActivationPending}
-      onActivateTheme={activateTheme}
-      onSelectPlugin={(pluginId, route) => setSelection({ pluginId, route })}
-    >
-      <PluginHost
-        descriptor={selected}
+    <>
+      <AppShell
+        version={version}
+        plugins={plugins}
+        selectedPluginId={selection?.pluginId ?? null}
+        selectedRoute={selection?.route ?? null}
+        jobs={jobs}
         hostApi={hostApi}
-        route={selection?.route ?? "/"}
-        theme={themeState?.theme ?? null}
-      />
-    </AppShell>
+        themeCatalog={themeCatalog}
+        themeState={themeState}
+        themeActivationPending={themeActivationPending}
+        onActivateTheme={activateTheme}
+        onSelectPlugin={(pluginId, route) => setSelection({ pluginId, route })}
+      >
+        <PluginHost
+          descriptor={selected}
+          hostApi={hostApi}
+          route={selection?.route ?? "/"}
+          theme={themeState?.theme ?? null}
+        />
+      </AppShell>
+      <ProviderCredentialDialog broker={providerCredentialBroker} />
+      <ProviderAccessDialog broker={providerAccessBroker} />
+    </>
   );
 }
 
