@@ -13,6 +13,8 @@ use crate::git::transport::clone::{
 };
 use crate::git::transport::operation::TransportOperationRegistry;
 use crate::git::transport::profile_service::TransportProfileService;
+#[cfg(all(feature = "e2e", debug_assertions))]
+use crate::git::transport::service::E2eTransportGitRunner;
 use crate::git::transport::service::GitTransportService;
 use crate::identity::IdentityService;
 use crate::jobs::JobService;
@@ -45,6 +47,8 @@ pub struct AppState {
     pub(crate) e2e_app_data_root: PathBuf,
     #[cfg(all(feature = "e2e", debug_assertions))]
     pub(crate) e2e_database_path: PathBuf,
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    pub(crate) e2e_transport: crate::e2e::E2eTransportRegistry,
 }
 
 #[cfg(all(feature = "e2e", debug_assertions))]
@@ -141,6 +145,15 @@ impl AppState {
             provider_adapters,
         );
         let runner: Arc<dyn GitRunner> = Arc::new(SystemGitRunner::new());
+        #[cfg(all(feature = "e2e", debug_assertions))]
+        let e2e_transport = crate::e2e::E2eTransportRegistry::default();
+        #[cfg(all(feature = "e2e", debug_assertions))]
+        let transport_runner: Arc<dyn GitRunner> = Arc::new(E2eTransportGitRunner::new(
+            SystemGitRunner::new(),
+            e2e_transport.clone(),
+        ));
+        #[cfg(not(all(feature = "e2e", debug_assertions)))]
+        let transport_runner = runner.clone();
         let git = GitService::with_runner_concurrency_and_write_locks(
             database.clone(),
             runner.clone(),
@@ -162,7 +175,7 @@ impl AppState {
             jobs.clone(),
             operations,
             write_locks,
-            runner,
+            transport_runner,
         )
         .with_clone_support(intent_registry, Some(Arc::new(providers.clone())));
         jobs.fail_running_by_kind_prefix(
@@ -187,6 +200,8 @@ impl AppState {
             e2e_app_data_root,
             #[cfg(all(feature = "e2e", debug_assertions))]
             e2e_database_path,
+            #[cfg(all(feature = "e2e", debug_assertions))]
+            e2e_transport,
         })
     }
 }

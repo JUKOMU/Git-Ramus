@@ -12,6 +12,7 @@
     "tauri:build": "tauri build --no-bundle",
     "build:e2e": "tauri build --no-bundle --debug --features e2e",
     "test:e2e": "wdio run e2e/wdio.conf.ts",
+    "test:e2e:transport": "wdio run e2e/wdio.conf.ts --spec ./e2e/git-transport.e2e.ts",
     "typecheck": "tsc -p tsconfig.json && tsc -p e2e/tsconfig.json",
     "test": "vitest run"
   },

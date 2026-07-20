@@ -44,6 +44,13 @@ interface InvokeResult {
   error?: unknown;
 }
 
+interface InvokeWireResult {
+  ok: boolean;
+  value?: unknown;
+  code?: string | null;
+  message?: string;
+}
+
 export async function seedFixture(): Promise<GitClientFixture> {
   return parseFixture(await invokeHost("e2e_seed_fixture", {}));
 }
@@ -141,7 +148,7 @@ export async function invokeHost(command: string, args: unknown): Promise<unknow
 }
 
 export async function invokeHostResult(command: string, args: unknown): Promise<InvokeResult> {
-  return browser.execute(
+  const result = await browser.execute(
     async (commandName, commandArgs) => {
       const internals = (
         window as typeof window & {
@@ -151,17 +158,36 @@ export async function invokeHostResult(command: string, args: unknown): Promise<
         }
       ).__TAURI_INTERNALS__;
       if (internals === undefined) {
-        return { ok: false, error: { code: "e2e.tauri-internals-unavailable" } };
+        return {
+          ok: false,
+          code: "e2e.tauri-internals-unavailable",
+          message: "Tauri internals are unavailable"
+        };
       }
       try {
         return { ok: true, value: await internals.invoke(commandName, commandArgs) };
       } catch (error: unknown) {
-        return { ok: false, error };
+        let code: string | null = null;
+        let message = String(error);
+        if (typeof error === "object" && error !== null) {
+          try {
+            const candidate = error as Record<string, unknown>;
+            if (typeof candidate.code === "string") code = candidate.code;
+            if (typeof candidate.message === "string") message = candidate.message;
+          } catch {
+            // Preserve the primitive fallback diagnostics.
+          }
+        }
+        return { ok: false, code, message };
       }
     },
     command,
     args
   );
+  const wire = result as InvokeWireResult;
+  return wire.ok
+    ? { ok: true, value: wire.value }
+    : { ok: false, error: { code: wire.code ?? null, message: wire.message ?? "Host failed" } };
 }
 
 function parseFixture(value: unknown): GitClientFixture {

@@ -26,6 +26,7 @@ jobs:
       - run: npm run check
       - run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check
       - run: cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
+      - run: cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --features e2e --all-targets -- -D warnings
       - run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
       - name: Prove E2E fixture commands are absent from release builds
         run: >-
@@ -39,7 +40,34 @@ jobs:
           --manifest-path apps/desktop/src-tauri/Cargo.toml
           --lib tests::e2e_provider_fixture_handler_matches_the_debug_feature_boundary
           -- --exact
+      - name: Prove Transport E2E fixture commands are absent from release builds
+        run: >-
+          cargo test --release --features e2e
+          --manifest-path apps/desktop/src-tauri/Cargo.toml
+          --lib tests::e2e_transport_fixture_handler_matches_the_debug_feature_boundary
+          -- --exact
       - run: npm run desktop:build
+      - name: Scan release binary for E2E transport markers
+        shell: pwsh
+        run: |
+          $binary = Resolve-Path "apps/desktop/src-tauri/target/release/git-ramus-desktop.exe"
+          $markers = @(
+            "e2e_seed_transport_fixture",
+            "git-ramus-e2e-transport-",
+            "https://gitlab.example.test/skills/private-skill.git",
+            "GIT_RAMUS_E2E_TRANSPORT_REWRITE",
+            "e2e_block_transport_fetch",
+            "e2e-provider-token"
+          )
+          foreach ($marker in $markers) {
+            rg -a -F -- $marker $binary
+            if ($LASTEXITCODE -eq 0) {
+              throw "release binary contains transport fixture marker: $marker"
+            }
+            if ($LASTEXITCODE -ne 1) {
+              throw "release marker scan failed for: $marker"
+            }
+          }
 
   node-compat:
     runs-on: windows-latest

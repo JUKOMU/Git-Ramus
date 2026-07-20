@@ -1416,6 +1416,14 @@ pub async fn git_transport_select_destination_parent(
         CLONE_INTENTS_RESOURCE,
     )
     .map_err(command_error)?;
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    if let Some(destination) = state
+        .e2e_transport
+        .take_destination_parent()
+        .map_err(command_error)?
+    {
+        return Ok(Some(destination));
+    }
     select_host_path(app, true).await.map_err(command_error)
 }
 

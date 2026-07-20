@@ -27,12 +27,59 @@ use crate::error::{AppError, ErrorEnvelope, TransportFailure};
 use crate::git::engine::{
     GitCommand, GitExecutionPolicy, GitProgressSink, GitRunContext, GitRunner,
 };
+#[cfg(all(feature = "e2e", debug_assertions))]
+use crate::git::engine::{GitOutput, SystemGitRunner};
 use crate::git::model::{Remote, RepositorySnapshot};
 use crate::git::repository::{RepositoryRepository, RepositoryWriteLocks};
 use crate::git::service::{GitService, QueryContext, RepositoryScanRecord};
 use crate::jobs::JobService;
 
 const NETWORK_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+#[cfg(all(feature = "e2e", debug_assertions))]
+pub const GIT_RAMUS_E2E_TRANSPORT_REWRITE: &str = "GIT_RAMUS_E2E_TRANSPORT_REWRITE";
+
+#[cfg(all(feature = "e2e", debug_assertions))]
+#[derive(Clone)]
+pub(crate) struct E2eTransportGitRunner {
+    inner: SystemGitRunner,
+    registry: crate::e2e::E2eTransportRegistry,
+}
+
+#[cfg(all(feature = "e2e", debug_assertions))]
+impl E2eTransportGitRunner {
+    pub(crate) fn new(inner: SystemGitRunner, registry: crate::e2e::E2eTransportRegistry) -> Self {
+        Self { inner, registry }
+    }
+
+    fn configured_runner(&self, command: &GitCommand) -> Result<SystemGitRunner, AppError> {
+        let _release_scan_sentinel = GIT_RAMUS_E2E_TRANSPORT_REWRITE;
+        Ok(match self.registry.execution_config(command)? {
+            Some(config) => self.inner.clone().with_sealed_config(
+                config.home,
+                config.xdg_config_home,
+                config.global_config,
+            ),
+            None => self.inner.clone(),
+        })
+    }
+}
+
+#[cfg(all(feature = "e2e", debug_assertions))]
+impl GitRunner for E2eTransportGitRunner {
+    fn run(&self, command: GitCommand) -> Result<GitOutput, AppError> {
+        self.configured_runner(&command)?.run(command)
+    }
+
+    fn run_with_context(
+        &self,
+        command: GitCommand,
+        context: GitRunContext,
+    ) -> Result<GitOutput, AppError> {
+        self.configured_runner(&command)?
+            .run_with_context(command, context)
+    }
+}
 
 struct NetworkExecutionRequest {
     repository_id: String,

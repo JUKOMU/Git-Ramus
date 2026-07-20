@@ -106,7 +106,14 @@ impl ProjectRepository {
     pub fn delete(&self, id: &str) -> Result<(), AppError> {
         let changed = self
             .db
-            .with_connection(|c| c.execute("DELETE FROM projects WHERE id=?1", [id]))?;
+            .with_transaction(|transaction| {
+                transaction.execute(
+                    "UPDATE git_clone_operations SET project_id=NULL,updated_at=?2 WHERE project_id=?1 AND current_stage IN ('completed','failed','cancelled')",
+                    params![id, Utc::now().to_rfc3339()],
+                )?;
+                transaction.execute("DELETE FROM projects WHERE id=?1", [id])
+            })
+            .map_err(|error| map_constraint_error(error, "project"))?;
         if changed == 0 {
             return Err(AppError::NotFound(format!("project {id}")));
         }

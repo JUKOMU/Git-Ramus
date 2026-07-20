@@ -128,7 +128,14 @@ pub fn run() {
     let builder = builder.invoke_handler(invoke_handlers![
         e2e::e2e_seed_fixture,
         e2e::e2e_app_data_paths,
-        e2e::e2e_seed_provider_fixture
+        e2e::e2e_seed_provider_fixture,
+        e2e::e2e_seed_transport_fixture,
+        e2e::e2e_advance_transport_remote,
+        e2e::e2e_commit_transport_local,
+        e2e::e2e_transport_remote_head,
+        e2e::e2e_block_transport_fetch,
+        e2e::e2e_transport_block_status,
+        e2e::e2e_cleanup_transport_fixture
     ]);
     #[cfg(not(all(feature = "e2e", debug_assertions)))]
     let builder = builder.invoke_handler(invoke_handlers![]);
@@ -148,7 +155,7 @@ const fn e2e_provider_fixture_handler_enabled() -> bool {
 }
 
 #[cfg(test)]
-const fn transport_e2e_command_handler_enabled() -> bool {
+const fn e2e_transport_fixture_handler_enabled() -> bool {
     cfg!(all(feature = "e2e", debug_assertions))
 }
 
@@ -171,9 +178,9 @@ mod tests {
     }
 
     #[test]
-    fn transport_e2e_command_handler_matches_the_debug_feature_boundary() {
+    fn e2e_transport_fixture_handler_matches_the_debug_feature_boundary() {
         assert_eq!(
-            super::transport_e2e_command_handler_enabled(),
+            super::e2e_transport_fixture_handler_enabled(),
             cfg!(all(feature = "e2e", debug_assertions))
         );
     }

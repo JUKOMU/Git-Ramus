@@ -1553,6 +1553,42 @@ fn clone_uses_staging_registers_project_and_applies_profile_without_leaking_prov
 }
 
 #[test]
+fn deleting_a_project_detaches_completed_clone_journal_history() {
+    let fixture = CloneFixture::with_provider_source_and_https_bare_remote();
+    let result = fixture
+        .base
+        .transport
+        .clone_repository(fixture.input("deletable-clone"), fixture.progress())
+        .unwrap();
+    let store = TransportStore::new(fixture.base.database.clone());
+    assert_eq!(
+        store
+            .get_clone_operation(&result.operation_id)
+            .unwrap()
+            .unwrap()
+            .project_id
+            .as_deref(),
+        Some(fixture.project_id.as_str())
+    );
+
+    fixture
+        .base
+        .git
+        .delete_project_by_id(&fixture.project_id)
+        .unwrap();
+
+    assert!(fixture.base.git.get_project(&fixture.project_id).is_err());
+    assert_eq!(
+        store
+            .get_clone_operation(&result.operation_id)
+            .unwrap()
+            .unwrap()
+            .project_id,
+        None
+    );
+}
+
+#[test]
 fn clone_can_create_a_new_project_root_and_register_the_repository_at_depth_zero() {
     let fixture = CloneFixture::with_provider_source_and_https_bare_remote();
     let mut input = fixture.input("new-project-repository");
@@ -1640,6 +1676,22 @@ fn clone_provider_binding_failure_is_partial_and_never_deletes_the_final_reposit
     assert_eq!(
         recovery[0].actions,
         vec![CloneRecoveryAction::RetryRegistration]
+    );
+    assert!(
+        fixture
+            .base
+            .git
+            .delete_project_by_id(&fixture.project_id)
+            .is_err()
+    );
+    assert_eq!(
+        TransportStore::new(fixture.base.database.clone())
+            .get_clone_operation(&operation_id)
+            .unwrap()
+            .unwrap()
+            .project_id
+            .as_deref(),
+        Some(fixture.project_id.as_str())
     );
 }
 

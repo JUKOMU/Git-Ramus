@@ -8,6 +8,7 @@ import {
 import { createGitTransportPromptBroker } from "../../git-transport/promptBroker";
 import type { GitTransportFilePort, GitTransportPromptPort } from "../../git-transport/promptPorts";
 import { nativeGitTransportFilePort } from "../../git-transport/promptPorts";
+import { dispatchPluginRpc } from "../../plugins/rpcRouter";
 import { ProviderPromptGate } from "../../providers/promptBroker";
 import type { HostFileSelectionPort, ProviderPromptPort } from "../../providers/promptPorts";
 import {
@@ -815,6 +816,53 @@ describe("trusted Git transport Host API", () => {
       }
     });
     expect(cloneNavigation.publish).toHaveBeenCalledWith(`/clone/${cloneIntentId}`);
+  });
+
+  it("routes Provider Clone RPC through native ownership checks into exact Host navigation", async () => {
+    invoke.mockImplementation(async (command: string) => {
+      if (command === "authorize_plugin_call") return { allowed: true };
+      if (command === "git_clone_intent_create" || command === "git_clone_intent_open") {
+        return { intentId: cloneIntentId };
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+    const navigation = createCloneNavigationBroker();
+    const api = createTauriHostApi({
+      prompts: providerPrompts,
+      files: providerFiles,
+      transportPrompts,
+      transportFiles,
+      cloneNavigation: navigation
+    });
+    const rpc = (method: string, params: unknown) => ({
+      type: "rpc:request" as const,
+      requestId: crypto.randomUUID(),
+      sessionId: crypto.randomUUID(),
+      method,
+      params
+    });
+
+    const reference = await dispatchPluginRpc(
+      "git-ramus.provider-center",
+      rpc("cloneIntents.create", { accountId: providerAccountId, repositoryId: "42" }),
+      api
+    );
+    expect(reference).toEqual({ intentId: cloneIntentId });
+    expect(navigation.current()).toBeNull();
+
+    await dispatchPluginRpc(
+      "git-ramus.provider-center",
+      rpc("cloneIntents.open", { intentId: cloneIntentId }),
+      api
+    );
+
+    expect(navigation.current()?.route).toBe(`/clone/${cloneIntentId}`);
+    expect(
+      invoke.mock.calls.filter(([command]) => command === "authorize_plugin_call")
+    ).toHaveLength(3);
+    expect(invoke).toHaveBeenCalledWith("git_clone_intent_open", {
+      request: { pluginId: "git-ramus.provider-center", intentId: cloneIntentId }
+    });
   });
 
   it("does not publish Clone navigation when native ownership validation fails", async () => {
