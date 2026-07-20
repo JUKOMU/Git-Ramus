@@ -1,27 +1,47 @@
 use std::path::Path;
 use std::process::Command;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
 use git_ramus_desktop_lib::db::Database;
 use git_ramus_desktop_lib::error::AppError;
 use git_ramus_desktop_lib::git::engine::{GitCommand, GitOutput, GitRunner, SystemGitRunner};
-use git_ramus_desktop_lib::git::model::{Remote, Repository, RepositoryKind, Trust};
+use git_ramus_desktop_lib::git::model::{Project, Remote, Repository, RepositoryKind, Trust};
 use git_ramus_desktop_lib::git::repository::{
-    RepositoryRepository, RepositoryWriteLocks, TrustRepository,
+    ProjectRepository, RepositoryRepository, RepositoryWriteLocks, TrustRepository,
 };
-use git_ramus_desktop_lib::git::transport::model::EffectiveTransportSource;
+use git_ramus_desktop_lib::git::service::{GitService, QueryContext};
+use git_ramus_desktop_lib::git::transport::model::{
+    EffectiveTransportSource, FetchInput, NetworkProgress, NetworkStage,
+};
+use git_ramus_desktop_lib::git::transport::operation::TransportOperationRegistry;
 use git_ramus_desktop_lib::git::transport::profile_service::{
     DriftResolution, ProfileDeletionResolution, TransportProfileService,
 };
+use git_ramus_desktop_lib::git::transport::service::{
+    GitTransportService, NetworkProgressReporter, NoopNetworkProgressReporter,
+};
 use git_ramus_desktop_lib::git::transport::store::TransportStore;
+use git_ramus_desktop_lib::jobs::JobService;
+use git_ramus_desktop_lib::jobs::model::JobStatus;
 use tempfile::TempDir;
 
 struct FailingConfigWriteRunner {
     inner: SystemGitRunner,
     fail_after: usize,
     writes: AtomicUsize,
+}
+
+#[derive(Default)]
+struct RecordingNetworkProgressReporter {
+    events: Mutex<Vec<NetworkProgress>>,
+}
+
+impl NetworkProgressReporter for RecordingNetworkProgressReporter {
+    fn report(&self, progress: NetworkProgress) {
+        self.events.lock().unwrap().push(progress);
+    }
 }
 
 impl GitRunner for FailingConfigWriteRunner {
@@ -44,9 +64,13 @@ impl GitRunner for FailingConfigWriteRunner {
 struct TransportFixture {
     _directory: TempDir,
     repository_path: std::path::PathBuf,
+    remote_writer_path: Option<std::path::PathBuf>,
     repository_id: String,
+    project_id: String,
     database: Database,
     service: TransportProfileService,
+    git: GitService,
+    transport: GitTransportService,
 }
 
 impl TransportFixture {
@@ -59,35 +83,98 @@ impl TransportFixture {
     }
 
     fn with_optional_local_config(local_config: Option<(&str, &str)>) -> Self {
-        Self::with_options(local_config, None)
+        Self::with_options(local_config, None, false)
     }
 
     fn with_failing_config_writes(fail_after: usize) -> Self {
-        Self::with_options(None, Some(fail_after))
+        Self::with_options(None, Some(fail_after), false)
+    }
+
+    fn with_https_bare_remote() -> Self {
+        let fixture = Self::with_options(None, None, true);
+        fixture.trust();
+        fixture
     }
 
     fn with_options(
         local_config: Option<(&str, &str)>,
         fail_config_writes_after: Option<usize>,
+        with_bare_remote: bool,
     ) -> Self {
         let directory = tempfile::tempdir().expect("temporary transport fixture");
         let repository_path = directory.path().join("repository");
-        std::fs::create_dir(&repository_path).expect("repository directory");
-        run_git(&repository_path, &["init", "--quiet"]);
-        run_git(
-            &repository_path,
-            &[
-                "remote",
-                "add",
-                "origin",
-                "https://gitlab.example/group/repository.git",
-            ],
-        );
+        let (remote_url, remote_writer_path, bare_remote_path) = if with_bare_remote {
+            let bare_remote_path = directory.path().join("remote.git");
+            let remote_writer_path = directory.path().join("remote-writer");
+            std::fs::create_dir(&bare_remote_path).expect("Bare Remote directory");
+            std::fs::create_dir(&remote_writer_path).expect("Remote writer directory");
+            run_git(&bare_remote_path, &["init", "--bare", "--quiet"]);
+            run_git(&remote_writer_path, &["init", "--quiet"]);
+            run_git(
+                &remote_writer_path,
+                &["config", "user.name", "Git-Ramus Fixture"],
+            );
+            run_git(
+                &remote_writer_path,
+                &["config", "user.email", "fixture@git-ramus.invalid"],
+            );
+            std::fs::write(remote_writer_path.join("seed.txt"), "seed\n")
+                .expect("seed file writes");
+            run_git(&remote_writer_path, &["add", "--", "seed.txt"]);
+            run_git(&remote_writer_path, &["commit", "--quiet", "-m", "seed"]);
+            run_git(&remote_writer_path, &["branch", "-M", "main"]);
+            run_git_strings(
+                &remote_writer_path,
+                &[
+                    "remote".to_owned(),
+                    "add".to_owned(),
+                    "origin".to_owned(),
+                    bare_remote_path.to_string_lossy().into_owned(),
+                ],
+            );
+            run_git(
+                &remote_writer_path,
+                &["push", "--quiet", "-u", "origin", "main"],
+            );
+            run_git(
+                &bare_remote_path,
+                &["symbolic-ref", "HEAD", "refs/heads/main"],
+            );
+            run_git_strings(
+                directory.path(),
+                &[
+                    "clone".to_owned(),
+                    "--quiet".to_owned(),
+                    bare_remote_path.to_string_lossy().into_owned(),
+                    repository_path.to_string_lossy().into_owned(),
+                ],
+            );
+            let remote_url = "https://git.example.test/acme/repository.git";
+            run_git(
+                &repository_path,
+                &["remote", "set-url", "origin", remote_url],
+            );
+            (remote_url, Some(remote_writer_path), Some(bare_remote_path))
+        } else {
+            std::fs::create_dir(&repository_path).expect("repository directory");
+            run_git(&repository_path, &["init", "--quiet"]);
+            let remote_url = "https://gitlab.example/group/repository.git";
+            run_git(&repository_path, &["remote", "add", "origin", remote_url]);
+            (remote_url, None, None)
+        };
         if let Some((key, value)) = local_config {
             run_git(&repository_path, &["config", "--local", key, value]);
         }
 
         let database = Database::open_in_memory().expect("database opens");
+        let project_root = std::fs::canonicalize(directory.path())
+            .expect("project root canonicalizes")
+            .to_string_lossy()
+            .into_owned();
+        let project = Project::new(&project_root, "Transport fixture");
+        ProjectRepository::new(database.clone())
+            .create(&project)
+            .expect("project persists");
         let canonical_path = std::fs::canonicalize(&repository_path)
             .expect("repository canonicalizes")
             .to_string_lossy()
@@ -99,10 +186,13 @@ impl TransportFixture {
             .create(&repository)
             .expect("repository persists");
         repositories
+            .add_to_project(&project.id, &repository.id, "repository")
+            .expect("repository joins project");
+        repositories
             .add_remote(&Remote {
                 repository_id: repository.id.clone(),
                 name: "origin".to_owned(),
-                fetch_url: Some("https://gitlab.example/group/repository.git".to_owned()),
+                fetch_url: Some(remote_url.to_owned()),
                 push_url: None,
             })
             .expect("remote persists");
@@ -112,7 +202,18 @@ impl TransportFixture {
         std::fs::create_dir_all(&home).expect("sealed home");
         std::fs::create_dir_all(&xdg).expect("sealed XDG home");
         let global_config = directory.path().join("global.gitconfig");
-        std::fs::write(&global_config, "").expect("sealed global config");
+        let global_contents = bare_remote_path
+            .as_ref()
+            .map(|path| {
+                let file_url = url::Url::from_file_path(path)
+                    .expect("Bare Remote converts to file URL")
+                    .to_string();
+                format!(
+                    "[url \"{file_url}\"]\n\tinsteadOf = {remote_url}\n[protocol \"file\"]\n\tallow = always\n"
+                )
+            })
+            .unwrap_or_default();
+        std::fs::write(&global_config, global_contents).expect("sealed global config");
         let runner = SystemGitRunner::new().with_sealed_config(home, xdg, global_config);
         let runner: Arc<dyn GitRunner> = match fail_config_writes_after {
             Some(fail_after) => Arc::new(FailingConfigWriteRunner {
@@ -122,15 +223,35 @@ impl TransportFixture {
             }),
             None => Arc::new(runner),
         };
+        let write_locks = RepositoryWriteLocks::default();
+        let git = GitService::with_runner_concurrency_and_write_locks(
+            database.clone(),
+            runner.clone(),
+            4,
+            write_locks.clone(),
+        );
         let service =
-            TransportProfileService::new(database.clone(), RepositoryWriteLocks::default(), runner);
+            TransportProfileService::new(database.clone(), write_locks.clone(), runner.clone());
+        let transport = GitTransportService::new(
+            database.clone(),
+            git.clone(),
+            service.clone(),
+            JobService::new(database.clone()),
+            TransportOperationRegistry::default(),
+            write_locks,
+            runner,
+        );
 
         Self {
             _directory: directory,
             repository_path,
+            remote_writer_path,
             repository_id: repository.id,
+            project_id: project.id,
             database,
             service,
+            git,
+            transport,
         }
     }
 
@@ -161,9 +282,40 @@ impl TransportFixture {
     fn set_git_config(&self, key: &str, value: &str) {
         run_git(&self.repository_path, &["config", "--local", key, value]);
     }
+
+    fn project_context(&self) -> QueryContext {
+        QueryContext::project(self.project_id.clone())
+    }
+
+    fn advance_remote(&self, file_name: &str) {
+        let writer = self
+            .remote_writer_path
+            .as_ref()
+            .expect("fixture has a Bare Remote writer");
+        std::fs::write(writer.join(file_name), "remote update\n").expect("Remote update writes");
+        run_git_strings(
+            writer,
+            &["add".to_owned(), "--".to_owned(), file_name.to_owned()],
+        );
+        run_git(writer, &["commit", "--quiet", "-m", "remote update"]);
+        run_git(writer, &["push", "--quiet", "origin", "main"]);
+    }
 }
 
 fn run_git(repository: &Path, arguments: &[&str]) {
+    let output = Command::new("git")
+        .current_dir(repository)
+        .args(arguments)
+        .output()
+        .expect("Git starts");
+    assert!(
+        output.status.success(),
+        "Git fixture command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn run_git_strings(repository: &Path, arguments: &[String]) {
     let output = Command::new("git")
         .current_dir(repository)
         .args(arguments)
@@ -501,4 +653,89 @@ fn profile_deletion_requires_exact_resolutions_and_can_replace_a_binding() {
             .as_deref(),
         Some("second")
     );
+}
+
+#[test]
+fn fetch_updates_remote_refs_and_persisted_ahead_behind() {
+    let fixture = TransportFixture::with_https_bare_remote();
+    fixture.advance_remote("remote-only.txt");
+    let progress = Arc::new(RecordingNetworkProgressReporter::default());
+    let result = fixture
+        .transport
+        .fetch(
+            FetchInput {
+                repository_id: fixture.repository_id.clone(),
+                context: fixture.project_context(),
+                remote_name: "origin".to_owned(),
+                operation_id: uuid::Uuid::new_v4().to_string(),
+                interactive: true,
+            },
+            progress.clone(),
+        )
+        .unwrap();
+    assert_eq!(result.remote_name.as_deref(), Some("origin"));
+    assert_eq!(result.job.status, JobStatus::Succeeded);
+    assert_eq!(
+        result.network_state.remotes[0].fetch_url,
+        "https://git.example.test/acme/repository.git"
+    );
+    let events = progress.events.lock().unwrap();
+    assert_eq!(events.first().unwrap().stage, NetworkStage::Transferring);
+    assert_eq!(events.last().unwrap().stage, NetworkStage::Completed);
+    assert!(
+        events
+            .iter()
+            .all(|event| event.operation_id == result.operation_id)
+    );
+    drop(events);
+    let serialized = serde_json::to_string(&result).unwrap();
+    assert!(!serialized.contains("file://"));
+    assert!(!serialized.contains(fixture._directory.path().to_string_lossy().as_ref()));
+    let snapshot = fixture
+        .git
+        .get_snapshot(&fixture.project_context(), &fixture.repository_id)
+        .unwrap()
+        .snapshot
+        .unwrap();
+    assert_eq!(snapshot.behind, 1);
+}
+
+#[test]
+fn fetch_rejects_a_remote_that_mismatches_the_bound_profile() {
+    let fixture = TransportFixture::with_https_bare_remote();
+    let profile = fixture
+        .service
+        .create_https_profile("Work HTTPS", "creator")
+        .unwrap();
+    fixture
+        .service
+        .bind_repository(&fixture.repository_id, &profile.id, false)
+        .unwrap();
+    RepositoryRepository::new(fixture.database.clone())
+        .add_remote(&Remote {
+            repository_id: fixture.repository_id.clone(),
+            name: "origin".to_owned(),
+            fetch_url: Some("git@git.example.test:acme/repository.git".to_owned()),
+            push_url: None,
+        })
+        .unwrap();
+
+    let error = fixture
+        .transport
+        .fetch(
+            FetchInput {
+                repository_id: fixture.repository_id.clone(),
+                context: fixture.project_context(),
+                remote_name: "origin".to_owned(),
+                operation_id: uuid::Uuid::new_v4().to_string(),
+                interactive: true,
+            },
+            Arc::new(NoopNetworkProgressReporter),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        AppError::Transport(failure)
+            if failure.code() == "git.transport.profile-mismatch"
+    ));
 }

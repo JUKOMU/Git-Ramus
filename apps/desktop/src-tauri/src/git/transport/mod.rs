@@ -3,5 +3,6 @@ pub mod model;
 pub mod operation;
 pub mod profile_service;
 pub mod progress;
+pub mod service;
 pub mod store;
 pub mod url;

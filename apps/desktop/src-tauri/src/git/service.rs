@@ -818,6 +818,22 @@ impl GitService {
         repository_id: &str,
     ) -> Result<RepositoryScanRecord, AppError> {
         self.ensure_project_membership(project_id, repository_id)?;
+        self.refresh_registered_repository(repository_id)
+    }
+
+    pub fn refresh_repository_in_context(
+        &self,
+        context: &QueryContext,
+        repository_id: &str,
+    ) -> Result<RepositoryScanRecord, AppError> {
+        self.ensure_context_membership(context, repository_id)?;
+        self.refresh_registered_repository(repository_id)
+    }
+
+    fn refresh_registered_repository(
+        &self,
+        repository_id: &str,
+    ) -> Result<RepositoryScanRecord, AppError> {
         let repository = self.repositories.get(repository_id)?;
         let lock = self.write_lock(repository_id);
         let _guard = lock.lock().expect("repository write lock is not poisoned");

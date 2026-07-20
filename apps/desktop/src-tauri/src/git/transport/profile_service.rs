@@ -427,9 +427,13 @@ impl TransportProfileService {
         let _lifecycle_guard = self.lock_lifecycle()?;
         let repository = self.repositories.get(repository_id)?;
         let lock = self.write_locks.lock_for(repository_id);
-        let _guard = lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = match lock.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(AppError::Transport(TransportFailure::repository_busy()));
+            }
+            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+        };
         let Some(binding) = self.store.get_binding(repository_id)? else {
             return Ok(EffectiveTransport::system_git(repository_id));
         };
