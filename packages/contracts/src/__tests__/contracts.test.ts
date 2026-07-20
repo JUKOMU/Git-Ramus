@@ -214,7 +214,8 @@ describe("shared contracts", () => {
       "/overview",
       "/projects",
       "/workspaces",
-      "/identities"
+      "/identities",
+      "/transport-identities"
     ]);
     expect(parsed.permissions).toEqual([
       { capability: "projects:manage", resources: ["projects"] },
@@ -222,7 +223,13 @@ describe("shared contracts", () => {
       { capability: "repositories:read", resources: ["repositories"] },
       { capability: "repositories:write", resources: ["repositories"] },
       { capability: "identities:read", resources: ["identities"] },
-      { capability: "identities:write", resources: ["identities"] }
+      { capability: "identities:write", resources: ["identities"] },
+      { capability: "git.transport:read", resources: ["transport-profiles"] },
+      { capability: "git.transport:manage", resources: ["transport-profiles"] },
+      {
+        capability: "git.network:execute",
+        resources: ["repositories", "clone-intents"]
+      }
     ]);
   });
 
@@ -1020,17 +1027,19 @@ describe("shared contracts", () => {
         displayName: "Work SSH",
         kind: "ssh",
         sshKeyFileName: "id_ed25519",
+        sshIdentitiesOnly: false,
         httpsUsername: null,
         available: true,
         boundRepositoryCount: 2
-      }).sshKeyFileName
-    ).toBe("id_ed25519");
+      })
+    ).toMatchObject({ sshKeyFileName: "id_ed25519", sshIdentitiesOnly: false });
     expect(
       transportProfileSummarySchema.parse({
         id: "0f0df6b1-9c42-499d-a76a-e4810fa19ace",
         displayName: "Work HTTPS",
         kind: "https",
         sshKeyFileName: null,
+        sshIdentitiesOnly: null,
         httpsUsername: "creator",
         available: true,
         boundRepositoryCount: 0
@@ -1042,6 +1051,7 @@ describe("shared contracts", () => {
         displayName: "Leaky",
         kind: "ssh",
         sshKeyFileName: "id_ed25519",
+        sshIdentitiesOnly: true,
         httpsUsername: null,
         available: true,
         boundRepositoryCount: 0,

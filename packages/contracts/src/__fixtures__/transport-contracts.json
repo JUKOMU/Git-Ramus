@@ -4,6 +4,7 @@
     "displayName": "Work SSH",
     "kind": "ssh",
     "sshKeyFileName": "id_ed25519",
+    "sshIdentitiesOnly": true,
     "httpsUsername": null,
     "available": true,
     "boundRepositoryCount": 1
@@ -13,6 +14,7 @@
     "displayName": "Work HTTPS",
     "kind": "https",
     "sshKeyFileName": null,
+    "sshIdentitiesOnly": null,
     "httpsUsername": "creator",
     "available": true,
     "boundRepositoryCount": 0

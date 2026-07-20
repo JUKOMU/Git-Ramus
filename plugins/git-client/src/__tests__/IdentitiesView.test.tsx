@@ -388,7 +388,22 @@ function createApi(identityResult: {
     setGlobalIdentity: vi.fn(),
     bindRepositoryIdentity: vi.fn(),
     unbindRepositoryIdentity: vi.fn(),
-    getEffectiveRepositoryIdentity: vi.fn()
+    getEffectiveRepositoryIdentity: vi.fn(),
+    listTransportProfiles: vi.fn(),
+    createTransportProfile: vi.fn(),
+    updateTransportProfile: vi.fn(),
+    getTransportProfileDeletionImpact: vi.fn(),
+    deleteTransportProfile: vi.fn(),
+    getEffectiveRepositoryTransport: vi.fn(),
+    getRepositoryNetworkState: vi.fn(),
+    bindRepositoryTransport: vi.fn(),
+    unbindRepositoryTransport: vi.fn(),
+    getCloneIntent: vi.fn(),
+    cloneRepository: vi.fn(),
+    fetchRepository: vi.fn(),
+    pullRepository: vi.fn(),
+    pushRepository: vi.fn(),
+    cancelNetworkOperation: vi.fn()
   };
 }
 

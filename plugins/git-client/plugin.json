@@ -35,6 +35,12 @@
         "label": "Identities",
         "route": "/identities",
         "icon": "user-round"
+      },
+      {
+        "id": "transport-identities",
+        "label": "Transport identities",
+        "route": "/transport-identities",
+        "icon": "key-round"
       }
     ]
   },
@@ -62,6 +68,18 @@
     {
       "capability": "identities:write",
       "resources": ["identities"]
+    },
+    {
+      "capability": "git.transport:read",
+      "resources": ["transport-profiles"]
+    },
+    {
+      "capability": "git.transport:manage",
+      "resources": ["transport-profiles"]
+    },
+    {
+      "capability": "git.network:execute",
+      "resources": ["repositories", "clone-intents"]
     }
   ]
 }

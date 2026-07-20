@@ -62,7 +62,12 @@ const cloneFolderNameSchema = z
   .min(1)
   .max(255)
   .refine(
-    (value) => value !== "." && value !== ".." && !/[\\/\u0000-\u001f\u007f]/u.test(value),
+    (value) =>
+      value !== "." &&
+      value !== ".." &&
+      !value.includes("\\") &&
+      !value.includes("/") &&
+      !containsControlCharacter(value),
     "unsafe clone folder name"
   );
 
@@ -71,7 +76,12 @@ const keyFileNameSchema = z
   .min(1)
   .max(255)
   .refine(
-    (value) => value !== "." && value !== ".." && !/[\\/\u0000-\u001f\u007f]/u.test(value),
+    (value) =>
+      value !== "." &&
+      value !== ".." &&
+      !value.includes("\\") &&
+      !value.includes("/") &&
+      !containsControlCharacter(value),
     "unsafe key filename"
   );
 
@@ -92,6 +102,7 @@ export const transportProfileSummarySchema = z
     displayName: safeName,
     kind: transportKindSchema,
     sshKeyFileName: keyFileNameSchema.nullable(),
+    sshIdentitiesOnly: z.boolean().nullable(),
     httpsUsername: z.string().trim().min(1).max(256).nullable(),
     available: z.boolean(),
     boundRepositoryCount: nonnegativeInteger
@@ -101,9 +112,11 @@ export const transportProfileSummarySchema = z
     const valid =
       (profile.kind === "ssh" &&
         profile.sshKeyFileName !== null &&
+        profile.sshIdentitiesOnly !== null &&
         profile.httpsUsername === null) ||
       (profile.kind === "https" &&
         profile.sshKeyFileName === null &&
+        profile.sshIdentitiesOnly === null &&
         profile.httpsUsername !== null);
     if (!valid) {
       context.addIssue({

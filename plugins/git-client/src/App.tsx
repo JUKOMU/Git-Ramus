@@ -5,6 +5,7 @@ import { IdentitiesView } from "./views/IdentitiesView";
 import { OverviewView } from "./views/OverviewView";
 import { ProjectsView } from "./views/ProjectsView";
 import { RepositoryView } from "./views/RepositoryView";
+import { TransportProfilesView } from "./views/TransportProfilesView";
 import { WorkspacesView } from "./views/WorkspacesView";
 
 interface AppProps {
@@ -47,6 +48,8 @@ export function App({ api, route }: AppProps) {
       return <WorkspacesView api={api} />;
     case "/identities":
       return <IdentitiesView api={api} />;
+    case "/transport-identities":
+      return <TransportProfilesView api={api} />;
     default:
       return (
         <section className="view empty-view">

@@ -130,6 +130,7 @@ impl TransportProfile {
             display_name: self.display_name.clone(),
             kind: self.kind,
             ssh_key_file_name: self.ssh_key_path.as_deref().and_then(portable_file_name),
+            ssh_identities_only: self.ssh_identities_only,
             https_username: self.https_username.clone(),
             available,
             bound_repository_count,
@@ -144,6 +145,7 @@ pub struct TransportProfileSummary {
     pub display_name: String,
     pub kind: TransportKind,
     pub ssh_key_file_name: Option<String>,
+    pub ssh_identities_only: Option<bool>,
     pub https_username: Option<String>,
     pub available: bool,
     pub bound_repository_count: i64,
@@ -642,6 +644,7 @@ mod tests {
         let profile =
             TransportProfile::new_ssh("Work SSH", r"C:\Users\private\.ssh\id_ed25519", true);
         let summary = profile.summary(true, 2);
+        assert_eq!(summary.ssh_identities_only, Some(true));
         let serialized = serde_json::to_string(&summary).unwrap();
         assert!(serialized.contains("id_ed25519"));
         assert!(!serialized.contains(r"C:\Users\private"));
