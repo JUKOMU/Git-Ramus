@@ -111,7 +111,7 @@ mod tests {
             })
             .expect("version query succeeds");
         assert_eq!(table_count, 4);
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
     }
 
     #[test]
@@ -151,7 +151,7 @@ mod tests {
     }
 
     #[test]
-    fn migration_runner_is_safe_to_run_twice_and_creates_all_v3_tables() {
+    fn migration_runner_is_safe_to_run_twice_and_creates_all_v4_tables() {
         let mut connection = rusqlite::Connection::open_in_memory().unwrap();
         connection.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
         super::migrations::run(&mut connection).unwrap();
@@ -159,7 +159,7 @@ mod tests {
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
         let names = [
             "projects",
             "workspaces",
@@ -177,6 +177,10 @@ mod tests {
             "provider_accounts",
             "provider_repository_bindings",
             "provider_secret_cleanup",
+            "transport_profiles",
+            "repository_transport_bindings",
+            "transport_config_repairs",
+            "git_clone_operations",
         ];
         for name in names {
             assert_eq!(
@@ -209,7 +213,7 @@ mod tests {
             connection
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            3
+            4
         );
     }
 
@@ -239,8 +243,93 @@ mod tests {
             connection
                 .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            3
+            4
         );
+    }
+
+    #[test]
+    fn upgrading_v3_preserves_rows_and_creates_transport_tables() {
+        let mut connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        connection
+            .execute_batch(super::migrations::MIGRATION_1)
+            .unwrap();
+        connection
+            .execute_batch(super::migrations::MIGRATION_2)
+            .unwrap();
+        connection
+            .execute_batch(super::migrations::MIGRATION_3)
+            .unwrap();
+        connection.execute(
+            "INSERT INTO jobs(id,kind,title,status,created_at,updated_at) VALUES('legacy-job','git.transport.fetch','Fetch','queued','2026-07-20T00:00:00Z','2026-07-20T00:00:00Z')",
+            [],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO projects(id,root_path,name,created_at,updated_at) VALUES('legacy-project','/tmp/project','Project','2026-07-20T00:00:00Z','2026-07-20T00:00:00Z')",
+            [],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO repositories(id,canonical_path,display_name,kind,created_at,updated_at) VALUES('legacy-repository','/tmp/project/repository','Repository','normal','2026-07-20T00:00:00Z','2026-07-20T00:00:00Z')",
+            [],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO project_repositories(project_id,repository_id,relative_path) VALUES('legacy-project','legacy-repository','repository')",
+            [],
+        ).unwrap();
+
+        super::migrations::run(&mut connection).unwrap();
+
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 4);
+        for table in [
+            "transport_profiles",
+            "repository_transport_bindings",
+            "transport_config_repairs",
+            "git_clone_operations",
+        ] {
+            let count: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1, "missing {table}");
+        }
+        for (table, id) in [
+            ("jobs", "legacy-job"),
+            ("projects", "legacy-project"),
+            ("repositories", "legacy-repository"),
+        ] {
+            let count: i64 = connection
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE id=?1"),
+                    [id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1, "lost row in {table}");
+        }
+    }
+
+    #[test]
+    fn transport_profile_kind_constraints_reject_mixed_fields() {
+        let database = Database::open_in_memory().unwrap();
+        database.with_connection(|connection| connection.execute(
+            "INSERT INTO transport_profiles(id,display_name,kind,ssh_key_path,ssh_variant,ssh_identities_only,https_username,https_use_http_path,created_at,updated_at) VALUES('ssh','SSH','ssh','C:/keys/id_ed25519','ssh',1,NULL,NULL,'2026-07-20T00:00:00Z','2026-07-20T00:00:00Z')",
+            [],
+        )).unwrap();
+        database.with_connection(|connection| connection.execute(
+            "INSERT INTO transport_profiles(id,display_name,kind,ssh_key_path,ssh_variant,ssh_identities_only,https_username,https_use_http_path,created_at,updated_at) VALUES('https','HTTPS','https',NULL,NULL,NULL,'creator',1,'2026-07-20T00:00:00Z','2026-07-20T00:00:00Z')",
+            [],
+        )).unwrap();
+        let result = database.with_connection(|connection| connection.execute(
+            "INSERT INTO transport_profiles(id,display_name,kind,ssh_key_path,ssh_variant,ssh_identities_only,https_username,https_use_http_path,created_at,updated_at) VALUES('mixed','Mixed','ssh','C:/keys/id_ed25519','ssh',1,'creator',1,'2026-07-20T00:00:00Z','2026-07-20T00:00:00Z')",
+            [],
+        ));
+        assert!(matches!(result, Err(AppError::Database(_))));
     }
 
     #[test]

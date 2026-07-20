@@ -333,6 +333,7 @@ pub mod model;
 pub mod parser;
 pub mod repository;
 pub mod service;
+pub mod transport;
 
 pub use engine::{GitCommand, GitOutput, GitRunner, SystemGitRunner};
 pub use parser::{
