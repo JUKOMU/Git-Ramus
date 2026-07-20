@@ -33,8 +33,71 @@ pub struct GitOutput {
     pub stderr: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitExecutionPolicy {
+    LocalNonInteractive,
+    ForegroundNetworkInteractive,
+    BackgroundNetworkNonInteractive,
+}
+
+pub trait GitProgressSink: Send + Sync {
+    fn stderr_chunk(&self, chunk: &[u8]);
+}
+
+#[derive(Clone)]
+pub struct GitRunContext {
+    pub policy: GitExecutionPolicy,
+    pub cancellation: Arc<AtomicBool>,
+    pub progress: Option<Arc<dyn GitProgressSink>>,
+}
+
+impl std::fmt::Debug for GitRunContext {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GitRunContext")
+            .field("policy", &self.policy)
+            .field("cancelled", &self.is_cancelled())
+            .field("progress_configured", &self.progress.is_some())
+            .finish()
+    }
+}
+
+impl GitRunContext {
+    pub fn new(policy: GitExecutionPolicy) -> Self {
+        Self {
+            policy,
+            cancellation: Arc::new(AtomicBool::new(false)),
+            progress: None,
+        }
+    }
+
+    pub fn with_progress(mut self, progress: Arc<dyn GitProgressSink>) -> Self {
+        self.progress = Some(progress);
+        self
+    }
+
+    pub fn cancel(&self) {
+        self.cancellation.store(true, Ordering::Release);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancellation.load(Ordering::Acquire)
+    }
+}
+
 pub trait GitRunner: Send + Sync {
     fn run(&self, command: GitCommand) -> Result<GitOutput, AppError>;
+
+    fn run_with_context(
+        &self,
+        command: GitCommand,
+        context: GitRunContext,
+    ) -> Result<GitOutput, AppError> {
+        if context.is_cancelled() {
+            return Err(AppError::Canceled);
+        }
+        self.run(command)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -367,7 +430,7 @@ impl SystemGitRunner {
         self.max_stderr_bytes
     }
 
-    fn command(&self, request: &GitCommand) -> Command {
+    fn command(&self, request: &GitCommand, policy: GitExecutionPolicy) -> Command {
         let mut command = Command::new("git");
         // `current_dir` is deliberately used instead of composing a shell command. Every
         // caller-supplied argument remains an individual OsString all the way to CreateProcess.
@@ -377,7 +440,7 @@ impl SystemGitRunner {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        clean_environment(&mut command);
+        clean_environment_for_policy(&mut command, policy);
         if let Some(config) = &self.sealed_config {
             command
                 .env("HOME", &config.home)
@@ -393,8 +456,15 @@ impl SystemGitRunner {
     }
 }
 
-impl GitRunner for SystemGitRunner {
-    fn run(&self, request: GitCommand) -> Result<GitOutput, AppError> {
+impl SystemGitRunner {
+    fn run_internal(
+        &self,
+        request: GitCommand,
+        context: GitRunContext,
+    ) -> Result<GitOutput, AppError> {
+        if context.is_cancelled() {
+            return Err(AppError::Canceled);
+        }
         if request.repo.as_os_str().is_empty() {
             return Err(AppError::InvalidInput(
                 "repository path is empty".to_owned(),
@@ -406,7 +476,7 @@ impl GitRunner for SystemGitRunner {
             ));
         }
 
-        let mut command = self.command(&request);
+        let mut command = self.command(&request, context.policy);
         ProcessTree::configure(&mut command)?;
         let mut child = command
             .spawn()
@@ -436,8 +506,14 @@ impl GitRunner for SystemGitRunner {
         };
         let stdout_limited = Arc::new(AtomicBool::new(false));
         let stderr_limited = Arc::new(AtomicBool::new(false));
-        let stdout_thread = spawn_reader(stdout, self.max_stdout_bytes, stdout_limited.clone());
-        let stderr_thread = spawn_reader(stderr, self.max_stderr_bytes, stderr_limited.clone());
+        let stdout_thread =
+            spawn_reader(stdout, self.max_stdout_bytes, stdout_limited.clone(), None);
+        let stderr_thread = spawn_reader(
+            stderr,
+            self.max_stderr_bytes,
+            stderr_limited.clone(),
+            context.progress.clone(),
+        );
 
         let stdin_writer = request.stdin.map(|input| {
             let stdin = guard.child_mut().stdin.take();
@@ -455,8 +531,9 @@ impl GitRunner for SystemGitRunner {
             self.poll_interval,
             &stdout_limited,
             &stderr_limited,
+            &context.cancellation,
         );
-        let (status, timed_out) = match wait_result {
+        let (status, termination) = match wait_result {
             Ok(result) => result,
             Err(error) => {
                 // Ensure all process and pipe resources are closed before returning an error.
@@ -471,8 +548,10 @@ impl GitRunner for SystemGitRunner {
         let stdin_result = finish_stdin_writer(stdin_writer, IO_CLEANUP_TIMEOUT);
         let (stdout, stderr) = finish_io_before_disarm(&mut guard, output_result, stdin_result)?;
 
-        if timed_out {
-            return Err(AppError::Timeout);
+        match termination {
+            WaitTermination::TimedOut => return Err(AppError::Timeout),
+            WaitTermination::Canceled => return Err(AppError::Canceled),
+            WaitTermination::Exited => {}
         }
         if stdout_limited.load(Ordering::Acquire) || stderr_limited.load(Ordering::Acquire) {
             return Err(AppError::OutputLimit);
@@ -483,6 +562,23 @@ impl GitRunner for SystemGitRunner {
             stdout,
             stderr,
         })
+    }
+}
+
+impl GitRunner for SystemGitRunner {
+    fn run(&self, request: GitCommand) -> Result<GitOutput, AppError> {
+        self.run_internal(
+            request,
+            GitRunContext::new(GitExecutionPolicy::LocalNonInteractive),
+        )
+    }
+
+    fn run_with_context(
+        &self,
+        request: GitCommand,
+        context: GitRunContext,
+    ) -> Result<GitOutput, AppError> {
+        self.run_internal(request, context)
     }
 }
 
@@ -513,6 +609,7 @@ fn spawn_reader<R>(
     mut reader: R,
     limit: usize,
     exceeded: Arc<AtomicBool>,
+    progress: Option<Arc<dyn GitProgressSink>>,
 ) -> Receiver<io::Result<Vec<u8>>>
 where
     R: Read + Send + 'static,
@@ -526,6 +623,9 @@ where
                 let read = reader.read(&mut buffer)?;
                 if read == 0 {
                     break;
+                }
+                if let Some(progress) = &progress {
+                    progress.stderr_chunk(&buffer[..read]);
                 }
                 if output.len().saturating_add(read) > limit {
                     exceeded.store(true, Ordering::Release);
@@ -663,6 +763,13 @@ fn wait_cleanup_process(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WaitTermination {
+    Exited,
+    TimedOut,
+    Canceled,
+}
+
 fn wait_bounded(
     child: &mut Child,
     tree: &ProcessTree,
@@ -670,38 +777,53 @@ fn wait_bounded(
     poll_interval: Duration,
     stdout_limited: &AtomicBool,
     stderr_limited: &AtomicBool,
-) -> Result<(ExitStatus, bool), AppError> {
+    cancellation: &AtomicBool,
+) -> Result<(ExitStatus, WaitTermination), AppError> {
     let started = Instant::now();
-    let mut timed_out = false;
     loop {
         if stdout_limited.load(Ordering::Acquire) || stderr_limited.load(Ordering::Acquire) {
             tree.terminate()?;
             let status = terminate_and_reap(child)?;
-            return Ok((status, false));
+            return Ok((status, WaitTermination::Exited));
         }
         if let Some(status) = child
             .try_wait()
             .map_err(|error| AppError::Git(wait_error_kind(error)))?
         {
-            return Ok((status, timed_out));
+            return Ok((status, WaitTermination::Exited));
         }
-        if started.elapsed() >= timeout {
-            timed_out = true;
+        if cancellation.load(Ordering::Acquire) {
             tree.terminate()?;
             let status = terminate_and_reap(child)?;
-            return Ok((status, timed_out));
+            return Ok((status, WaitTermination::Canceled));
+        }
+        if started.elapsed() >= timeout {
+            tree.terminate()?;
+            let status = terminate_and_reap(child)?;
+            return Ok((status, WaitTermination::TimedOut));
         }
         let remaining = timeout.saturating_sub(started.elapsed());
         thread::sleep(poll_interval.min(remaining));
     }
 }
 
-fn clean_environment(command: &mut Command) {
-    clean_environment_from(command, std::env::vars_os());
+fn clean_environment_for_policy(command: &mut Command, policy: GitExecutionPolicy) {
+    clean_environment_for_policy_from(command, std::env::vars_os(), policy);
 }
 
+#[cfg(test)]
 fn clean_environment_from<I>(command: &mut Command, parent: I)
 where
+    I: IntoIterator<Item = (OsString, OsString)>,
+{
+    clean_environment_for_policy_from(command, parent, GitExecutionPolicy::LocalNonInteractive);
+}
+
+fn clean_environment_for_policy_from<I>(
+    command: &mut Command,
+    parent: I,
+    policy: GitExecutionPolicy,
+) where
     I: IntoIterator<Item = (OsString, OsString)>,
 {
     command.env_clear();
@@ -714,7 +836,14 @@ where
         }
     }
     command.env("GIT_TERMINAL_PROMPT", "0");
-    command.env("GCM_INTERACTIVE", "Never");
+    command.env(
+        "GCM_INTERACTIVE",
+        if policy == GitExecutionPolicy::ForegroundNetworkInteractive {
+            "Auto"
+        } else {
+            "Never"
+        },
+    );
 }
 
 fn is_safe_inherited_env(key: &OsStr) -> bool {
@@ -762,6 +891,176 @@ fn wait_error_kind(error: io::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn captured_environment<const N: usize>(
+        policy: GitExecutionPolicy,
+        parent: [(&str, &str); N],
+    ) -> std::collections::BTreeMap<String, Option<String>> {
+        let mut command = Command::new("git");
+        clean_environment_for_policy_from(
+            &mut command,
+            parent
+                .into_iter()
+                .map(|(key, value)| (OsString::from(key), OsString::from(value))),
+            policy,
+        );
+        command
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn foreground_network_policy_allows_system_interaction_without_attack_overrides() {
+        let environment = captured_environment(
+            GitExecutionPolicy::ForegroundNetworkInteractive,
+            [
+                ("PATH", "/safe/bin"),
+                ("SSH_AUTH_SOCK", "/safe/agent"),
+                ("GIT_ASKPASS", "/tmp/evil"),
+                ("SSH_ASKPASS", "/tmp/evil-ssh"),
+                ("GIT_SSH_COMMAND", "evil"),
+                ("GCM_INTERACTIVE", "Never"),
+            ],
+        );
+        assert_eq!(
+            environment
+                .get("GIT_TERMINAL_PROMPT")
+                .and_then(Option::as_deref),
+            Some("0")
+        );
+        assert_eq!(
+            environment
+                .get("GCM_INTERACTIVE")
+                .and_then(Option::as_deref),
+            Some("Auto")
+        );
+        assert_eq!(
+            environment.get("SSH_AUTH_SOCK").and_then(Option::as_deref),
+            Some("/safe/agent")
+        );
+        for key in ["GIT_ASKPASS", "SSH_ASKPASS", "GIT_SSH_COMMAND"] {
+            assert!(!environment.contains_key(key));
+        }
+    }
+
+    #[test]
+    fn background_network_policy_never_allows_interactive_credentials() {
+        let environment = captured_environment(
+            GitExecutionPolicy::BackgroundNetworkNonInteractive,
+            [("PATH", "/safe/bin"), ("GCM_INTERACTIVE", "Auto")],
+        );
+        assert_eq!(
+            environment
+                .get("GCM_INTERACTIVE")
+                .and_then(Option::as_deref),
+            Some("Never")
+        );
+    }
+
+    #[derive(Default)]
+    struct RecordingProgressSink {
+        chunks: Mutex<Vec<Vec<u8>>>,
+    }
+
+    impl GitProgressSink for RecordingProgressSink {
+        fn stderr_chunk(&self, chunk: &[u8]) {
+            self.chunks.lock().unwrap().push(chunk.to_vec());
+        }
+    }
+
+    #[test]
+    fn run_context_cancels_before_spawn_and_streams_real_git_stderr() {
+        let canceled = GitRunContext::new(GitExecutionPolicy::ForegroundNetworkInteractive);
+        canceled.cancel();
+        let result = SystemGitRunner::new().run_with_context(
+            GitCommand {
+                repo: PathBuf::new(),
+                args: vec![OsString::from("status")],
+                stdin: None,
+                timeout: Duration::ZERO,
+            },
+            canceled,
+        );
+        assert!(matches!(result, Err(AppError::Canceled)));
+
+        let directory = tempfile::tempdir().unwrap();
+        let sink = Arc::new(RecordingProgressSink::default());
+        let output = SystemGitRunner::new()
+            .run_with_context(
+                GitCommand {
+                    repo: directory.path().to_path_buf(),
+                    args: vec![OsString::from("status")],
+                    stdin: None,
+                    timeout: Duration::from_secs(5),
+                },
+                GitRunContext::new(GitExecutionPolicy::ForegroundNetworkInteractive)
+                    .with_progress(sink.clone()),
+            )
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(!sink.chunks.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn stderr_reader_streams_bounded_chunks_to_the_progress_sink() {
+        let sink = Arc::new(RecordingProgressSink::default());
+        let limited = Arc::new(AtomicBool::new(false));
+        let receiver = spawn_reader(
+            std::io::Cursor::new(vec![b'x'; 40 * 1024]),
+            64 * 1024,
+            limited,
+            Some(sink.clone()),
+        );
+        assert_eq!(
+            receive_reader_bounded(receiver, Duration::from_secs(1))
+                .unwrap()
+                .len(),
+            40 * 1024
+        );
+        let chunks = sink.chunks.lock().unwrap();
+        assert!(chunks.len() >= 3);
+        assert!(chunks.iter().all(|chunk| chunk.len() <= 16 * 1024));
+    }
+
+    #[test]
+    fn cancellation_terminates_and_reaps_a_running_git_process() {
+        let mut command = Command::new("git");
+        command
+            .args(["hash-object", "--stdin"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        ProcessTree::configure(&mut command).unwrap();
+        let mut child = command.spawn().unwrap();
+        let tree = ProcessTree::attach(&child).unwrap();
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let trigger = cancellation.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(30));
+            trigger.store(true, Ordering::Release);
+        });
+        let stdout_limited = AtomicBool::new(false);
+        let stderr_limited = AtomicBool::new(false);
+        let (_, termination) = wait_bounded(
+            &mut child,
+            &tree,
+            Duration::from_secs(5),
+            Duration::from_millis(5),
+            &stdout_limited,
+            &stderr_limited,
+            &cancellation,
+        )
+        .unwrap();
+        assert_eq!(termination, WaitTermination::Canceled);
+        tree.finish_after_reap().unwrap();
+        assert!(child.try_wait().unwrap().is_some());
+    }
 
     #[test]
     fn bounded_reader_cleanup_times_out_instead_of_joining_forever() {

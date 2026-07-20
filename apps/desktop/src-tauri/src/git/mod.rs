@@ -335,7 +335,10 @@ pub mod repository;
 pub mod service;
 pub mod transport;
 
-pub use engine::{GitCommand, GitOutput, GitRunner, SystemGitRunner};
+pub use engine::{
+    GitCommand, GitExecutionPolicy, GitOutput, GitProgressSink, GitRunContext, GitRunner,
+    SystemGitRunner,
+};
 pub use parser::{
     ChangeEntry, ChangeKind, DetectedRepository, DiffFile, DiffSummary, RepositorySnapshot,
     detect_repository, parse_diff_summary, parse_git_config, parse_remote_config, parse_status_v2,
