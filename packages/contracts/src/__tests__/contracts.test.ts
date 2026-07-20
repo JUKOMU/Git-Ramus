@@ -54,6 +54,7 @@ import {
   providerContributionSchema,
   providerInstanceCreateRequestSchema,
   providerInstanceSchema,
+  providerInstanceUpdateRequestSchema,
   providerOperationCancelRequestSchema,
   providerRepositoryListRequestSchema,
   providerRepositoryPageSchema,
@@ -336,14 +337,14 @@ describe("shared contracts", () => {
         customCaAction: "selectFile"
       })
     ).toThrow();
-    expect(() =>
+    expect(
       providerInstanceUpdateRequestSchema.parse({
         instanceId,
         displayName: "GitHub",
-        baseUrl: "https://github.com",
+        baseUrl: "HTTPS://GITHUB.COM:443",
         customCaAction: "selectFile"
-      })
-    ).toThrow();
+      }).customCaAction
+    ).toBe("selectFile");
     expect(() =>
       providerAccountConnectRequestSchema.parse({ instanceId, pat: "must-not-cross" })
     ).toThrow();

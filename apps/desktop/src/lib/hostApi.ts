@@ -426,6 +426,19 @@ export function createTauriHostApi(dependencies: {
       const parsed = providerInstanceUpdateRequestSchema.parse(request);
       let customCa: { kind: "keep" | "remove" } | { kind: "replace"; path: string };
       if (parsed.customCaAction === "selectFile") {
+        let current = instanceCache.get(parsed.instanceId);
+        if (current === undefined) {
+          const response = await invokeParsed(
+            "provider_instance_list",
+            providerInstanceListResponseSchema
+          );
+          for (const instance of response.items) instanceCache.set(instance.id, instance);
+          current = instanceCache.get(parsed.instanceId);
+        }
+        if (current === undefined) throw new Error("Provider instance is unavailable");
+        if (current.providerKind === "github") {
+          throw new Error("GitHub does not support custom CA files");
+        }
         const path = await files.selectCertificate();
         if (path === null) return null;
         customCa = { kind: "replace", path };

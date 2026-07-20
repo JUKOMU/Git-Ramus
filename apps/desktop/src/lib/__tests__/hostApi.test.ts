@@ -311,6 +311,31 @@ describe("trusted Provider Host API", () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
+  it("rejects GitHub custom-CA replacement from cached instance kind before opening the picker", async () => {
+    const api = createTauriHostApi({ prompts, files });
+    invoke.mockResolvedValueOnce({
+      items: [
+        {
+          ...providerContracts.instance,
+          providerKind: "github",
+          displayName: "GitHub",
+          baseUrl: "https://github.com"
+        }
+      ]
+    });
+    await api.listProviderInstances();
+    await expect(
+      api.updateProviderInstance({
+        instanceId: providerInstanceId,
+        displayName: "GitHub",
+        baseUrl: "HTTPS://GITHUB.COM:443",
+        customCaAction: "selectFile"
+      })
+    ).rejects.toThrow("GitHub does not support custom CA files");
+    expect(files.selectCertificate).not.toHaveBeenCalled();
+    expect(invoke.mock.calls.map(([command]) => command)).toEqual(["provider_instance_list"]);
+  });
+
   it("uses exact scoped Provider commands and injects plugin identity in trusted code", async () => {
     const api = createTauriHostApi({ prompts, files });
     const query = {

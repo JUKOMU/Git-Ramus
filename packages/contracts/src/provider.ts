@@ -151,13 +151,7 @@ export const providerInstanceUpdateRequestSchema = z
     baseUrl: httpsUrl,
     customCaAction: z.enum(["keep", "remove", "selectFile"])
   })
-  .strict()
-  .refine(
-    (value) =>
-      value.customCaAction !== "selectFile" ||
-      !/^https:\/\/github\.com(?:\/|$)/u.test(value.baseUrl),
-    "GitHub does not support custom CA files"
-  );
+  .strict();
 
 export const providerInstanceRequestSchema = z.object({ instanceId: uuid }).strict();
 export const providerInstanceListRequestSchema = z.object({}).strict();
