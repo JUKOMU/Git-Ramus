@@ -4,7 +4,7 @@ import type {
   ProviderAccountSummary,
   ProviderInstance
 } from "@git-ramus/contracts";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ProviderCenterApi } from "../api";
 import { normalizeError } from "../api";
 import { ErrorNotice, StatusBadge } from "./InstancePanel";
@@ -15,7 +15,7 @@ interface AccountPanelProps {
   accounts: ProviderAccountSummary[];
   selectedAccountId: string | null;
   onSelect(accountId: string): void;
-  onRefresh(): Promise<void>;
+  onRefresh(instanceId: string): Promise<void>;
 }
 
 export function AccountPanel({
@@ -32,18 +32,45 @@ export function AccountPanel({
   const [resolution, setResolution] = useState<"reassign" | "inherit" | "unbind" | null>(null);
   const [reassignId, setReassignId] = useState("");
   const [newDefaultId, setNewDefaultId] = useState("");
+  const impactGeneration = useRef(0);
+  const actionGeneration = useRef(0);
 
-  const run = async (action: () => Promise<void>) => {
+  const run = async (action: (isCurrent: () => boolean) => Promise<void>) => {
+    const generation = ++actionGeneration.current;
+    const isCurrent = () => generation === actionGeneration.current;
     setBusy(true);
     setError(null);
     try {
-      await action();
+      await action(isCurrent);
     } catch (cause) {
-      setError(normalizeError(cause, "Unable to update Provider accounts"));
+      if (isCurrent()) {
+        setError(normalizeError(cause, "Unable to update Provider accounts"));
+      }
     } finally {
-      setBusy(false);
+      if (isCurrent()) setBusy(false);
     }
   };
+
+  useEffect(() => {
+    actionGeneration.current += 1;
+    void Promise.resolve().then(() => {
+      setBusy(false);
+      setError(null);
+    });
+    return () => {
+      actionGeneration.current += 1;
+    };
+  }, [instance?.id]);
+
+  useEffect(() => {
+    impactGeneration.current += 1;
+    void Promise.resolve().then(() => {
+      setImpact(null);
+      setResolution(null);
+      setReassignId("");
+      setNewDefaultId("");
+    });
+  }, [instance?.id, selectedAccountId]);
 
   if (instance === null) {
     return (
@@ -54,10 +81,14 @@ export function AccountPanel({
     );
   }
 
-  const selected = accounts.find(({ id }) => id === selectedAccountId) ?? null;
-  const siblings = accounts.filter(({ id }) => id !== selected?.id);
+  const siblings = accounts.filter(({ id }) => id !== impact?.accountId);
+  const impactMatchesContext =
+    impact !== null &&
+    impact.instanceId === instance.id &&
+    accounts.some(({ id }) => id === impact.accountId);
   const canDelete =
     impact !== null &&
+    impactMatchesContext &&
     resolution !== null &&
     (resolution !== "reassign" || reassignId.length > 0) &&
     (!impact.requiresNewDefault || newDefaultId.length > 0);
@@ -73,10 +104,11 @@ export function AccountPanel({
           type="button"
           disabled={busy}
           onClick={() =>
-            void run(async () => {
+            void run(async (isCurrent) => {
               const connected = await api.connectAccount(instance.id);
-              await onRefresh();
-              if (connected !== null) onSelect(connected.id);
+              if (!isCurrent()) return;
+              await onRefresh(instance.id);
+              if (isCurrent() && connected !== null) onSelect(connected.id);
             })
           }
         >
@@ -113,9 +145,9 @@ export function AccountPanel({
                 type="button"
                 disabled={busy}
                 onClick={() =>
-                  void run(async () => {
+                  void run(async (isCurrent) => {
                     await api.validateAccount(account.id);
-                    await onRefresh();
+                    if (isCurrent()) await onRefresh(instance.id);
                   })
                 }
               >
@@ -125,10 +157,11 @@ export function AccountPanel({
                 type="button"
                 disabled={busy}
                 onClick={() =>
-                  void run(async () => {
+                  void run(async (isCurrent) => {
                     const rotated = await api.rotateAccount(account.id);
-                    await onRefresh();
-                    if (rotated !== null) onSelect(rotated.id);
+                    if (!isCurrent()) return;
+                    await onRefresh(instance.id);
+                    if (isCurrent() && rotated !== null) onSelect(rotated.id);
                   })
                 }
               >
@@ -139,9 +172,9 @@ export function AccountPanel({
                   type="button"
                   disabled={busy}
                   onClick={() =>
-                    void run(async () => {
+                    void run(async (isCurrent) => {
                       await api.setDefaultAccount(instance.id, account.id);
-                      await onRefresh();
+                      if (isCurrent()) await onRefresh(instance.id);
                     })
                   }
                 >
@@ -152,15 +185,23 @@ export function AccountPanel({
                 type="button"
                 className="danger-button"
                 disabled={busy}
-                onClick={() =>
-                  void run(async () => {
+                onClick={() => {
+                  const generation = ++impactGeneration.current;
+                  const expectedInstanceId = instance.id;
+                  void run(async (isCurrent) => {
                     const next = await api.getAccountDeletionImpact(account.id);
+                    if (
+                      !isCurrent() ||
+                      generation !== impactGeneration.current ||
+                      next.instanceId !== expectedInstanceId
+                    )
+                      return;
                     setImpact(next);
                     setResolution(null);
                     setReassignId("");
                     setNewDefaultId("");
-                  })
-                }
+                  });
+                }}
               >
                 Delete…
               </button>
@@ -169,7 +210,7 @@ export function AccountPanel({
         ))}
       </div>
 
-      {impact === null ? null : (
+      {impact === null || !impactMatchesContext ? null : (
         <div
           className="deletion-panel"
           role="dialog"
@@ -255,7 +296,7 @@ export function AccountPanel({
               className="danger-button"
               disabled={!canDelete || busy}
               onClick={() =>
-                void run(async () => {
+                void run(async (isCurrent) => {
                   const chosenResolution =
                     resolution === "reassign"
                       ? { kind: "reassign" as const, accountId: reassignId }
@@ -265,8 +306,9 @@ export function AccountPanel({
                     resolution: chosenResolution,
                     newDefaultAccountId: impact.requiresNewDefault ? newDefaultId : null
                   });
+                  if (!isCurrent()) return;
                   setImpact(null);
-                  await onRefresh();
+                  await onRefresh(instance.id);
                 })
               }
             >

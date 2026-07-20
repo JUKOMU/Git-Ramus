@@ -24,6 +24,7 @@ import {
   providerInstanceUpdateRequestSchema,
   providerLocalRemoteMatchRequestSchema,
   providerOperationCancelRequestSchema,
+  providerReadAccessRevokeRequestSchema,
   providerRepositoryListRequestSchema,
   providerRepositoryPageSchema,
   type ProviderAccountDeleteRequest,
@@ -46,7 +47,7 @@ import {
   type ProviderRepositoryPage,
   type ErrorEnvelope
 } from "@git-ramus/contracts";
-import type { PluginClient } from "@git-ramus/plugin-sdk";
+import { createRequestId, type PluginClient } from "@git-ramus/plugin-sdk";
 
 export interface ProviderCenterApi {
   listInstances(): Promise<ProviderInstanceListResponse>;
@@ -194,7 +195,7 @@ export function createProviderCenterApi(client: PluginClient): ProviderCenterApi
       requestVoid(
         client,
         "providers.revokeReadAccess",
-        { accountId },
+        providerReadAccessRevokeRequestSchema.parse({ accountId }),
         "Unable to revoke Provider access"
       ),
     listRepositories: (input, signal) => {
@@ -203,6 +204,7 @@ export function createProviderCenterApi(client: PluginClient): ProviderCenterApi
         client,
         "providers.listRepositories",
         parsed,
+        providerRepositoryListRequestSchema,
         providerRepositoryPageSchema,
         signal,
         "Unable to load Provider repositories"
@@ -221,6 +223,7 @@ export function createProviderCenterApi(client: PluginClient): ProviderCenterApi
         client,
         "providers.matchLocalRemotes",
         parsed,
+        providerLocalRemoteMatchRequestSchema,
         providerBindingSuggestionListResponseSchema,
         signal,
         "Unable to match local remotes"
@@ -283,18 +286,22 @@ async function cancellableRequest<T>(
   client: PluginClient,
   method: string,
   input: Record<string, unknown>,
+  requestSchema: {
+    parse(value: unknown): Record<string, unknown> & { accountId: string; operationId: string };
+  },
   schema: { parse(value: unknown): T },
   signal: AbortSignal | undefined,
   fallbackMessage: string
 ): Promise<T> {
   if (signal?.aborted) throw abortError();
   const operationId = operationIdForRequest();
-  const request = client.request<unknown>(method, { ...input, operationId });
+  const requestInput = requestSchema.parse({ ...input, operationId });
+  const request = client.request<unknown>(method, requestInput);
   let onAbort: (() => void) | undefined;
   const aborted = new Promise<never>((_, reject) => {
     onAbort = () => {
       void client
-        .request("providers.cancelOperation", { accountId: input.accountId, operationId })
+        .request("providers.cancelOperation", { accountId: requestInput.accountId, operationId })
         .catch(() => undefined);
       reject(abortError());
     };
@@ -314,8 +321,7 @@ async function cancellableRequest<T>(
 }
 
 function operationIdForRequest(): string {
-  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
-  return `provider-operation-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return createRequestId();
 }
 
 function abortError(): DOMException {

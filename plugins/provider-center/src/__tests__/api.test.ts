@@ -13,6 +13,46 @@ const query = {
   direction: "asc" as const,
   pageSize: 30
 };
+const now = "2026-07-19T00:00:00Z";
+const repositoryId = "5aa1eea1-c250-4a40-9df4-f74534b7f203";
+const providerInstance = {
+  id: instanceId,
+  providerKind: "gitlab",
+  displayName: "GitLab",
+  baseUrl: "https://gitlab.example",
+  customCaConfigured: false,
+  customCaLabel: null,
+  providerEnabled: true,
+  status: "connected",
+  lastValidatedAt: now,
+  serverVersion: "18.0",
+  createdAt: now,
+  updatedAt: now
+};
+const providerAccount = {
+  id: accountId,
+  instanceId,
+  providerUserId: "9001",
+  username: "creator",
+  displayName: "Creator",
+  avatarUrl: null,
+  isDefault: true,
+  status: "connected",
+  lastValidatedAt: now
+};
+const binding = {
+  repositoryId,
+  remoteName: "origin",
+  providerInstanceId: instanceId,
+  providerAccountId: null,
+  providerRepositoryId: "4242",
+  fullName: "skills/private-skill",
+  webUrl: "https://gitlab.example/skills/private-skill",
+  matchedUrl: "git@gitlab.example:skills/private-skill.git",
+  bindingSource: "manual",
+  boundAt: now,
+  updatedAt: now
+};
 
 function createClient() {
   const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
@@ -20,10 +60,44 @@ function createClient() {
     requests,
     request: vi.fn(async (method: string, params: Record<string, unknown>) => {
       requests.push({ method, params });
-      if (method === "providers.listRepositories")
-        return { items: [], nextCursor: null, hasMore: false, rateLimit: null };
-      if (method === "providers.matchLocalRemotes") return { items: [] };
-      return { items: [] };
+      switch (method) {
+        case "providers.listInstances":
+          return { items: [] };
+        case "providers.createInstance":
+        case "providers.updateInstance":
+        case "providers.validateInstance":
+          return providerInstance;
+        case "providers.listAccounts":
+          return { items: [] };
+        case "providers.connectAccount":
+        case "providers.rotateAccount":
+        case "providers.validateAccount":
+        case "providers.setDefaultAccount":
+          return providerAccount;
+        case "providers.getAccountDeletionImpact":
+          return {
+            accountId,
+            instanceId,
+            isDefault: true,
+            explicitBindingCount: 0,
+            inheritedBindingCount: 0,
+            siblingAccountIds: [],
+            requiresNewDefault: false
+          };
+        case "providers.listAuthorizedAccounts":
+        case "providers.requestReadAccess":
+          return { items: [{ instance: providerInstance, account: providerAccount }] };
+        case "providers.listRepositories":
+          return { items: [], nextCursor: null, hasMore: false, rateLimit: null };
+        case "providers.matchLocalRemotes":
+          return { items: [] };
+        case "providers.listBindings":
+          return { items: [] };
+        case "providers.bindRemote":
+          return binding;
+        default:
+          return null;
+      }
     })
   } as unknown as PluginClient & {
     requests: Array<{ method: string; params: Record<string, unknown> }>;
@@ -32,7 +106,10 @@ function createClient() {
 }
 
 describe("Provider Center API", () => {
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
 
   it("uses exact RPC names and no secret or local path fields", async () => {
     const client = createClient();
@@ -93,5 +170,77 @@ describe("Provider Center API", () => {
       name: "AbortError"
     });
     expect(client.request).not.toHaveBeenCalled();
+  });
+
+  it("routes every management and access method through its exact typed boundary", async () => {
+    const client = createClient();
+    const api = createProviderCenterApi(client);
+    await api.createInstance({
+      providerKind: "gitlab",
+      displayName: "GitLab",
+      baseUrl: "https://gitlab.example",
+      customCaAction: "none"
+    });
+    await api.updateInstance({
+      instanceId,
+      displayName: "GitLab",
+      baseUrl: "https://gitlab.example",
+      customCaAction: "keep"
+    });
+    await api.validateInstance({ instanceId });
+    await api.deleteInstance({ instanceId });
+    await api.connectAccount(instanceId);
+    await api.rotateAccount(accountId);
+    await api.validateAccount(accountId);
+    await api.setDefaultAccount(instanceId, accountId);
+    await api.getAccountDeletionImpact(accountId);
+    await api.deleteAccount({
+      accountId,
+      resolution: { kind: "unbind" },
+      newDefaultAccountId: null
+    });
+    await api.requestReadAccess();
+    await api.revokeReadAccess(accountId);
+    await api.cancelOperation({ accountId, operationId: "f84223af-c753-4209-be36-12d381375fcb" });
+    await api.bindRemote({
+      repositoryId,
+      remoteName: "origin",
+      instanceId,
+      accountId: null,
+      providerRepositoryId: "4242"
+    });
+    await api.unbindRemote(repositoryId, "origin");
+
+    expect(client.requests.map(({ method }) => method)).toEqual([
+      "providers.createInstance",
+      "providers.updateInstance",
+      "providers.validateInstance",
+      "providers.deleteInstance",
+      "providers.connectAccount",
+      "providers.rotateAccount",
+      "providers.validateAccount",
+      "providers.setDefaultAccount",
+      "providers.getAccountDeletionImpact",
+      "providers.deleteAccount",
+      "providers.requestReadAccess",
+      "providers.revokeReadAccess",
+      "providers.cancelOperation",
+      "providers.bindRemote",
+      "providers.unbindRemote"
+    ]);
+    expect(JSON.stringify(client.requests)).not.toMatch(/pat|secretRef|customCaPath|[A-Z]:\\/iu);
+  });
+
+  it("creates a canonical operation ID without crypto.randomUUID", async () => {
+    const originalCrypto = globalThis.crypto;
+    vi.stubGlobal("crypto", {
+      getRandomValues: originalCrypto.getRandomValues.bind(originalCrypto)
+    });
+    const client = createClient();
+    await createProviderCenterApi(client).listRepositories({ accountId, query, cursor: null });
+    const params = client.requests[0]!.params;
+    expect(params.operationId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
+    );
   });
 });

@@ -124,4 +124,68 @@ describe("RepositoryBrowser", () => {
     await waitFor(() => expect(api.listRepositories).toHaveBeenCalledTimes(2));
     expect(screen.getAllByText("octo/one")).toHaveLength(1);
   });
+
+  it("discards and unlocks an in-flight page when the query changes", async () => {
+    const user = userEvent.setup();
+    let resolveStalePage!: (value: unknown) => void;
+    const api = {
+      listRepositories: vi
+        .fn()
+        .mockResolvedValueOnce({
+          items: [repository("1", "octo/initial")],
+          nextCursor: "cursor",
+          hasMore: true,
+          rateLimit: null
+        })
+        .mockReturnValueOnce(
+          new Promise((resolve) => {
+            resolveStalePage = resolve;
+          })
+        )
+        .mockResolvedValueOnce({
+          items: [repository("2", "octo/current")],
+          nextCursor: "next-cursor",
+          hasMore: true,
+          rateLimit: null
+        }),
+      cancelOperation: vi.fn()
+    };
+    render(<RepositoryBrowser api={api as never} account={account} />);
+    await screen.findByText("octo/initial");
+    await user.click(screen.getByRole("button", { name: "Load more" }));
+    await waitFor(() => expect(api.listRepositories).toHaveBeenCalledTimes(2));
+    await user.type(screen.getByRole("searchbox", { name: "Search repositories" }), "current");
+    await waitFor(() => expect(api.listRepositories).toHaveBeenCalledTimes(3));
+    expect(await screen.findByText("octo/current")).toBeInTheDocument();
+    resolveStalePage({
+      items: [repository("3", "octo/stale")],
+      nextCursor: null,
+      hasMore: false,
+      rateLimit: null
+    });
+    await Promise.resolve();
+    expect(screen.queryByText("octo/stale")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Load more" })).toBeEnabled();
+  });
 });
+
+function repository(repositoryId: string, fullName: string) {
+  const [namespace, name] = fullName.split("/") as [string, string];
+  return {
+    providerKind: "github" as const,
+    instanceId: account.instanceId,
+    repositoryId,
+    namespace,
+    name,
+    fullName,
+    webUrl: `https://github.com/${fullName}`,
+    httpsUrl: `https://github.com/${fullName}.git`,
+    sshUrl: `git@github.com:${fullName}.git`,
+    defaultBranch: "main",
+    visibility: "public" as const,
+    archived: false,
+    fork: false,
+    permission: "read" as const,
+    updatedAt: "2026-07-19T00:00:00Z"
+  };
+}

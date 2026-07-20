@@ -39,18 +39,23 @@ export function RepositoryBrowser({ api, account }: RepositoryBrowserProps) {
   } | null>(null);
   const generation = useRef(0);
   const initialLoad = useRef(true);
+  const loadMoreController = useRef<AbortController | null>(null);
 
   useEffect(() => {
+    const currentGeneration = ++generation.current;
+    loadMoreController.current?.abort();
+    loadMoreController.current = null;
     void Promise.resolve().then(() => {
       setItems([]);
       setCursor(null);
       setHasMore(false);
       setError(null);
       setRateLimit(null);
+      setLoading(false);
+      setLoadingMore(false);
     });
-    if (account === null) return;
+    if (account === null) return () => undefined;
     const controller = new AbortController();
-    const currentGeneration = ++generation.current;
     const delay = initialLoad.current ? 0 : 120;
     initialLoad.current = false;
     const timer = window.setTimeout(() => {
@@ -76,12 +81,15 @@ export function RepositoryBrowser({ api, account }: RepositoryBrowserProps) {
     return () => {
       window.clearTimeout(timer);
       controller.abort();
+      if (generation.current === currentGeneration) generation.current += 1;
     };
   }, [account, api, query]);
 
   const loadMore = () => {
     if (account === null || cursor === null || loadingMore) return;
+    loadMoreController.current?.abort();
     const controller = new AbortController();
+    loadMoreController.current = controller;
     const currentGeneration = generation.current;
     setLoadingMore(true);
     void api
@@ -99,7 +107,10 @@ export function RepositoryBrowser({ api, account }: RepositoryBrowserProps) {
         }
       })
       .finally(() => {
-        if (currentGeneration === generation.current) setLoadingMore(false);
+        if (currentGeneration === generation.current) {
+          setLoadingMore(false);
+          if (loadMoreController.current === controller) loadMoreController.current = null;
+        }
       });
   };
 
@@ -223,9 +234,7 @@ export function RepositoryBrowser({ api, account }: RepositoryBrowserProps) {
                 {item.archived ? " · archived" : ""}
               </small>
             </span>
-            <a href={item.webUrl} target="_blank" rel="noreferrer">
-              Open
-            </a>
+            <small className="repository-url">{item.webUrl}</small>
           </li>
         ))}
       </ul>

@@ -25,24 +25,51 @@ export function RemoteBindings({ api, instance, account, accounts }: RemoteBindi
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ErrorEnvelope | null>(null);
   const scanGeneration = useRef(0);
+  const bindingGeneration = useRef(0);
+  const scanController = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    if (account === null) {
-      void Promise.resolve().then(() => setBindings([]));
-      return;
-    }
+    const generation = ++bindingGeneration.current;
+    scanGeneration.current += 1;
+    scanController.current?.abort();
+    scanController.current = null;
+    void Promise.resolve().then(() => {
+      setBindings([]);
+      setSuggestions([]);
+      setSelectedCandidates({});
+      setBindingAccounts({});
+      setBusy(false);
+      setError(null);
+    });
+    if (instance === null || account === null || account.instanceId !== instance.id)
+      return () => undefined;
     void api
       .listBindings(account.id)
-      .then((response) => setBindings(response.items))
-      .catch((cause) => setError(normalizeError(cause, "Unable to load remote bindings")));
-  }, [account, api]);
+      .then((response) => {
+        if (generation === bindingGeneration.current) setBindings(response.items);
+      })
+      .catch((cause) => {
+        if (generation === bindingGeneration.current) {
+          setError(normalizeError(cause, "Unable to load remote bindings"));
+        }
+      });
+    return () => {
+      if (bindingGeneration.current === generation) bindingGeneration.current += 1;
+      scanGeneration.current += 1;
+      scanController.current?.abort();
+      scanController.current = null;
+    };
+  }, [account, api, instance]);
 
   const scan = () => {
     if (instance === null || account === null) return;
+    scanController.current?.abort();
     const generation = ++scanGeneration.current;
     const controller = new AbortController();
+    scanController.current = controller;
     setBusy(true);
     setError(null);
+    setSuggestions([]);
     void api
       .matchLocalRemotes({ instanceId: instance.id, accountId: account.id }, controller.signal)
       .then((response) => {
@@ -56,12 +83,16 @@ export function RemoteBindings({ api, instance, account, accounts }: RemoteBindi
           setError(normalizeError(cause, "Unable to match local remotes"));
       })
       .finally(() => {
-        if (generation === scanGeneration.current) setBusy(false);
+        if (generation === scanGeneration.current) {
+          setBusy(false);
+          if (scanController.current === controller) scanController.current = null;
+        }
       });
   };
 
   const bind = async (suggestion: ProviderBindingSuggestion) => {
-    if (instance === null) return;
+    if (instance === null || account === null || !suggestions.includes(suggestion)) return;
+    const generation = scanGeneration.current;
     const providerRepositoryId =
       suggestion.status === "ambiguous"
         ? selectedCandidates[suggestionKey(suggestion)]
@@ -82,7 +113,9 @@ export function RemoteBindings({ api, instance, account, accounts }: RemoteBindi
         accountId: bindingAccounts[suggestionKey(suggestion)] || null,
         providerRepositoryId
       });
-      if (account !== null) setBindings((await api.listBindings(account.id)).items);
+      const response = await api.listBindings(account.id);
+      if (generation !== scanGeneration.current) return;
+      setBindings(response.items);
       setSuggestions((current) =>
         current.map((item) =>
           item.repositoryId === suggestion.repositoryId && item.remoteName === suggestion.remoteName
@@ -91,9 +124,11 @@ export function RemoteBindings({ api, instance, account, accounts }: RemoteBindi
         )
       );
     } catch (cause) {
-      setError(normalizeError(cause, "Unable to bind the local remote"));
+      if (generation === scanGeneration.current) {
+        setError(normalizeError(cause, "Unable to bind the local remote"));
+      }
     } finally {
-      setBusy(false);
+      if (generation === scanGeneration.current) setBusy(false);
     }
   };
 
@@ -201,14 +236,19 @@ export function RemoteBindings({ api, instance, account, accounts }: RemoteBindi
               disabled={busy}
               onClick={() =>
                 void (async () => {
+                  const generation = bindingGeneration.current;
                   setBusy(true);
                   try {
                     await api.unbindRemote(binding.repositoryId, binding.remoteName);
-                    setBindings((current) => current.filter((item) => item !== binding));
+                    if (generation === bindingGeneration.current) {
+                      setBindings((current) => current.filter((item) => item !== binding));
+                    }
                   } catch (cause) {
-                    setError(normalizeError(cause, "Unable to remove the remote binding"));
+                    if (generation === bindingGeneration.current) {
+                      setError(normalizeError(cause, "Unable to remove the remote binding"));
+                    }
                   } finally {
-                    setBusy(false);
+                    if (generation === bindingGeneration.current) setBusy(false);
                   }
                 })()
               }

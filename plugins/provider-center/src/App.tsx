@@ -1,5 +1,5 @@
 import type { ProviderAccountSummary, ProviderInstance } from "@git-ramus/contracts";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ProviderCenterApi } from "./api";
 import { normalizeError } from "./api";
 import { AccountPanel } from "./components/AccountPanel";
@@ -18,21 +18,34 @@ export function App({ api, route }: AppProps) {
   const [selectedInstanceId, setSelectedInstanceId] = useState<string | null>(null);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
   const [error, setError] = useState<ReturnType<typeof normalizeError> | null>(null);
+  const instancesGeneration = useRef(0);
+  const accountsGeneration = useRef(0);
+  const selectedInstanceIdRef = useRef<string | null>(null);
 
   const refreshInstances = useCallback(
     async (preferredInstanceId?: string) => {
+      const generation = ++instancesGeneration.current;
       try {
         const response = await api.listInstances();
+        if (generation !== instancesGeneration.current) return;
         setInstances(response.items);
-        setSelectedInstanceId((current) => {
-          const preferred = preferredInstanceId ?? current;
-          if (preferred !== null && response.items.some(({ id }) => id === preferred))
-            return preferred;
-          return response.items[0]?.id ?? null;
-        });
+        const preferred = preferredInstanceId ?? selectedInstanceIdRef.current;
+        const nextInstanceId =
+          preferred !== null && response.items.some(({ id }) => id === preferred)
+            ? preferred
+            : (response.items[0]?.id ?? null);
+        if (nextInstanceId !== selectedInstanceIdRef.current) {
+          selectedInstanceIdRef.current = nextInstanceId;
+          accountsGeneration.current += 1;
+          setAccounts([]);
+          setSelectedAccountId(null);
+        }
+        setSelectedInstanceId(nextInstanceId);
         setError(null);
       } catch (cause) {
-        setError(normalizeError(cause, "Unable to load Provider instances"));
+        if (generation === instancesGeneration.current) {
+          setError(normalizeError(cause, "Unable to load Provider instances"));
+        }
       }
     },
     [api]
@@ -41,6 +54,9 @@ export function App({ api, route }: AppProps) {
   useEffect(() => {
     if (route !== "/" && route !== "/providers") return;
     void Promise.resolve().then(() => refreshInstances());
+    return () => {
+      instancesGeneration.current += 1;
+    };
   }, [refreshInstances, route]);
 
   const selectedInstance = useMemo(
@@ -48,30 +64,56 @@ export function App({ api, route }: AppProps) {
     [instances, selectedInstanceId]
   );
 
-  const refreshAccounts = useCallback(async () => {
-    if (selectedInstance === null) {
-      setAccounts([]);
-      setSelectedAccountId(null);
-      return;
-    }
-    try {
-      const response = await api.listAccounts(selectedInstance.id);
-      setAccounts(response.items);
-      setSelectedAccountId((current) => {
-        if (current !== null && response.items.some(({ id }) => id === current)) return current;
-        return (
-          response.items.find(({ isDefault }) => isDefault)?.id ?? response.items[0]?.id ?? null
-        );
-      });
-      setError(null);
-    } catch (cause) {
-      setError(normalizeError(cause, "Unable to load Provider accounts"));
-    }
-  }, [api, selectedInstance]);
+  const refreshAccounts = useCallback(
+    async (expectedInstanceId: string | null) => {
+      if (expectedInstanceId !== selectedInstanceIdRef.current) return;
+      const generation = ++accountsGeneration.current;
+      if (expectedInstanceId === null) {
+        setAccounts([]);
+        setSelectedAccountId(null);
+        return;
+      }
+      try {
+        const response = await api.listAccounts(expectedInstanceId);
+        if (
+          generation !== accountsGeneration.current ||
+          expectedInstanceId !== selectedInstanceIdRef.current
+        )
+          return;
+        setAccounts(response.items);
+        setSelectedAccountId((current) => {
+          if (current !== null && response.items.some(({ id }) => id === current)) return current;
+          return (
+            response.items.find(({ isDefault }) => isDefault)?.id ?? response.items[0]?.id ?? null
+          );
+        });
+        setError(null);
+      } catch (cause) {
+        if (
+          generation === accountsGeneration.current &&
+          expectedInstanceId === selectedInstanceIdRef.current
+        ) {
+          setError(normalizeError(cause, "Unable to load Provider accounts"));
+        }
+      }
+    },
+    [api]
+  );
 
   useEffect(() => {
-    void Promise.resolve().then(() => refreshAccounts());
-  }, [refreshAccounts]);
+    void Promise.resolve().then(() => refreshAccounts(selectedInstanceId));
+    return () => {
+      accountsGeneration.current += 1;
+    };
+  }, [refreshAccounts, selectedInstanceId]);
+
+  const selectInstance = (instanceId: string) => {
+    selectedInstanceIdRef.current = instanceId;
+    accountsGeneration.current += 1;
+    setAccounts([]);
+    setSelectedAccountId(null);
+    setSelectedInstanceId(instanceId);
+  };
 
   if (route !== "/" && route !== "/providers") {
     return (
@@ -107,15 +149,20 @@ export function App({ api, route }: AppProps) {
           api={api}
           instances={instances}
           selectedInstanceId={selectedInstanceId}
-          onSelect={(id) => setSelectedInstanceId(id)}
+          onSelect={selectInstance}
           onRefresh={refreshInstances}
         />
         <AccountPanel
+          key={selectedInstance?.id ?? "no-provider-instance"}
           api={api}
           instance={selectedInstance}
           accounts={accounts}
           selectedAccountId={selectedAccountId}
-          onSelect={setSelectedAccountId}
+          onSelect={(accountId) => {
+            if (selectedInstance?.id === selectedInstanceIdRef.current) {
+              setSelectedAccountId(accountId);
+            }
+          }}
           onRefresh={refreshAccounts}
         />
         <RepositoryBrowser api={api} account={selectedAccount} />
