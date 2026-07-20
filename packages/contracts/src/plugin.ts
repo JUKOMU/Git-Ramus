@@ -1,6 +1,9 @@
 import { z } from "zod";
 import { providerContributionSchema } from "./provider";
 
+export const authorizationDecisionSchema = z.object({ allowed: z.boolean() }).strict();
+export type AuthorizationDecision = z.infer<typeof authorizationDecisionSchema>;
+
 const unsafeManifestText = /[<>;{}]|url\s*\(|@import|javascript\s*:|expression\s*\(/iu;
 const safeManifestText = (maximum: number) =>
   z

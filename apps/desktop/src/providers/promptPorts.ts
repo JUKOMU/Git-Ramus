@@ -44,10 +44,19 @@ export const nativeCertificateFileSelectionPort: HostFileSelectionPort = {
       ]
     });
     if (selected === null) return null;
-    if (Array.isArray(selected) || selected.length === 0) {
+    if (
+      Array.isArray(selected) ||
+      typeof selected !== "string" ||
+      selected.trim().length === 0 ||
+      Array.from(selected).some((character) => {
+        const code = character.charCodeAt(0);
+        return code < 0x20 || code === 0x7f;
+      }) ||
+      !/^(?:[A-Za-z]:[\\/]|\\\\|\/)/u.test(selected.trim())
+    ) {
       throw new Error("Native certificate selection returned an invalid path");
     }
-    return selected;
+    return selected.trim();
   }
 };
 

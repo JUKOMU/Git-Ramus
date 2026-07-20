@@ -1,5 +1,6 @@
 import {
   changesResultSchema,
+  authorizationDecisionSchema,
   diffResultSchema,
   effectiveIdentitySchema,
   gitContextRequestSchema,
@@ -34,6 +35,7 @@ import {
   providerInstanceUpdateRequestSchema,
   providerLocalRemoteMatchRequestSchema,
   providerOperationCancelRequestSchema,
+  providerReadAccessRevokeRequestSchema,
   providerRepositoryListRequestSchema,
   providerRepositoryPageSchema,
   projectListResponseSchema,
@@ -91,6 +93,7 @@ import type {
   ProviderAccountSetDefaultRequest,
   ProviderAccountSummary,
   ProviderAccountValidateRequest,
+  ProviderAuthorizedAccount,
   ProviderAuthorizedAccountListResponse,
   ProviderBinding,
   ProviderBindingDeleteRequest,
@@ -105,6 +108,7 @@ import type {
   ProviderInstanceUpdateRequest,
   ProviderLocalRemoteMatchRequest,
   ProviderOperationCancelRequest,
+  ProviderReadAccessRevokeRequest,
   ProviderRepositoryListRequest,
   ProviderRepositoryPage,
   RepositoryCommitRequest,
@@ -131,11 +135,9 @@ import type {
 } from "@git-ramus/contracts";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { providerPromptBrokerPort } from "../providers/promptBroker";
 import type { HostFileSelectionPort, ProviderPromptPort } from "../providers/promptPorts";
-import {
-  nativeCertificateFileSelectionPort,
-  unavailableProviderPromptPort
-} from "../providers/promptPorts";
+import { nativeCertificateFileSelectionPort } from "../providers/promptPorts";
 
 export interface AppInfo {
   name: string;
@@ -217,7 +219,7 @@ export interface HostApi {
   ): Promise<ProviderAuthorizedAccountListResponse | null>;
   revokeProviderReadAccess(
     pluginId: string,
-    request: ProviderAccountValidateRequest
+    request: ProviderReadAccessRevokeRequest
   ): Promise<void>;
   listProviderRepositories(
     pluginId: string,
@@ -238,6 +240,8 @@ export function createTauriHostApi(dependencies: {
   files: HostFileSelectionPort;
 }): HostApi {
   const { prompts, files } = dependencies;
+  const instanceCache = new Map<string, ProviderInstance>();
+  const accountCache = new Map<string, ProviderAccountSummary>();
   return {
     getAppInfo: () => invoke<AppInfo>("get_app_info"),
     listPlugins: () => invoke<PluginDescriptor[]>("list_plugins"),
@@ -247,9 +251,13 @@ export function createTauriHostApi(dependencies: {
     activateTheme: (request) =>
       invokeRequest("activate_theme", themeActivateRequestSchema, themeStateSchema, request),
     authorizePluginCall: (request) =>
-      invoke<AuthorizationDecision>("authorize_plugin_call", { request }),
+      invoke<unknown>("authorize_plugin_call", { request }).then((value) =>
+        authorizationDecisionSchema.parse(value)
+      ),
     authorizePluginPermissionRequest: (request) =>
-      invoke<AuthorizationDecision>("provider_permission_is_declared", { request }),
+      invoke<unknown>("provider_permission_is_declared", { request }).then((value) =>
+        authorizationDecisionSchema.parse(value)
+      ),
     startEchoJob: (pluginId, message) =>
       invoke<Job>("start_echo_job", { request: { pluginId, message } }),
     cancelJob: (jobId) => invoke<void>("cancel_job", { jobId }),
@@ -388,7 +396,12 @@ export function createTauriHostApi(dependencies: {
         request
       ),
     listProviderInstances: () =>
-      invokeParsed("provider_instance_list", providerInstanceListResponseSchema),
+      invokeParsed("provider_instance_list", providerInstanceListResponseSchema).then(
+        (response) => {
+          for (const instance of response.items) instanceCache.set(instance.id, instance);
+          return response;
+        }
+      ),
     createProviderInstance: async (request) => {
       const parsed = providerInstanceCreateRequestSchema.parse(request);
       let customCaPath: string | null = null;
@@ -396,7 +409,7 @@ export function createTauriHostApi(dependencies: {
         customCaPath = await files.selectCertificate();
         if (customCaPath === null) return null;
       }
-      return providerInstanceSchema.parse(
+      const instance = providerInstanceSchema.parse(
         await invoke<unknown>("provider_instance_create", {
           request: {
             providerKind: parsed.providerKind,
@@ -406,6 +419,8 @@ export function createTauriHostApi(dependencies: {
           }
         })
       );
+      instanceCache.set(instance.id, instance);
+      return instance;
     },
     updateProviderInstance: async (request) => {
       const parsed = providerInstanceUpdateRequestSchema.parse(request);
@@ -417,7 +432,7 @@ export function createTauriHostApi(dependencies: {
       } else {
         customCa = { kind: parsed.customCaAction };
       }
-      return providerInstanceSchema.parse(
+      const instance = providerInstanceSchema.parse(
         await invoke<unknown>("provider_instance_update", {
           request: {
             instanceId: parsed.instanceId,
@@ -427,6 +442,8 @@ export function createTauriHostApi(dependencies: {
           }
         })
       );
+      instanceCache.set(instance.id, instance);
+      return instance;
     },
     validateProviderInstance: (request) =>
       invokeRequest(
@@ -434,7 +451,10 @@ export function createTauriHostApi(dependencies: {
         providerInstanceRequestSchema,
         providerInstanceSchema,
         request
-      ),
+      ).then((instance) => {
+        instanceCache.set(instance.id, instance);
+        return instance;
+      }),
     deleteProviderInstance: (request) =>
       invokeVoidRequest("provider_instance_delete", providerInstanceRequestSchema, request),
     listProviderAccounts: (request) =>
@@ -443,41 +463,52 @@ export function createTauriHostApi(dependencies: {
         providerAccountListRequestSchema,
         providerAccountListResponseSchema,
         request
-      ),
+      ).then((response) => {
+        for (const account of response.items) accountCache.set(account.id, account);
+        return response;
+      }),
     connectProviderAccount: async (_pluginId, request) => {
       const parsed = providerAccountConnectRequestSchema.parse(request);
       let pat = await prompts.requestCredential({
-        providerLabel: "Provider",
+        providerLabel: instanceCache.get(parsed.instanceId)?.displayName ?? "Provider",
         accountLabel: null,
         purpose: "connect"
       });
       if (pat === null) return null;
       try {
-        return providerAccountSummarySchema.parse(
+        const account = providerAccountSummarySchema.parse(
           await invoke<unknown>("provider_account_connect", {
             request: { instanceId: parsed.instanceId, pat }
           })
         );
+        accountCache.set(account.id, account);
+        return account;
       } finally {
         pat = "";
+        void pat;
       }
     },
     rotateProviderAccount: async (_pluginId, request) => {
       const parsed = providerAccountRotateRequestSchema.parse(request);
+      const accountContext = accountCache.get(parsed.accountId);
       let pat = await prompts.requestCredential({
-        providerLabel: "Provider",
-        accountLabel: null,
+        providerLabel:
+          instanceCache.get(accountContext?.instanceId ?? "")?.displayName ?? "Provider",
+        accountLabel: accountContext?.displayName ?? accountContext?.username ?? null,
         purpose: "rotate"
       });
       if (pat === null) return null;
       try {
-        return providerAccountSummarySchema.parse(
+        const account = providerAccountSummarySchema.parse(
           await invoke<unknown>("provider_account_rotate", {
             request: { accountId: parsed.accountId, pat }
           })
         );
+        accountCache.set(account.id, account);
+        return account;
       } finally {
         pat = "";
+        void pat;
       }
     },
     validateProviderAccount: (request) =>
@@ -523,21 +554,38 @@ export function createTauriHostApi(dependencies: {
           })
         )
       ).flat();
-      const selected = await prompts.requestAccountAccess({ pluginId, accounts });
-      if (selected === null) return null;
       const candidateIds = new Set(accounts.map(({ account }) => account.id));
+      const promptAccounts = deepFreeze(
+        accounts.map(({ instance, account }) => ({
+          instance: { ...instance },
+          account: { ...account }
+        }))
+      ) as unknown as ProviderAuthorizedAccount[];
+      const selected = await prompts.requestAccountAccess({
+        pluginId,
+        accounts: promptAccounts
+      });
+      if (selected === null) return null;
       const accountIds = [...new Set(selected)];
       if (accountIds.length === 0 || accountIds.some((accountId) => !candidateIds.has(accountId))) {
         throw new Error("Provider access prompt returned an invalid account selection");
       }
-      return providerAuthorizedAccountListResponseSchema.parse(
+      const granted = providerAuthorizedAccountListResponseSchema.parse(
         await invoke<unknown>("provider_permission_grant_accounts", {
           request: { pluginId, accountIds }
         })
       );
+      const grantedIds = granted.items.map(({ account }) => account.id).sort();
+      if (
+        grantedIds.length !== accountIds.length ||
+        grantedIds.join("\u0000") !== [...accountIds].sort().join("\u0000")
+      ) {
+        throw new Error("Provider access grant response did not match the selection");
+      }
+      return granted;
     },
     revokeProviderReadAccess: (pluginId, request) => {
-      const parsed = providerAccountValidateRequestSchema.parse(request);
+      const parsed = providerReadAccessRevokeRequestSchema.parse(request);
       return invoke<void>("provider_permission_revoke_account", {
         request: { pluginId, accountId: parsed.accountId }
       });
@@ -580,7 +628,7 @@ export function createTauriHostApi(dependencies: {
 }
 
 export const tauriHostApi: HostApi = createTauriHostApi({
-  prompts: unavailableProviderPromptPort,
+  prompts: providerPromptBrokerPort,
   files: nativeCertificateFileSelectionPort
 });
 
@@ -590,6 +638,13 @@ interface RuntimeSchema<T> {
 
 async function invokeParsed<T>(command: string, responseSchema: RuntimeSchema<T>): Promise<T> {
   return responseSchema.parse(await invoke<unknown>(command));
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value === null || typeof value !== "object" || Object.isFrozen(value)) return value;
+  Object.freeze(value);
+  for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
+  return value;
 }
 
 async function invokeRequest<TRequest, TResponse>(

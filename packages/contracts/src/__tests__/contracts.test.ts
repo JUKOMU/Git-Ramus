@@ -329,6 +329,22 @@ describe("shared contracts", () => {
       })
     ).toThrow();
     expect(() =>
+      providerInstanceCreateRequestSchema.parse({
+        providerKind: "github",
+        displayName: "GitHub",
+        baseUrl: "https://github.com",
+        customCaAction: "selectFile"
+      })
+    ).toThrow();
+    expect(() =>
+      providerInstanceUpdateRequestSchema.parse({
+        instanceId,
+        displayName: "GitHub",
+        baseUrl: "https://github.com",
+        customCaAction: "selectFile"
+      })
+    ).toThrow();
+    expect(() =>
       providerAccountConnectRequestSchema.parse({ instanceId, pat: "must-not-cross" })
     ).toThrow();
 
@@ -370,6 +386,12 @@ describe("shared contracts", () => {
         accountId: null,
         providerRepositoryId: "42",
         rootPath: "C:/must-not-cross"
+      })
+    ).toThrow();
+
+    expect(() =>
+      providerBindingListRequestSchema.parse({
+        accountId: accountId.toUpperCase()
       })
     ).toThrow();
   });

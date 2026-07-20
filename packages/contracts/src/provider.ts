@@ -1,6 +1,14 @@
 import { z } from "zod";
 
-const uuid = z.string().uuid();
+const uuid = z
+  .string()
+  .uuid()
+  .refine(
+    (value) =>
+      value === value.toLowerCase() &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(value),
+    "UUID must use canonical lowercase hyphenated form"
+  );
 const nullableUuid = uuid.nullable();
 const timestamp = z.string().datetime({ offset: true });
 const nonnegativeInteger = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
@@ -130,7 +138,11 @@ export const providerInstanceCreateRequestSchema = z
     baseUrl: httpsUrl,
     customCaAction: z.enum(["none", "selectFile"])
   })
-  .strict();
+  .strict()
+  .refine(
+    (value) => value.providerKind === "gitlab" || value.customCaAction === "none",
+    "GitHub does not support custom CA files"
+  );
 
 export const providerInstanceUpdateRequestSchema = z
   .object({
@@ -139,7 +151,13 @@ export const providerInstanceUpdateRequestSchema = z
     baseUrl: httpsUrl,
     customCaAction: z.enum(["keep", "remove", "selectFile"])
   })
-  .strict();
+  .strict()
+  .refine(
+    (value) =>
+      value.customCaAction !== "selectFile" ||
+      !/^https:\/\/github\.com(?:\/|$)/u.test(value.baseUrl),
+    "GitHub does not support custom CA files"
+  );
 
 export const providerInstanceRequestSchema = z.object({ instanceId: uuid }).strict();
 export const providerInstanceListRequestSchema = z.object({}).strict();
@@ -333,6 +351,7 @@ export type ProviderAuthorizedAccount = z.infer<typeof providerAuthorizedAccount
 export type ProviderAuthorizedAccountListResponse = z.infer<
   typeof providerAuthorizedAccountListResponseSchema
 >;
+export type ProviderReadAccessRevokeRequest = z.infer<typeof providerReadAccessRevokeRequestSchema>;
 export type ProviderLocalRemoteMatchRequest = z.infer<typeof providerLocalRemoteMatchRequestSchema>;
 export type ProviderBindingListRequest = z.infer<typeof providerBindingListRequestSchema>;
 export type ProviderBindingListResponse = z.infer<typeof providerBindingListResponseSchema>;

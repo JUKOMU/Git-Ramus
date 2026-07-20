@@ -660,20 +660,23 @@ describe("Provider RPC routes", () => {
     expect(hostApi.requestProviderReadAccess).not.toHaveBeenCalled();
   });
 
-  it("rejects malformed Provider UUIDs before any authorization call", async () => {
-    await expect(
-      dispatchPluginRpc(
-        pluginId,
-        request("providers.cancelOperation", {
-          accountId: "not-a-uuid",
-          operationId: providerOperationId
-        }),
-        hostApi
-      )
-    ).rejects.toMatchObject({ code: "rpc.invalid-params" });
-    expect(hostApi.authorizePluginCall).not.toHaveBeenCalled();
-    expect(hostApi.cancelProviderOperation).not.toHaveBeenCalled();
-  });
+  it.each(["not-a-uuid", providerAccountId.toUpperCase()])(
+    "rejects malformed or non-canonical Provider UUID %s before authorization",
+    async (accountId) => {
+      await expect(
+        dispatchPluginRpc(
+          pluginId,
+          request("providers.cancelOperation", {
+            accountId,
+            operationId: providerOperationId
+          }),
+          hostApi
+        )
+      ).rejects.toMatchObject({ code: "rpc.invalid-params" });
+      expect(hostApi.authorizePluginCall).not.toHaveBeenCalled();
+      expect(hostApi.cancelProviderOperation).not.toHaveBeenCalled();
+    }
+  );
 
   it("requires Provider management and repository read grants before binding", async () => {
     const params = {

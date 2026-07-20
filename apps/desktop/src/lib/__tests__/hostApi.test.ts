@@ -224,13 +224,14 @@ describe("trusted Provider Host API", () => {
   it("adds a PAT only after the plugin request crosses into the trusted host", async () => {
     const api = createTauriHostApi({ prompts, files });
     const request = { instanceId: providerInstanceId };
+    await api.listProviderInstances();
 
     await expect(api.connectProviderAccount("git-ramus.provider-center", request)).resolves.toEqual(
       providerContracts.authorizedAccount.account
     );
 
     expect(prompts.requestCredential).toHaveBeenCalledWith({
-      providerLabel: "Provider",
+      providerLabel: "GitLab Example",
       accountLabel: null,
       purpose: "connect"
     });
@@ -250,6 +251,27 @@ describe("trusted Provider Host API", () => {
       })
     ).resolves.toBeNull();
     expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("strictly validates both granted and declared authorization decisions", async () => {
+    const api = createTauriHostApi({ prompts, files });
+    invoke.mockResolvedValueOnce({ allowed: "yes" });
+    await expect(
+      api.authorizePluginCall({
+        pluginId: "example.reader",
+        capability: "providers:read",
+        resource: "providers"
+      })
+    ).rejects.toThrow();
+
+    invoke.mockResolvedValueOnce({ allowed: true, unexpected: true });
+    await expect(
+      api.authorizePluginPermissionRequest({
+        pluginId: "example.reader",
+        capability: "providers:read",
+        resource: "providers"
+      })
+    ).rejects.toThrow();
   });
 
   it("keeps certificate paths in the trusted host-only command payload", async () => {
@@ -273,6 +295,20 @@ describe("trusted Provider Host API", () => {
     });
     expect(JSON.stringify(request)).not.toContain("C:/ca/root.pem");
     expect(JSON.stringify(providerContracts.instance)).not.toContain("customCaPath");
+  });
+
+  it("rejects GitHub custom-CA selection before opening the native picker", async () => {
+    const api = createTauriHostApi({ prompts, files });
+    await expect(
+      api.createProviderInstance({
+        providerKind: "github",
+        displayName: "GitHub",
+        baseUrl: "https://github.com",
+        customCaAction: "selectFile"
+      })
+    ).rejects.toThrow();
+    expect(files.selectCertificate).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it("uses exact scoped Provider commands and injects plugin identity in trusted code", async () => {
@@ -380,6 +416,20 @@ describe("trusted Provider Host API", () => {
     );
   });
 
+  it("snapshots and freezes account candidates before awaiting the access prompt", async () => {
+    const api = createTauriHostApi({ prompts, files });
+    const unexpectedId = "fd52be07-485e-44ae-b57d-0fa69d83772f";
+    vi.mocked(prompts.requestAccountAccess).mockImplementation(async ({ accounts }) => {
+      accounts[0]!.account.id = unexpectedId;
+      return [unexpectedId];
+    });
+
+    await expect(api.requestProviderReadAccess("example.reader")).rejects.toThrow();
+    expect(invoke.mock.calls.map(([command]) => command)).not.toContain(
+      "provider_permission_grant_accounts"
+    );
+  });
+
   it("maps every remaining Provider operation to its explicit typed Rust command", async () => {
     const api = createTauriHostApi({ prompts, files });
     const instanceRequest = { instanceId: providerInstanceId };
@@ -476,6 +526,14 @@ describe("trusted Provider native ports", () => {
       "invalid path"
     );
     open.mockResolvedValueOnce("");
+    await expect(nativeCertificateFileSelectionPort.selectCertificate()).rejects.toThrow(
+      "invalid path"
+    );
+    open.mockResolvedValueOnce("   ");
+    await expect(nativeCertificateFileSelectionPort.selectCertificate()).rejects.toThrow(
+      "invalid path"
+    );
+    open.mockResolvedValueOnce("root.pem");
     await expect(nativeCertificateFileSelectionPort.selectCertificate()).rejects.toThrow(
       "invalid path"
     );
