@@ -4,7 +4,18 @@ import gitClientManifest from "../../../../plugins/git-client/plugin.json";
 import compactManifest from "../../../../plugins/builtin-compact-theme/plugin.json";
 import compactTheme from "../../../../plugins/builtin-compact-theme/theme.json";
 import providerContracts from "../__fixtures__/provider-contracts.json";
+import transportContracts from "../__fixtures__/transport-contracts.json";
 import type { PersistedRepositorySnapshot, RepositorySnapshot } from "../index";
+import {
+  cloneRequestSchema,
+  cloneResultSchema,
+  cloneIntentSummarySchema,
+  repositoryNetworkStateSchema,
+  repositoryTransportBindingSchema,
+  repositoryFetchRequestSchema,
+  repositoryPushRequestSchema,
+  transportProfileSummarySchema
+} from "../transport";
 import {
   errorEnvelopeSchema,
   hostInitSchema,
@@ -1000,5 +1011,131 @@ describe("shared contracts", () => {
         details: null
       }).code
     ).toBe("permission.denied");
+  });
+
+  it("accepts secret-free SSH and HTTPS transport profile summaries", () => {
+    expect(
+      transportProfileSummarySchema.parse({
+        id: "0f0df6b1-9c42-499d-a76a-e4810fa19ace",
+        displayName: "Work SSH",
+        kind: "ssh",
+        sshKeyFileName: "id_ed25519",
+        httpsUsername: null,
+        available: true,
+        boundRepositoryCount: 2
+      }).sshKeyFileName
+    ).toBe("id_ed25519");
+    expect(
+      transportProfileSummarySchema.parse({
+        id: "0f0df6b1-9c42-499d-a76a-e4810fa19ace",
+        displayName: "Work HTTPS",
+        kind: "https",
+        sshKeyFileName: null,
+        httpsUsername: "creator",
+        available: true,
+        boundRepositoryCount: 0
+      }).httpsUsername
+    ).toBe("creator");
+    expect(() =>
+      transportProfileSummarySchema.parse({
+        id: "0f0df6b1-9c42-499d-a76a-e4810fa19ace",
+        displayName: "Leaky",
+        kind: "ssh",
+        sshKeyFileName: "id_ed25519",
+        httpsUsername: null,
+        available: true,
+        boundRepositoryCount: 0,
+        sshKeyPath: "C:/Users/private/.ssh/id_ed25519"
+      })
+    ).toThrow();
+  });
+
+  it("keeps local paths, credentials, environment, and refspecs out of plugin requests", () => {
+    const base = {
+      repositoryId: "0f0df6b1-9c42-499d-a76a-e4810fa19ace",
+      projectId: "3b84198e-bb1a-4f0d-875f-d82f0c18c630",
+      workspaceId: null,
+      operationId: "b95c216a-dac4-45d1-8169-8dbfbc0c0315"
+    };
+    expect(() =>
+      repositoryFetchRequestSchema.parse({ ...base, remoteName: "origin", pat: "x" })
+    ).toThrow();
+    expect(() =>
+      repositoryFetchRequestSchema.parse({ ...base, remoteName: "--upload-pack=evil" })
+    ).toThrow();
+    expect(() =>
+      repositoryPushRequestSchema.parse({ ...base, target: null, refspec: "+main:main" })
+    ).toThrow();
+    expect(() =>
+      cloneRequestSchema.parse({
+        source: { kind: "manual", remoteUrl: "https://example.test/acme/repo.git" },
+        transportKind: "https",
+        profileId: null,
+        folderName: "repo",
+        projectTarget: { kind: "new", name: "Repo" },
+        operationId: base.operationId,
+        destinationParent: "C:/Users/private"
+      })
+    ).toThrow();
+  });
+
+  it("requires exactly one safe Clone source", () => {
+    expect(
+      cloneRequestSchema.parse({
+        source: { kind: "intent", intentId: "90e1e991-f93e-4e78-817e-d0ceeb06a749" },
+        transportKind: "ssh",
+        profileId: "0f0df6b1-9c42-499d-a76a-e4810fa19ace",
+        folderName: "repository",
+        projectTarget: {
+          kind: "existing",
+          projectId: "3b84198e-bb1a-4f0d-875f-d82f0c18c630"
+        },
+        operationId: "b95c216a-dac4-45d1-8169-8dbfbc0c0315"
+      }).source.kind
+    ).toBe("intent");
+    expect(() =>
+      cloneRequestSchema.parse({
+        source: {
+          kind: "manual",
+          remoteUrl: "https://example.test/acme/repo.git",
+          intentId: "90e1e991-f93e-4e78-817e-d0ceeb06a749"
+        },
+        transportKind: "https",
+        profileId: null,
+        folderName: "repository",
+        projectTarget: { kind: "new", name: "Repo" },
+        operationId: "b95c216a-dac4-45d1-8169-8dbfbc0c0315"
+      })
+    ).toThrow();
+  });
+
+  it("round-trips the secret-free transport fixture through every public schema", () => {
+    expect(transportProfileSummarySchema.parse(transportContracts.sshProfile).kind).toBe("ssh");
+    expect(transportProfileSummarySchema.parse(transportContracts.httpsProfile).kind).toBe("https");
+    expect(repositoryTransportBindingSchema.parse(transportContracts.binding).driftStatus).toBe(
+      "clean"
+    );
+    expect(cloneIntentSummarySchema.parse(transportContracts.intent).repository.fullName).toBe(
+      "skills/private-skill"
+    );
+    expect(repositoryNetworkStateSchema.parse(transportContracts.networkState).branch).toBe("main");
+    expect(cloneResultSchema.parse(transportContracts.cloneResult).status).toBe("completed");
+    expect(errorEnvelopeSchema.parse(transportContracts.nonFastForwardError).code).toBe(
+      "git.transport.non-fast-forward"
+    );
+
+    const serialized = JSON.stringify(transportContracts);
+    for (const forbidden of [
+      "pat",
+      "secret",
+      "password",
+      "privateKey",
+      "sshKeyPath",
+      "C:\\\\",
+      "/home/",
+      "/Users/"
+    ]) {
+      expect(serialized).not.toContain(forbidden);
+    }
   });
 });

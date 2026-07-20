@@ -5,3 +5,4 @@ export * from "./plugin";
 export * from "./rpc";
 export * from "./theme";
 export * from "./git";
+export * from "./transport";

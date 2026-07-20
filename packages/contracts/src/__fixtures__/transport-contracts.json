@@ -1,0 +1,139 @@
+{
+  "sshProfile": {
+    "id": "0f0df6b1-9c42-499d-a76a-e4810fa19ace",
+    "displayName": "Work SSH",
+    "kind": "ssh",
+    "sshKeyFileName": "id_ed25519",
+    "httpsUsername": null,
+    "available": true,
+    "boundRepositoryCount": 1
+  },
+  "httpsProfile": {
+    "id": "18815f0d-266f-4195-a299-28a321cb3b7e",
+    "displayName": "Work HTTPS",
+    "kind": "https",
+    "sshKeyFileName": null,
+    "httpsUsername": "creator",
+    "available": true,
+    "boundRepositoryCount": 0
+  },
+  "binding": {
+    "repositoryId": "0f85befd-5246-4a3e-9db0-7807e3df97a4",
+    "transportProfileId": "0f0df6b1-9c42-499d-a76a-e4810fa19ace",
+    "driftStatus": "clean",
+    "boundAt": "2026-07-20T00:00:00Z",
+    "updatedAt": "2026-07-20T00:00:00Z"
+  },
+  "intent": {
+    "id": "90e1e991-f93e-4e78-817e-d0ceeb06a749",
+    "repository": {
+      "providerKind": "gitlab",
+      "instanceId": "38a42902-7afb-48f6-b57f-2a90ba5fa023",
+      "repositoryId": "4242",
+      "namespace": "skills",
+      "name": "private-skill",
+      "fullName": "skills/private-skill",
+      "webUrl": "https://gitlab.example.test/skills/private-skill",
+      "httpsUrl": "https://gitlab.example.test/skills/private-skill.git",
+      "sshUrl": "git@gitlab.example.test:skills/private-skill.git",
+      "defaultBranch": "main",
+      "visibility": "private",
+      "archived": false,
+      "fork": false,
+      "permission": "write",
+      "updatedAt": "2026-07-20T00:00:00Z"
+    },
+    "availableTransports": ["https", "ssh"],
+    "createdAt": "2026-07-20T00:00:00Z",
+    "expiresAt": "2026-07-20T00:10:00Z"
+  },
+  "networkState": {
+    "repositoryId": "0f85befd-5246-4a3e-9db0-7807e3df97a4",
+    "branch": "main",
+    "detached": false,
+    "upstream": {
+      "remoteName": "origin",
+      "branchName": "main"
+    },
+    "remotes": [
+      {
+        "name": "origin",
+        "fetchUrl": "https://gitlab.example.test/skills/private-skill.git",
+        "pushUrl": "https://gitlab.example.test/skills/private-skill.git",
+        "kind": "https"
+      }
+    ],
+    "ahead": 0,
+    "behind": 0,
+    "conflictedCount": 0,
+    "inProgress": null
+  },
+  "cloneResult": {
+    "operationId": "b95c216a-dac4-45d1-8169-8dbfbc0c0315",
+    "intentId": "90e1e991-f93e-4e78-817e-d0ceeb06a749",
+    "status": "completed",
+    "job": {
+      "id": "b95c216a-dac4-45d1-8169-8dbfbc0c0315",
+      "kind": "git.transport.clone",
+      "title": "Clone repository",
+      "status": "succeeded",
+      "progress": 1,
+      "cancelRequested": false,
+      "createdAt": "2026-07-20T00:00:00Z",
+      "updatedAt": "2026-07-20T00:01:00Z",
+      "error": null
+    },
+    "project": {
+      "id": "3b84198e-bb1a-4f0d-875f-d82f0c18c630",
+      "name": "Skills",
+      "scanDepth": 3,
+      "excludePatterns": [],
+      "createdAt": "2026-07-20T00:00:00Z",
+      "updatedAt": "2026-07-20T00:01:00Z"
+    },
+    "repository": {
+      "id": "0f85befd-5246-4a3e-9db0-7807e3df97a4",
+      "displayName": "private-skill",
+      "kind": "normal",
+      "createdAt": "2026-07-20T00:01:00Z",
+      "updatedAt": "2026-07-20T00:01:00Z"
+    },
+    "snapshot": {
+      "id": "7b09f388-d05c-4dc2-b4ad-a25633caf61f",
+      "repositoryId": "0f85befd-5246-4a3e-9db0-7807e3df97a4",
+      "capturedAt": "2026-07-20T00:01:00Z",
+      "headOid": "1234567890abcdef1234567890abcdef12345678",
+      "branch": "main",
+      "upstream": "origin/main",
+      "ahead": 0,
+      "behind": 0,
+      "dirty": false,
+      "stagedCount": 0,
+      "unstagedCount": 0,
+      "untrackedCount": 0,
+      "conflictedCount": 0,
+      "refreshErrorSummary": null
+    }
+  },
+  "nonFastForwardError": {
+    "code": "git.transport.non-fast-forward",
+    "category": "userActionRequired",
+    "message": "Remote history requires integration",
+    "operationId": "b95c216a-dac4-45d1-8169-8dbfbc0c0315",
+    "pluginId": "git-ramus.git-client",
+    "resourceId": "repository/0f85befd-5246-4a3e-9db0-7807e3df97a4",
+    "failedStep": "transferring",
+    "retryable": false,
+    "retryAfterMs": null,
+    "recoveryActions": [
+      {
+        "id": "resolve-history",
+        "label": "Open repository status",
+        "kind": "resolveConflict"
+      }
+    ],
+    "details": {
+      "remoteName": "origin"
+    }
+  }
+}
