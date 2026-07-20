@@ -30,6 +30,11 @@ export function App({ api, route }: AppProps) {
       try {
         const response = await api.listInstances();
         if (generation !== instancesGeneration.current) return;
+        if (
+          expectedInstanceId !== undefined &&
+          expectedInstanceId !== selectedInstanceIdRef.current
+        )
+          return;
         setInstances(response.items);
         const preferred = preferredInstanceId ?? selectedInstanceIdRef.current;
         const nextInstanceId =

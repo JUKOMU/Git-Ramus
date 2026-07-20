@@ -176,9 +176,9 @@ export function App({ hostApi = tauriHostApi }: AppProps) {
           route={selection?.route ?? "/"}
           theme={themeState?.theme ?? null}
         />
+        <ProviderCredentialDialog broker={providerCredentialBroker} />
+        <ProviderAccessDialog broker={providerAccessBroker} />
       </AppShell>
-      <ProviderCredentialDialog broker={providerCredentialBroker} />
-      <ProviderAccessDialog broker={providerAccessBroker} />
     </>
   );
 }
