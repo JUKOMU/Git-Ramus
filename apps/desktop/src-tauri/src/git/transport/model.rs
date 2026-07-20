@@ -224,6 +224,13 @@ pub struct RepositoryTransportBindingSummary {
     pub updated_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProfileDeletionImpact {
+    pub profile_id: String,
+    pub repository_ids: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransportConfigRepair {
     pub id: String,
