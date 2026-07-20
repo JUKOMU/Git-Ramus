@@ -81,6 +81,8 @@ export function RepositoryBrowser({ api, account }: RepositoryBrowserProps) {
     return () => {
       window.clearTimeout(timer);
       controller.abort();
+      loadMoreController.current?.abort();
+      loadMoreController.current = null;
       if (generation.current === currentGeneration) generation.current += 1;
     };
   }, [account, api, query]);
@@ -95,19 +97,24 @@ export function RepositoryBrowser({ api, account }: RepositoryBrowserProps) {
     void api
       .listRepositories({ accountId: account.id, query, cursor }, controller.signal)
       .then((page) => {
-        if (currentGeneration !== generation.current) return;
+        if (currentGeneration !== generation.current || loadMoreController.current !== controller)
+          return;
         setItems((current) => uniqueRepositories([...current, ...page.items]));
         setCursor(page.nextCursor);
         setHasMore(page.hasMore);
         setRateLimit(page.rateLimit);
       })
       .catch((cause) => {
-        if (currentGeneration === generation.current && !isAbortError(cause)) {
+        if (
+          currentGeneration === generation.current &&
+          loadMoreController.current === controller &&
+          !isAbortError(cause)
+        ) {
           setError(normalizeError(cause, "Unable to load more Provider repositories"));
         }
       })
       .finally(() => {
-        if (currentGeneration === generation.current) {
+        if (currentGeneration === generation.current && loadMoreController.current === controller) {
           setLoadingMore(false);
           if (loadMoreController.current === controller) loadMoreController.current = null;
         }
@@ -146,6 +153,7 @@ export function RepositoryBrowser({ api, account }: RepositoryBrowserProps) {
             type="search"
             role="searchbox"
             value={query.search}
+            maxLength={256}
             onChange={(event) => {
               const value = event.currentTarget.value;
               setQuery((current) => ({ ...current, search: value }));
@@ -156,6 +164,7 @@ export function RepositoryBrowser({ api, account }: RepositoryBrowserProps) {
           Namespace
           <input
             value={query.namespace ?? ""}
+            maxLength={1024}
             onChange={(event) => {
               const value = event.currentTarget.value;
               setQuery((current) => ({ ...current, namespace: value === "" ? null : value }));

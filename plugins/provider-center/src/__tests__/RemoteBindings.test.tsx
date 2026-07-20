@@ -58,7 +58,69 @@ describe("RemoteBindings", () => {
     await Promise.resolve();
     expect(screen.queryByText("origin-from-old-context")).not.toBeInTheDocument();
   });
+
+  it("clears an ambiguous candidate before accepting results from a new scan", async () => {
+    const user = userEvent.setup();
+    const currentInstance = instance("a");
+    const currentAccount = account("a");
+    const api = {
+      listBindings: vi.fn(async () => ({ items: [] })),
+      matchLocalRemotes: vi
+        .fn()
+        .mockResolvedValueOnce({ items: [ambiguousSuggestion(currentInstance.id, "old", "Old")] })
+        .mockResolvedValueOnce({ items: [ambiguousSuggestion(currentInstance.id, "new", "New")] })
+    };
+    render(
+      <RemoteBindings
+        api={api as never}
+        instance={currentInstance}
+        account={currentAccount}
+        accounts={[currentAccount]}
+      />
+    );
+    const scan = screen.getByRole("button", { name: "Scan local remotes" });
+    await user.click(scan);
+    const chooser = await screen.findByRole("combobox", { name: "Choose a repository" });
+    await user.selectOptions(chooser, "old");
+    expect(chooser).toHaveValue("old");
+    await user.click(scan);
+    const nextChooser = await screen.findByRole("combobox", { name: "Choose a repository" });
+    expect(nextChooser).toHaveValue("");
+    expect(screen.getByRole("button", { name: "Bind" })).toBeDisabled();
+  });
 });
+
+function ambiguousSuggestion(instanceIdValue: string, repositoryId: string, label: string) {
+  return {
+    repositoryId: "7f3c0214-373c-4d43-b0c7-cdaed1cbcc50",
+    remoteName: "origin",
+    instanceId: instanceIdValue,
+    status: "ambiguous",
+    providerRepositoryId: null,
+    fullName: null,
+    webUrl: null,
+    matchedUrl: null,
+    candidates: [
+      {
+        providerKind: "gitlab",
+        instanceId: instanceIdValue,
+        repositoryId,
+        namespace: "skills",
+        name: label.toLowerCase(),
+        fullName: `skills/${label.toLowerCase()}`,
+        webUrl: `https://gitlab-a.example/skills/${label.toLowerCase()}`,
+        httpsUrl: `https://gitlab-a.example/skills/${label.toLowerCase()}.git`,
+        sshUrl: `git@gitlab-a.example:skills/${label.toLowerCase()}.git`,
+        defaultBranch: "main",
+        visibility: "private",
+        archived: false,
+        fork: false,
+        permission: "write",
+        updatedAt: "2026-07-19T00:00:00Z"
+      }
+    ]
+  };
+}
 
 function instance(suffix: "a" | "b") {
   return {

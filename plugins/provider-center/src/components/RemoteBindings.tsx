@@ -70,6 +70,8 @@ export function RemoteBindings({ api, instance, account, accounts }: RemoteBindi
     setBusy(true);
     setError(null);
     setSuggestions([]);
+    setSelectedCandidates({});
+    setBindingAccounts({});
     void api
       .matchLocalRemotes({ instanceId: instance.id, accountId: account.id }, controller.signal)
       .then((response) => {
@@ -101,6 +103,11 @@ export function RemoteBindings({ api, instance, account, accounts }: RemoteBindi
       providerRepositoryId === undefined ||
       providerRepositoryId === null ||
       providerRepositoryId.length === 0
+    )
+      return;
+    if (
+      suggestion.status === "ambiguous" &&
+      !suggestion.candidates.some(({ repositoryId }) => repositoryId === providerRepositoryId)
     )
       return;
     setBusy(true);

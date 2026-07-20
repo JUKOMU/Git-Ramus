@@ -243,4 +243,16 @@ describe("Provider Center API", () => {
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
     );
   });
+
+  it("rejects an overlong query asynchronously without opening an RPC call", async () => {
+    const client = createClient();
+    const api = createProviderCenterApi(client);
+    const promise = api.listRepositories({
+      accountId,
+      query: { ...query, search: "x".repeat(257) },
+      cursor: null
+    });
+    await expect(promise).rejects.toMatchObject({ code: "provider.unexpected-error" });
+    expect(client.request).not.toHaveBeenCalled();
+  });
 });

@@ -23,7 +23,9 @@ export function App({ api, route }: AppProps) {
   const selectedInstanceIdRef = useRef<string | null>(null);
 
   const refreshInstances = useCallback(
-    async (preferredInstanceId?: string) => {
+    async (preferredInstanceId?: string, expectedInstanceId?: string) => {
+      if (expectedInstanceId !== undefined && expectedInstanceId !== selectedInstanceIdRef.current)
+        return;
       const generation = ++instancesGeneration.current;
       try {
         const response = await api.listInstances();

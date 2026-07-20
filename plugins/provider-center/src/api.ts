@@ -198,17 +198,22 @@ export function createProviderCenterApi(client: PluginClient): ProviderCenterApi
         providerReadAccessRevokeRequestSchema.parse({ accountId }),
         "Unable to revoke Provider access"
       ),
-    listRepositories: (input, signal) => {
-      const parsed = providerRepositoryListRequestSchema.omit({ operationId: true }).parse(input);
-      return cancellableRequest(
-        client,
-        "providers.listRepositories",
-        parsed,
-        providerRepositoryListRequestSchema,
-        providerRepositoryPageSchema,
-        signal,
-        "Unable to load Provider repositories"
-      );
+    listRepositories: async (input, signal) => {
+      try {
+        const parsed = providerRepositoryListRequestSchema.omit({ operationId: true }).parse(input);
+        return await cancellableRequest(
+          client,
+          "providers.listRepositories",
+          parsed,
+          providerRepositoryListRequestSchema,
+          providerRepositoryPageSchema,
+          signal,
+          "Unable to load Provider repositories"
+        );
+      } catch (error) {
+        if (isAbortError(error)) throw error;
+        throw normalizeError(error, "Unable to load Provider repositories");
+      }
     },
     cancelOperation: (request) =>
       requestVoid(
@@ -217,17 +222,24 @@ export function createProviderCenterApi(client: PluginClient): ProviderCenterApi
         providerOperationCancelRequestSchema.parse(request),
         "Unable to cancel the Provider request"
       ),
-    matchLocalRemotes: (input, signal) => {
-      const parsed = providerLocalRemoteMatchRequestSchema.omit({ operationId: true }).parse(input);
-      return cancellableRequest(
-        client,
-        "providers.matchLocalRemotes",
-        parsed,
-        providerLocalRemoteMatchRequestSchema,
-        providerBindingSuggestionListResponseSchema,
-        signal,
-        "Unable to match local remotes"
-      );
+    matchLocalRemotes: async (input, signal) => {
+      try {
+        const parsed = providerLocalRemoteMatchRequestSchema
+          .omit({ operationId: true })
+          .parse(input);
+        return await cancellableRequest(
+          client,
+          "providers.matchLocalRemotes",
+          parsed,
+          providerLocalRemoteMatchRequestSchema,
+          providerBindingSuggestionListResponseSchema,
+          signal,
+          "Unable to match local remotes"
+        );
+      } catch (error) {
+        if (isAbortError(error)) throw error;
+        throw normalizeError(error, "Unable to match local remotes");
+      }
     },
     listBindings: (accountId) =>
       requestParsed(

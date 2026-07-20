@@ -8,7 +8,7 @@ interface InstancePanelProps {
   instances: ProviderInstance[];
   selectedInstanceId: string | null;
   onSelect(instanceId: string): void;
-  onRefresh(preferredInstanceId?: string): Promise<void>;
+  onRefresh(preferredInstanceId?: string, expectedInstanceId?: string): Promise<void>;
 }
 
 export function InstancePanel({
@@ -77,7 +77,11 @@ export function InstancePanel({
           <p className="eyebrow">Connections</p>
           <h2 id="provider-instances-heading">Provider instances</h2>
         </div>
-        <button type="button" onClick={() => void onRefresh()} disabled={busy}>
+        <button
+          type="button"
+          onClick={() => void onRefresh(undefined, selected?.id)}
+          disabled={busy}
+        >
           Refresh instances
         </button>
       </header>
@@ -186,7 +190,7 @@ export function InstancePanel({
             onClick={() =>
               void run(async () => {
                 await api.validateInstance({ instanceId: selected.id });
-                await onRefresh(selected.id);
+                await onRefresh(selected.id, selected.id);
               })
             }
           >
@@ -199,7 +203,7 @@ export function InstancePanel({
             onClick={() =>
               void run(async () => {
                 await api.deleteInstance({ instanceId: selected.id });
-                await onRefresh();
+                await onRefresh(undefined, selected.id);
               })
             }
           >
@@ -217,7 +221,7 @@ export function InstancePanel({
                   baseUrl: editBaseUrl,
                   customCaAction: selected.providerKind === "github" ? "keep" : editCustomCaAction
                 });
-                if (updated !== null) await onRefresh(updated.id);
+                if (updated !== null) await onRefresh(updated.id, selected.id);
               });
             }}
           >
