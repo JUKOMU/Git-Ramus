@@ -14,7 +14,10 @@ use super::model::{
     RepositoryNetworkState, RepositoryOperationInProgress, RepositoryRemoteSummary,
     TransportDriftStatus, TransportKind, UpstreamCandidate,
 };
-use super::operation::TransportOperationRegistry;
+use super::operation::{
+    TransportAuthorizationDomain, TransportOperationAuthorization, TransportOperationGuard,
+    TransportOperationRegistry,
+};
 use super::profile_service::TransportProfileService;
 use super::progress::GitProgressParser;
 use super::store::TransportStore;
@@ -123,12 +126,56 @@ impl GitTransportService {
         self.clones.intents()
     }
 
+    pub fn profile_service(&self) -> TransportProfileService {
+        self.profiles.clone()
+    }
+
+    pub fn cancel_operation(&self, operation_id: &str) -> bool {
+        self.operations.cancel(operation_id)
+    }
+
+    pub fn reserve_operation(
+        &self,
+        operation_id: impl Into<String>,
+        plugin_id: impl Into<String>,
+        domain: TransportAuthorizationDomain,
+    ) -> Result<TransportOperationGuard, AppError> {
+        self.operations.reserve(operation_id, plugin_id, domain)
+    }
+
+    pub fn operation_authorization(
+        &self,
+        operation_id: &str,
+    ) -> Option<TransportOperationAuthorization> {
+        self.operations.authorization(operation_id)
+    }
+
+    pub fn cancel_owned_operation(
+        &self,
+        operation_id: &str,
+        plugin_id: &str,
+        domain: TransportAuthorizationDomain,
+    ) -> Result<bool, AppError> {
+        self.operations
+            .cancel_owned(operation_id, plugin_id, domain)
+    }
+
     pub fn clone_repository(
         &self,
         input: CloneInput,
         reporter: Arc<dyn NetworkProgressReporter>,
     ) -> Result<CloneResult, AppError> {
         self.clones.clone_repository(input, reporter)
+    }
+
+    pub fn clone_repository_reserved(
+        &self,
+        input: CloneInput,
+        reporter: Arc<dyn NetworkProgressReporter>,
+        operation_guard: TransportOperationGuard,
+    ) -> Result<CloneResult, AppError> {
+        self.clones
+            .clone_repository_reserved(input, reporter, operation_guard)
     }
 
     pub fn classify_clone_recovery(&self) -> Result<Vec<CloneRecoveryClassification>, AppError> {
@@ -140,9 +187,28 @@ impl GitTransportService {
         input: FetchInput,
         reporter: Arc<dyn NetworkProgressReporter>,
     ) -> Result<NetworkOperationResult, AppError> {
+        self.fetch_with_guard(input, reporter, None)
+    }
+
+    pub fn fetch_reserved(
+        &self,
+        input: FetchInput,
+        reporter: Arc<dyn NetworkProgressReporter>,
+        operation_guard: TransportOperationGuard,
+    ) -> Result<NetworkOperationResult, AppError> {
+        self.fetch_with_guard(input, reporter, Some(operation_guard))
+    }
+
+    fn fetch_with_guard(
+        &self,
+        input: FetchInput,
+        reporter: Arc<dyn NetworkProgressReporter>,
+        operation_guard: Option<TransportOperationGuard>,
+    ) -> Result<NetworkOperationResult, AppError> {
         uuid::Uuid::parse_str(&input.operation_id).map_err(|_| {
             AppError::InvalidInput("transport operation id must be a UUID".to_owned())
         })?;
+        validate_reserved_guard(&input.operation_id, operation_guard.as_ref())?;
         self.git
             .validate_repository_context(&input.context, &input.repository_id)?;
         if !self
@@ -180,6 +246,7 @@ impl GitTransportService {
                 remote_name: Some(remote.name),
             },
             reporter,
+            operation_guard,
         )
     }
 
@@ -188,7 +255,26 @@ impl GitTransportService {
         input: PullInput,
         reporter: Arc<dyn NetworkProgressReporter>,
     ) -> Result<NetworkOperationResult, AppError> {
+        self.pull_with_guard(input, reporter, None)
+    }
+
+    pub fn pull_reserved(
+        &self,
+        input: PullInput,
+        reporter: Arc<dyn NetworkProgressReporter>,
+        operation_guard: TransportOperationGuard,
+    ) -> Result<NetworkOperationResult, AppError> {
+        self.pull_with_guard(input, reporter, Some(operation_guard))
+    }
+
+    fn pull_with_guard(
+        &self,
+        input: PullInput,
+        reporter: Arc<dyn NetworkProgressReporter>,
+        operation_guard: Option<TransportOperationGuard>,
+    ) -> Result<NetworkOperationResult, AppError> {
         validate_operation_id(&input.operation_id)?;
+        validate_reserved_guard(&input.operation_id, operation_guard.as_ref())?;
         self.ensure_trusted_context(&input.context, &input.repository_id)?;
         let state = self.network_state(&input.context, &input.repository_id)?;
         let upstream = pull_preflight(&state)?;
@@ -213,6 +299,7 @@ impl GitTransportService {
                 remote_name: Some(upstream.remote_name),
             },
             reporter,
+            operation_guard,
         )
     }
 
@@ -221,7 +308,26 @@ impl GitTransportService {
         input: PushInput,
         reporter: Arc<dyn NetworkProgressReporter>,
     ) -> Result<NetworkOperationResult, AppError> {
+        self.push_with_guard(input, reporter, None)
+    }
+
+    pub fn push_reserved(
+        &self,
+        input: PushInput,
+        reporter: Arc<dyn NetworkProgressReporter>,
+        operation_guard: TransportOperationGuard,
+    ) -> Result<NetworkOperationResult, AppError> {
+        self.push_with_guard(input, reporter, Some(operation_guard))
+    }
+
+    fn push_with_guard(
+        &self,
+        input: PushInput,
+        reporter: Arc<dyn NetworkProgressReporter>,
+        operation_guard: Option<TransportOperationGuard>,
+    ) -> Result<NetworkOperationResult, AppError> {
         validate_operation_id(&input.operation_id)?;
+        validate_reserved_guard(&input.operation_id, operation_guard.as_ref())?;
         self.ensure_trusted_context(&input.context, &input.repository_id)?;
         let state = self.network_state(&input.context, &input.repository_id)?;
         ensure_repository_can_write_network(&state)?;
@@ -273,6 +379,7 @@ impl GitTransportService {
                 remote_name: Some(target.remote_name),
             },
             reporter,
+            operation_guard,
         )
     }
 
@@ -353,12 +460,23 @@ impl GitTransportService {
         &self,
         request: NetworkExecutionRequest,
         reporter: Arc<dyn NetworkProgressReporter>,
+        operation_guard: Option<TransportOperationGuard>,
     ) -> Result<NetworkOperationResult, AppError> {
         let repository = self.repositories.get(&request.repository_id)?;
-        let operation_guard = self.operations.register(
-            &request.operation_id,
-            format!("repository:{}", request.repository_id),
-        )?;
+        let operation_guard = match operation_guard {
+            Some(mut operation_guard) => {
+                operation_guard
+                    .bind_resource(format!("repository:{}", request.repository_id))
+                    .map_err(|error| {
+                        contextualize_preflight_cancellation(error, &request.operation_id)
+                    })?;
+                operation_guard
+            }
+            None => self.operations.register(
+                &request.operation_id,
+                format!("repository:{}", request.repository_id),
+            )?,
+        };
         let repository_lock = self.write_locks.lock_for(&request.repository_id);
         let repository_guard = match repository_lock.try_lock() {
             Ok(guard) => guard,
@@ -371,6 +489,13 @@ impl GitTransportService {
         let queued =
             self.jobs
                 .create_with_id(&request.operation_id, request.job_kind, &request.title)?;
+        reporter.report(NetworkProgress {
+            operation_id: request.operation_id.clone(),
+            stage: NetworkStage::Validating,
+            fraction: None,
+            objects: None,
+            bytes: None,
+        });
         let running = match self.jobs.start(&queued.id) {
             Ok(job) => job,
             Err(error) => {
@@ -378,6 +503,13 @@ impl GitTransportService {
                 return Err(error);
             }
         };
+        reporter.report(NetworkProgress {
+            operation_id: request.operation_id.clone(),
+            stage: NetworkStage::AwaitingAuthentication,
+            fraction: None,
+            objects: None,
+            bytes: None,
+        });
         reporter.report(NetworkProgress {
             operation_id: request.operation_id.clone(),
             stage: NetworkStage::Transferring,
@@ -457,6 +589,18 @@ impl GitTransportService {
         let network_state = self
             .network_state_from_snapshot(&request.context, &request.repository_id, &snapshot)
             .map_err(|_| self.partial_after_operation(&request.operation_id, &running.id))?;
+        if !operation_guard.finish_if_not_cancelled() {
+            let failure = TransportFailure::cancelled()
+                .with_operation(&request.operation_id)
+                .with_resource(&request.repository_id)
+                .with_failed_step(request.failed_step);
+            self.finish_failed_job(&running.id, &failure, true)?;
+            reporter.report(terminal_progress(
+                &request.operation_id,
+                NetworkStage::Cancelled,
+            ));
+            return Err(AppError::Transport(failure));
+        }
         let job = self.jobs.succeed(&running.id)?;
         reporter.report(terminal_progress(
             &request.operation_id,
@@ -663,6 +807,40 @@ fn validate_operation_id(operation_id: &str) -> Result<(), AppError> {
     uuid::Uuid::parse_str(operation_id)
         .map(|_| ())
         .map_err(|_| AppError::InvalidInput("transport operation id must be a UUID".to_owned()))
+}
+
+fn validate_reserved_guard(
+    operation_id: &str,
+    operation_guard: Option<&TransportOperationGuard>,
+) -> Result<(), AppError> {
+    let Some(operation_guard) = operation_guard else {
+        return Ok(());
+    };
+    if operation_guard.operation_id() != operation_id {
+        return Err(AppError::InvalidInput(
+            "reserved transport operation id does not match the request".to_owned(),
+        ));
+    }
+    if operation_guard.is_cancelled() {
+        return Err(preflight_cancellation(operation_id));
+    }
+    Ok(())
+}
+
+fn contextualize_preflight_cancellation(error: AppError, operation_id: &str) -> AppError {
+    if matches!(error, AppError::Canceled) {
+        preflight_cancellation(operation_id)
+    } else {
+        error
+    }
+}
+
+fn preflight_cancellation(operation_id: &str) -> AppError {
+    AppError::Transport(
+        TransportFailure::cancelled()
+            .with_operation(operation_id)
+            .with_failed_step("preflight"),
+    )
 }
 
 fn ensure_repository_can_write_network(state: &RepositoryNetworkState) -> Result<(), AppError> {

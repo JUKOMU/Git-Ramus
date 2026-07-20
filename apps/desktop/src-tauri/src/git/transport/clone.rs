@@ -16,7 +16,7 @@ use super::model::{
     CloneInput, CloneIntent, CloneOperation, CloneProjectSummary, CloneProjectTarget, CloneResult,
     CloneResultStatus, CloneSource, CloneStage, NetworkProgress, NetworkStage, TransportKind,
 };
-use super::operation::TransportOperationRegistry;
+use super::operation::{TransportOperationGuard, TransportOperationRegistry};
 use super::profile_service::TransportProfileService;
 use super::service::{
     NetworkProgressReporter, ProgressBridge, classify_execution_error, classify_git_failure,
@@ -356,8 +356,27 @@ impl CloneCoordinator {
         input: CloneInput,
         reporter: Arc<dyn NetworkProgressReporter>,
     ) -> Result<CloneResult, AppError> {
+        self.clone_repository_with_guard(input, reporter, None)
+    }
+
+    pub fn clone_repository_reserved(
+        &self,
+        input: CloneInput,
+        reporter: Arc<dyn NetworkProgressReporter>,
+        operation_guard: TransportOperationGuard,
+    ) -> Result<CloneResult, AppError> {
+        self.clone_repository_with_guard(input, reporter, Some(operation_guard))
+    }
+
+    fn clone_repository_with_guard(
+        &self,
+        input: CloneInput,
+        reporter: Arc<dyn NetworkProgressReporter>,
+        operation_guard: Option<TransportOperationGuard>,
+    ) -> Result<CloneResult, AppError> {
         uuid::Uuid::parse_str(&input.operation_id)
             .map_err(|_| AppError::InvalidInput("Clone operation id must be a UUID".to_owned()))?;
+        validate_reserved_clone_guard(&input.operation_id, operation_guard.as_ref())?;
         let paths = ClonePaths::allocate(
             &input.destination_parent,
             &input.folder_name,
@@ -383,14 +402,31 @@ impl CloneCoordinator {
             .map(|profile| config_plan(profile, &resolved.url))
             .transpose()?;
 
-        let operation_guard = self
-            .operations
-            .register(&input.operation_id, format!("clone:{final_path}"))?;
+        let operation_guard = match operation_guard {
+            Some(mut operation_guard) => {
+                operation_guard
+                    .bind_resource(format!("clone:{final_path}"))
+                    .map_err(|error| {
+                        contextualize_clone_preflight_cancellation(error, &input.operation_id)
+                    })?;
+                operation_guard
+            }
+            None => self
+                .operations
+                .register(&input.operation_id, format!("clone:{final_path}"))?,
+        };
         let queued = self.jobs.create_with_id(
             &input.operation_id,
             "git.transport.clone",
             &format!("Clone {}", input.folder_name),
         )?;
+        reporter.report(NetworkProgress {
+            operation_id: input.operation_id.clone(),
+            stage: NetworkStage::Validating,
+            fraction: None,
+            objects: None,
+            bytes: None,
+        });
         let now = Utc::now();
         let operation = CloneOperation {
             operation_id: input.operation_id.clone(),
@@ -441,6 +477,13 @@ impl CloneCoordinator {
                 return Err(error);
             }
         };
+        reporter.report(NetworkProgress {
+            operation_id: input.operation_id.clone(),
+            stage: NetworkStage::AwaitingAuthentication,
+            fraction: None,
+            objects: None,
+            bytes: None,
+        });
         if let Err(error) = paths.write_marker() {
             return Err(self.fail_before_rename(
                 &input.operation_id,
@@ -1286,6 +1329,40 @@ struct ResolvedCloneSource {
     summary: String,
     url: super::url::ValidatedRemoteUrl,
     intent: Option<ConsumedCloneIntent>,
+}
+
+fn validate_reserved_clone_guard(
+    operation_id: &str,
+    operation_guard: Option<&TransportOperationGuard>,
+) -> Result<(), AppError> {
+    let Some(operation_guard) = operation_guard else {
+        return Ok(());
+    };
+    if operation_guard.operation_id() != operation_id {
+        return Err(AppError::InvalidInput(
+            "reserved Clone operation id does not match the request".to_owned(),
+        ));
+    }
+    if operation_guard.is_cancelled() {
+        return Err(clone_preflight_cancellation(operation_id));
+    }
+    Ok(())
+}
+
+fn contextualize_clone_preflight_cancellation(error: AppError, operation_id: &str) -> AppError {
+    if matches!(error, AppError::Canceled) {
+        clone_preflight_cancellation(operation_id)
+    } else {
+        error
+    }
+}
+
+fn clone_preflight_cancellation(operation_id: &str) -> AppError {
+    AppError::Transport(
+        TransportFailure::cancelled()
+            .with_operation(operation_id)
+            .with_failed_step("preflight"),
+    )
 }
 
 fn contextualize_clone_stage_error(

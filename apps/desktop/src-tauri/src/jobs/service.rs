@@ -110,6 +110,23 @@ impl JobService {
         self.transition(id, crate::jobs::model::JobStatus::Canceled, None)
     }
 
+    pub fn request_cancel(&self, id: &str) -> Result<Job, AppError> {
+        let _guard = self.operation_lock.lock();
+        let mut job = self.required(id)?;
+        if !matches!(
+            job.status,
+            crate::jobs::model::JobStatus::Queued | crate::jobs::model::JobStatus::Running
+        ) {
+            return Ok(job);
+        }
+        if !job.cancel_requested {
+            job.cancel_requested = true;
+            job.updated_at = chrono::Utc::now();
+            self.repository.update(&job)?;
+        }
+        Ok(job)
+    }
+
     pub fn set_progress(&self, id: &str, progress: f64) -> Result<Job, AppError> {
         let _guard = self.operation_lock.lock();
         if !(0.0..=1.0).contains(&progress) {
@@ -172,7 +189,8 @@ impl JobService {
             )));
         }
         job.status = target;
-        job.cancel_requested = target == crate::jobs::model::JobStatus::Canceled;
+        job.cancel_requested =
+            job.cancel_requested || target == crate::jobs::model::JobStatus::Canceled;
         job.error = error;
         job.updated_at = chrono::Utc::now();
         self.repository.update(&job)?;
@@ -241,6 +259,25 @@ mod tests {
             .expect_err("canceled job rejects progress");
         assert!(matches!(error, AppError::InvalidInput(_)));
         assert!(service.is_canceled(&job.id).expect("canceled state reads"));
+    }
+
+    #[test]
+    fn cancel_request_is_idempotent_and_survives_start_until_terminal_cancellation() {
+        let service = JobService::new(Database::open_in_memory().expect("database opens"));
+        let job = service
+            .create("git.transport.fetch", "Fetch origin")
+            .expect("Job creates");
+        let requested = service.request_cancel(&job.id).expect("cancel requests");
+        assert_eq!(requested.status, JobStatus::Queued);
+        assert!(requested.cancel_requested);
+        assert!(service.request_cancel(&job.id).unwrap().cancel_requested);
+
+        let running = service.start(&job.id).expect("Job starts");
+        assert_eq!(running.status, JobStatus::Running);
+        assert!(running.cancel_requested);
+        let canceled = service.cancel(&job.id).expect("Job cancels");
+        assert_eq!(canceled.status, JobStatus::Canceled);
+        assert!(service.request_cancel(&job.id).unwrap().cancel_requested);
     }
 
     #[test]

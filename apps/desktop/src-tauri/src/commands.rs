@@ -1,5 +1,9 @@
+use std::path::PathBuf;
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
+use tauri_plugin_dialog::DialogExt;
 
 use crate::app_state::AppState;
 use crate::error::{AppError, ErrorEnvelope};
@@ -8,10 +12,21 @@ use crate::git::service::{
     ChangesResult, DiffResult, Overview, ProjectCreateInput, QueryContext, RepositoryScanRecord,
     ScanProjectResult, WorkspaceCreateInput, WorkspaceMembershipInput, WriteResult,
 };
+use crate::git::transport::clone::GIT_CLIENT_PLUGIN_ID;
+use crate::git::transport::model::{
+    CloneInput, CloneIntent, CloneProjectTarget, CloneResult, CloneSource, EffectiveTransport,
+    FetchInput, NetworkOperationResult, NetworkProgress, PullInput, PushInput, PushTarget,
+    RepositoryNetworkState, RepositoryTransportBindingSummary, TransportKind,
+    TransportProfileSummary,
+};
+use crate::git::transport::operation::TransportAuthorizationDomain;
+use crate::git::transport::profile_service::{DriftResolution, ProfileDeletionResolution};
+use crate::git::transport::service::NetworkProgressReporter;
 use crate::identity::{EffectiveIdentity, IdentityProfile, IdentityProfileInput};
 use crate::jobs::model::Job;
-use crate::plugins::PluginDescriptor;
+use crate::plugins::manifest::PluginKind;
 use crate::plugins::permissions::PermissionGateway;
+use crate::plugins::{PluginDescriptor, PluginRegistry};
 use crate::providers::model::{
     AccountDeletionImpact, AccountDeletionResolution, ProviderAccountSummary,
     ProviderAuthorizedAccount, ProviderBinding, ProviderBindingSuggestion, ProviderInstanceSummary,
@@ -242,6 +257,241 @@ pub struct GitRepositoryIdentityRequest {
     pub project_id: Option<String>,
     pub workspace_id: Option<String>,
     pub repository_id: String,
+}
+
+const TRANSPORT_PROFILES_RESOURCE: &str = "transport-profiles";
+const CLONE_INTENTS_RESOURCE: &str = "clone-intents";
+const REPOSITORIES_RESOURCE: &str = "repositories";
+const PROVIDER_CENTER_PLUGIN_ID: &str = "git-ramus.provider-center";
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitTransportPluginRequest {
+    pub plugin_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "lowercase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum GitTransportProfileCreateNativeRequest {
+    Ssh {
+        plugin_id: String,
+        display_name: String,
+        ssh_key_path: PathBuf,
+        identities_only: bool,
+    },
+    Https {
+        plugin_id: String,
+        display_name: String,
+        username: String,
+        use_http_path: bool,
+    },
+}
+
+impl GitTransportProfileCreateNativeRequest {
+    fn plugin_id(&self) -> &str {
+        match self {
+            Self::Ssh { plugin_id, .. } | Self::Https { plugin_id, .. } => plugin_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "lowercase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum GitTransportProfileUpdateNativeRequest {
+    Ssh {
+        plugin_id: String,
+        profile_id: String,
+        display_name: String,
+        ssh_key_path: Option<PathBuf>,
+        identities_only: bool,
+    },
+    Https {
+        plugin_id: String,
+        profile_id: String,
+        display_name: String,
+        username: String,
+        use_http_path: bool,
+    },
+}
+
+impl GitTransportProfileUpdateNativeRequest {
+    fn plugin_id(&self) -> &str {
+        match self {
+            Self::Ssh { plugin_id, .. } | Self::Https { plugin_id, .. } => plugin_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitTransportProfileNativeRequest {
+    pub plugin_id: String,
+    pub profile_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitTransportProfileDeleteNativeRequest {
+    pub plugin_id: String,
+    pub profile_id: String,
+    pub resolutions: Vec<ProfileDeletionResolution>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitTransportProfileListResponse {
+    pub items: Vec<TransportProfileSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitTransportProfileDeletionImpactResponse {
+    pub profile_id: String,
+    pub repositories: Vec<GitTransportProfileDeletionRepository>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitTransportProfileDeletionRepository {
+    pub repository_id: String,
+    pub display_name: String,
+    pub transport_kind: TransportKind,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitRepositoryTransportRequest {
+    pub plugin_id: String,
+    pub project_id: Option<String>,
+    pub workspace_id: Option<String>,
+    pub repository_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitRepositoryBindTransportNativeRequest {
+    pub plugin_id: String,
+    pub project_id: Option<String>,
+    pub workspace_id: Option<String>,
+    pub repository_id: String,
+    pub transport_profile_id: String,
+    pub replace_existing: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitRepositoryUnbindTransportNativeRequest {
+    pub plugin_id: String,
+    pub project_id: Option<String>,
+    pub workspace_id: Option<String>,
+    pub repository_id: String,
+    pub drift_resolution: DriftResolution,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitCloneIntentCreateNativeRequest {
+    pub plugin_id: String,
+    pub account_id: String,
+    pub repository_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitCloneIntentNativeRequest {
+    pub plugin_id: String,
+    pub intent_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitCloneIntentReference {
+    pub intent_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum CloneSourceRequest {
+    Intent { intent_id: String },
+    Manual { remote_url: String },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitCloneNativeRequest {
+    pub plugin_id: String,
+    pub source: CloneSourceRequest,
+    pub transport_kind: TransportKind,
+    pub profile_id: Option<String>,
+    pub destination_parent: PathBuf,
+    pub folder_name: String,
+    pub project_target: CloneProjectTarget,
+    pub operation_id: String,
+    pub interactive_confirmed: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitRepositoryFetchNativeRequest {
+    pub plugin_id: String,
+    pub project_id: Option<String>,
+    pub workspace_id: Option<String>,
+    pub repository_id: String,
+    pub remote_name: String,
+    pub operation_id: String,
+    pub interactive_confirmed: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitRepositoryPullNativeRequest {
+    pub plugin_id: String,
+    pub project_id: Option<String>,
+    pub workspace_id: Option<String>,
+    pub repository_id: String,
+    pub operation_id: String,
+    pub interactive_confirmed: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitPushTargetRequest {
+    pub remote_name: String,
+    pub branch_name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitRepositoryPushNativeRequest {
+    pub plugin_id: String,
+    pub project_id: Option<String>,
+    pub workspace_id: Option<String>,
+    pub repository_id: String,
+    pub target: Option<GitPushTargetRequest>,
+    pub operation_id: String,
+    pub interactive_confirmed: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitTransportOperationCancelNativeRequest {
+    pub plugin_id: String,
+    pub operation_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -984,6 +1234,576 @@ pub fn git_repository_effective_identity(
 }
 
 #[tauri::command]
+pub fn git_transport_profile_list(
+    state: State<'_, AppState>,
+    request: GitTransportPluginRequest,
+) -> CommandResult<GitTransportProfileListResponse> {
+    ensure_builtin_permission(
+        &state.plugins,
+        &state.permissions,
+        &request.plugin_id,
+        "git.transport:read",
+        TRANSPORT_PROFILES_RESOURCE,
+    )
+    .map_err(command_error)?;
+    state
+        .transport
+        .profile_service()
+        .list_profiles()
+        .map(|items| GitTransportProfileListResponse { items })
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn git_transport_profile_create(
+    state: State<'_, AppState>,
+    request: GitTransportProfileCreateNativeRequest,
+) -> CommandResult<TransportProfileSummary> {
+    ensure_builtin_permission(
+        &state.plugins,
+        &state.permissions,
+        request.plugin_id(),
+        "git.transport:manage",
+        TRANSPORT_PROFILES_RESOURCE,
+    )
+    .map_err(command_error)?;
+    let profiles = state.transport.profile_service();
+    match request {
+        GitTransportProfileCreateNativeRequest::Ssh {
+            display_name,
+            ssh_key_path,
+            identities_only,
+            ..
+        } => profiles
+            .create_ssh_profile(&display_name, &ssh_key_path, identities_only)
+            .map_err(command_error),
+        GitTransportProfileCreateNativeRequest::Https {
+            display_name,
+            username,
+            use_http_path,
+            ..
+        } => {
+            require_http_path(use_http_path).map_err(command_error)?;
+            profiles
+                .create_https_profile(&display_name, &username)
+                .map_err(command_error)
+        }
+    }
+}
+
+#[tauri::command]
+pub fn git_transport_profile_update(
+    state: State<'_, AppState>,
+    request: GitTransportProfileUpdateNativeRequest,
+) -> CommandResult<TransportProfileSummary> {
+    ensure_builtin_permission(
+        &state.plugins,
+        &state.permissions,
+        request.plugin_id(),
+        "git.transport:manage",
+        TRANSPORT_PROFILES_RESOURCE,
+    )
+    .map_err(command_error)?;
+    let profiles = state.transport.profile_service();
+    match request {
+        GitTransportProfileUpdateNativeRequest::Ssh {
+            profile_id,
+            display_name,
+            ssh_key_path,
+            identities_only,
+            ..
+        } => profiles
+            .update_ssh_profile(
+                &profile_id,
+                &display_name,
+                ssh_key_path.as_deref(),
+                identities_only,
+            )
+            .map_err(command_error),
+        GitTransportProfileUpdateNativeRequest::Https {
+            profile_id,
+            display_name,
+            username,
+            use_http_path,
+            ..
+        } => {
+            require_http_path(use_http_path).map_err(command_error)?;
+            profiles
+                .update_https_profile(&profile_id, &display_name, &username)
+                .map_err(command_error)
+        }
+    }
+}
+
+#[tauri::command]
+pub fn git_transport_profile_deletion_impact(
+    state: State<'_, AppState>,
+    request: GitTransportProfileNativeRequest,
+) -> CommandResult<GitTransportProfileDeletionImpactResponse> {
+    ensure_builtin_permission(
+        &state.plugins,
+        &state.permissions,
+        &request.plugin_id,
+        "git.transport:read",
+        TRANSPORT_PROFILES_RESOURCE,
+    )
+    .map_err(command_error)?;
+    let profiles = state.transport.profile_service();
+    let impact = profiles
+        .profile_deletion_impact(&request.profile_id)
+        .map_err(command_error)?;
+    let kind = profiles
+        .list_profiles()
+        .map_err(command_error)?
+        .into_iter()
+        .find(|profile| profile.id == request.profile_id)
+        .map(|profile| profile.kind)
+        .ok_or_else(|| command_error(AppError::NotFound("transport profile".to_owned())))?;
+    let repositories = state.git.repository_repository();
+    impact
+        .repository_ids
+        .into_iter()
+        .map(|repository_id| {
+            repositories.get(&repository_id).map(|repository| {
+                GitTransportProfileDeletionRepository {
+                    repository_id,
+                    display_name: repository.display_name,
+                    transport_kind: kind,
+                }
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(|repositories| GitTransportProfileDeletionImpactResponse {
+            profile_id: impact.profile_id,
+            repositories,
+        })
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn git_transport_profile_delete(
+    state: State<'_, AppState>,
+    request: GitTransportProfileDeleteNativeRequest,
+) -> CommandResult<()> {
+    ensure_builtin_permission(
+        &state.plugins,
+        &state.permissions,
+        &request.plugin_id,
+        "git.transport:manage",
+        TRANSPORT_PROFILES_RESOURCE,
+    )
+    .map_err(command_error)?;
+    let profiles = state.transport.profile_service();
+    run_transport_blocking(move || {
+        profiles.delete_profile(&request.profile_id, &request.resolutions)
+    })
+    .await
+    .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn git_transport_select_destination_parent(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: GitTransportPluginRequest,
+) -> CommandResult<Option<String>> {
+    ensure_exact_builtin_permission(
+        &state.plugins,
+        &state.permissions,
+        &request.plugin_id,
+        GIT_CLIENT_PLUGIN_ID,
+        "git.network:execute",
+        CLONE_INTENTS_RESOURCE,
+    )
+    .map_err(command_error)?;
+    select_host_path(app, true).await.map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn git_transport_select_ssh_key(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: GitTransportPluginRequest,
+) -> CommandResult<Option<String>> {
+    ensure_exact_builtin_permission(
+        &state.plugins,
+        &state.permissions,
+        &request.plugin_id,
+        GIT_CLIENT_PLUGIN_ID,
+        "git.transport:manage",
+        TRANSPORT_PROFILES_RESOURCE,
+    )
+    .map_err(command_error)?;
+    select_host_path(app, false).await.map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn git_repository_effective_transport(
+    state: State<'_, AppState>,
+    request: GitRepositoryTransportRequest,
+) -> CommandResult<EffectiveTransport> {
+    ensure_builtin_permission(
+        &state.plugins,
+        &state.permissions,
+        &request.plugin_id,
+        "git.transport:read",
+        TRANSPORT_PROFILES_RESOURCE,
+    )
+    .map_err(command_error)?;
+    ensure_repository_permission(
+        &state.plugins,
+        &state.permissions,
+        &request.plugin_id,
+        "repositories:read",
+    )
+    .map_err(command_error)?;
+    let context =
+        transport_context(request.project_id, request.workspace_id).map_err(command_error)?;
+    let git = state.git.clone();
+    let profiles = state.transport.profile_service();
+    run_transport_blocking(move || {
+        git.validate_repository_context(&context, &request.repository_id)?;
+        profiles.effective_for_repository(&request.repository_id)
+    })
+    .await
+    .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn git_repository_network_state(
+    state: State<'_, AppState>,
+    request: GitRepositoryTransportRequest,
+) -> CommandResult<RepositoryNetworkState> {
+    ensure_repository_permission(
+        &state.plugins,
+        &state.permissions,
+        &request.plugin_id,
+        "repositories:read",
+    )
+    .map_err(command_error)?;
+    let context =
+        transport_context(request.project_id, request.workspace_id).map_err(command_error)?;
+    let transport = state.transport.clone();
+    run_transport_blocking(move || transport.network_state(&context, &request.repository_id))
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn git_repository_bind_transport(
+    state: State<'_, AppState>,
+    request: GitRepositoryBindTransportNativeRequest,
+) -> CommandResult<RepositoryTransportBindingSummary> {
+    ensure_builtin_permission(
+        &state.plugins,
+        &state.permissions,
+        &request.plugin_id,
+        "git.transport:manage",
+        TRANSPORT_PROFILES_RESOURCE,
+    )
+    .map_err(command_error)?;
+    ensure_repository_permission(
+        &state.plugins,
+        &state.permissions,
+        &request.plugin_id,
+        "repositories:write",
+    )
+    .map_err(command_error)?;
+    let context =
+        transport_context(request.project_id, request.workspace_id).map_err(command_error)?;
+    let git = state.git.clone();
+    let profiles = state.transport.profile_service();
+    run_transport_blocking(move || {
+        git.validate_repository_context(&context, &request.repository_id)?;
+        profiles.bind_repository(
+            &request.repository_id,
+            &request.transport_profile_id,
+            request.replace_existing,
+        )
+    })
+    .await
+    .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn git_repository_unbind_transport(
+    state: State<'_, AppState>,
+    request: GitRepositoryUnbindTransportNativeRequest,
+) -> CommandResult<()> {
+    ensure_builtin_permission(
+        &state.plugins,
+        &state.permissions,
+        &request.plugin_id,
+        "git.transport:manage",
+        TRANSPORT_PROFILES_RESOURCE,
+    )
+    .map_err(command_error)?;
+    ensure_repository_permission(
+        &state.plugins,
+        &state.permissions,
+        &request.plugin_id,
+        "repositories:write",
+    )
+    .map_err(command_error)?;
+    let context =
+        transport_context(request.project_id, request.workspace_id).map_err(command_error)?;
+    let git = state.git.clone();
+    let profiles = state.transport.profile_service();
+    run_transport_blocking(move || {
+        git.validate_repository_context(&context, &request.repository_id)?;
+        profiles.unbind_repository(&request.repository_id, request.drift_resolution)
+    })
+    .await
+    .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn git_clone_intent_create(
+    state: State<'_, AppState>,
+    request: GitCloneIntentCreateNativeRequest,
+) -> CommandResult<GitCloneIntentReference> {
+    ensure_exact_builtin_permission(
+        &state.plugins,
+        &state.permissions,
+        &request.plugin_id,
+        PROVIDER_CENTER_PLUGIN_ID,
+        "git.network:execute",
+        CLONE_INTENTS_RESOURCE,
+    )
+    .map_err(command_error)?;
+    ensure_provider_account_read(&state.permissions, &request.plugin_id, &request.account_id)
+        .map_err(command_error)?;
+    state
+        .clone_intents
+        .create(
+            &request.plugin_id,
+            &request.account_id,
+            &request.repository_id,
+        )
+        .await
+        .map(|intent| GitCloneIntentReference {
+            intent_id: intent.id,
+        })
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn git_clone_intent_get(
+    state: State<'_, AppState>,
+    request: GitCloneIntentNativeRequest,
+) -> CommandResult<CloneIntent> {
+    ensure_exact_builtin_permission(
+        &state.plugins,
+        &state.permissions,
+        &request.plugin_id,
+        GIT_CLIENT_PLUGIN_ID,
+        "git.network:execute",
+        CLONE_INTENTS_RESOURCE,
+    )
+    .map_err(command_error)?;
+    state
+        .transport
+        .clone_intents()
+        .get(&request.intent_id)
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn git_repository_clone(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: GitCloneNativeRequest,
+) -> CommandResult<CloneResult> {
+    validate_clone_native_request(&request).map_err(command_error)?;
+    ensure_permission(
+        &state.plugins,
+        &state.permissions,
+        &request.plugin_id,
+        "git.network:execute",
+        CLONE_INTENTS_RESOURCE,
+    )
+    .map_err(command_error)?;
+    let operation_guard = state
+        .transport
+        .reserve_operation(
+            request.operation_id.clone(),
+            request.plugin_id.clone(),
+            TransportAuthorizationDomain::CloneIntents,
+        )
+        .map_err(command_error)?;
+    let input = clone_input(request);
+    let reporter = job_event_reporter(app, state.jobs.clone());
+    let transport = state.transport.clone();
+    run_transport_blocking(move || {
+        transport.clone_repository_reserved(input, reporter, operation_guard)
+    })
+    .await
+    .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn git_repository_fetch(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: GitRepositoryFetchNativeRequest,
+) -> CommandResult<NetworkOperationResult> {
+    ensure_network_repository_request(
+        &state.plugins,
+        &state.permissions,
+        &request.plugin_id,
+        request.interactive_confirmed,
+        &request.operation_id,
+    )
+    .map_err(command_error)?;
+    let operation_guard = state
+        .transport
+        .reserve_operation(
+            request.operation_id.clone(),
+            request.plugin_id.clone(),
+            TransportAuthorizationDomain::Repositories,
+        )
+        .map_err(command_error)?;
+    let input = FetchInput {
+        repository_id: request.repository_id,
+        context: transport_context(request.project_id, request.workspace_id)
+            .map_err(command_error)?,
+        remote_name: request.remote_name,
+        operation_id: request.operation_id,
+        interactive: true,
+    };
+    let reporter = job_event_reporter(app, state.jobs.clone());
+    let transport = state.transport.clone();
+    run_transport_blocking(move || transport.fetch_reserved(input, reporter, operation_guard))
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn git_repository_pull(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: GitRepositoryPullNativeRequest,
+) -> CommandResult<NetworkOperationResult> {
+    ensure_network_repository_request(
+        &state.plugins,
+        &state.permissions,
+        &request.plugin_id,
+        request.interactive_confirmed,
+        &request.operation_id,
+    )
+    .map_err(command_error)?;
+    let operation_guard = state
+        .transport
+        .reserve_operation(
+            request.operation_id.clone(),
+            request.plugin_id.clone(),
+            TransportAuthorizationDomain::Repositories,
+        )
+        .map_err(command_error)?;
+    let input = PullInput {
+        repository_id: request.repository_id,
+        context: transport_context(request.project_id, request.workspace_id)
+            .map_err(command_error)?,
+        operation_id: request.operation_id,
+        interactive: true,
+    };
+    let reporter = job_event_reporter(app, state.jobs.clone());
+    let transport = state.transport.clone();
+    run_transport_blocking(move || transport.pull_reserved(input, reporter, operation_guard))
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn git_repository_push(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: GitRepositoryPushNativeRequest,
+) -> CommandResult<NetworkOperationResult> {
+    ensure_network_repository_request(
+        &state.plugins,
+        &state.permissions,
+        &request.plugin_id,
+        request.interactive_confirmed,
+        &request.operation_id,
+    )
+    .map_err(command_error)?;
+    let operation_guard = state
+        .transport
+        .reserve_operation(
+            request.operation_id.clone(),
+            request.plugin_id.clone(),
+            TransportAuthorizationDomain::Repositories,
+        )
+        .map_err(command_error)?;
+    let input = PushInput {
+        repository_id: request.repository_id,
+        context: transport_context(request.project_id, request.workspace_id)
+            .map_err(command_error)?,
+        target: request.target.map(|target| PushTarget {
+            remote_name: target.remote_name,
+            branch_name: target.branch_name,
+        }),
+        operation_id: request.operation_id,
+        interactive: true,
+    };
+    let reporter = job_event_reporter(app, state.jobs.clone());
+    let transport = state.transport.clone();
+    run_transport_blocking(move || transport.push_reserved(input, reporter, operation_guard))
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn git_transport_operation_cancel(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: GitTransportOperationCancelNativeRequest,
+) -> CommandResult<()> {
+    validate_operation_id(&request.operation_id).map_err(command_error)?;
+    validate_plugin_id(&request.plugin_id).map_err(command_error)?;
+    let Some(authorization) = state
+        .transport
+        .operation_authorization(&request.operation_id)
+    else {
+        return Ok(());
+    };
+    if authorization.plugin_id != request.plugin_id {
+        return Err(command_error(AppError::PermissionDenied));
+    }
+    let resource = match authorization.domain {
+        TransportAuthorizationDomain::CloneIntents => CLONE_INTENTS_RESOURCE,
+        TransportAuthorizationDomain::Repositories => REPOSITORIES_RESOURCE,
+    };
+    ensure_permission(
+        &state.plugins,
+        &state.permissions,
+        &request.plugin_id,
+        "git.network:execute",
+        resource,
+    )
+    .map_err(command_error)?;
+    if state
+        .transport
+        .cancel_owned_operation(
+            &request.operation_id,
+            &request.plugin_id,
+            authorization.domain,
+        )
+        .map_err(command_error)?
+    {
+        match state.jobs.request_cancel(&request.operation_id) {
+            Ok(job) => {
+                let _ = app.emit("job://updated", job);
+            }
+            Err(AppError::NotFound(_)) => {}
+            Err(error) => return Err(command_error(error)),
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub fn provider_instance_list(
     state: State<'_, AppState>,
 ) -> CommandResult<ProviderInstanceListResponse> {
@@ -1400,6 +2220,234 @@ fn provider_account_resource(account_id: &str) -> Result<String, AppError> {
     Ok(format!("provider-account/{account_id}"))
 }
 
+fn require_http_path(use_http_path: bool) -> Result<(), AppError> {
+    if !use_http_path {
+        return Err(AppError::InvalidInput(
+            "HTTPS transport profiles require credential.useHttpPath".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_exact_builtin_permission(
+    plugins: &PluginRegistry,
+    permissions: &PermissionGateway,
+    plugin_id: &str,
+    expected_plugin_id: &str,
+    capability: &str,
+    resource: &str,
+) -> Result<(), AppError> {
+    if plugin_id != expected_plugin_id {
+        return Err(AppError::PermissionDenied);
+    }
+    ensure_builtin_permission(plugins, permissions, plugin_id, capability, resource)
+}
+
+fn ensure_repository_permission(
+    plugins: &PluginRegistry,
+    permissions: &PermissionGateway,
+    plugin_id: &str,
+    capability: &str,
+) -> Result<(), AppError> {
+    ensure_permission(
+        plugins,
+        permissions,
+        plugin_id,
+        capability,
+        REPOSITORIES_RESOURCE,
+    )
+}
+
+fn ensure_network_repository_request(
+    plugins: &PluginRegistry,
+    permissions: &PermissionGateway,
+    plugin_id: &str,
+    interactive_confirmed: bool,
+    operation_id: &str,
+) -> Result<(), AppError> {
+    ensure_interactive_network_allowed(plugin_id, interactive_confirmed)?;
+    validate_operation_id(operation_id)?;
+    ensure_permission(
+        plugins,
+        permissions,
+        plugin_id,
+        "git.network:execute",
+        REPOSITORIES_RESOURCE,
+    )?;
+    ensure_repository_permission(plugins, permissions, plugin_id, "repositories:write")
+}
+
+fn transport_context(
+    project_id: Option<String>,
+    workspace_id: Option<String>,
+) -> Result<QueryContext, AppError> {
+    let context = QueryContext {
+        project_id,
+        workspace_id,
+    };
+    context.validate_for_command()?;
+    Ok(context)
+}
+
+fn clone_input(request: GitCloneNativeRequest) -> CloneInput {
+    CloneInput {
+        source: match request.source {
+            CloneSourceRequest::Intent { intent_id } => CloneSource::Intent(intent_id),
+            CloneSourceRequest::Manual { remote_url } => CloneSource::Manual(remote_url),
+        },
+        transport_kind: request.transport_kind,
+        profile_id: request.profile_id,
+        destination_parent: request.destination_parent,
+        folder_name: request.folder_name,
+        project_target: request.project_target,
+        operation_id: request.operation_id,
+        interactive: true,
+    }
+}
+
+fn job_event_reporter(
+    app: AppHandle,
+    jobs: crate::jobs::JobService,
+) -> Arc<dyn NetworkProgressReporter> {
+    Arc::new(move |progress: NetworkProgress| {
+        if let Ok(items) = jobs.list()
+            && let Some(job) = items
+                .into_iter()
+                .find(|job| job.id == progress.operation_id)
+        {
+            let _ = app.emit("job://updated", job);
+        }
+    })
+}
+
+async fn run_transport_blocking<T, F>(operation: F) -> Result<T, AppError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, AppError> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(operation)
+        .await
+        .map_err(|_| AppError::Git("Git transport worker failed".to_owned()))?
+}
+
+async fn select_host_path(app: AppHandle, directory: bool) -> Result<Option<String>, AppError> {
+    let selected = tauri::async_runtime::spawn_blocking(move || {
+        if directory {
+            app.dialog().file().blocking_pick_folder()
+        } else {
+            app.dialog().file().blocking_pick_file()
+        }
+    })
+    .await
+    .map_err(|_| AppError::Git("native file picker failed".to_owned()))?;
+    selected
+        .map(|path| {
+            path.into_path()
+                .map_err(|_| AppError::InvalidInput("selected path is invalid".to_owned()))?
+                .into_os_string()
+                .into_string()
+                .map_err(|_| AppError::NonUtf8Path)
+        })
+        .transpose()
+}
+
+fn ensure_interactive_network_allowed(
+    plugin_id: &str,
+    interactive_confirmed: bool,
+) -> Result<(), AppError> {
+    validate_plugin_id(plugin_id)?;
+    if !interactive_confirmed {
+        return Err(AppError::PermissionDenied);
+    }
+    Ok(())
+}
+
+fn validate_clone_native_request(request: &GitCloneNativeRequest) -> Result<(), AppError> {
+    ensure_interactive_network_allowed(&request.plugin_id, request.interactive_confirmed)?;
+    if !request.destination_parent.is_absolute() {
+        return Err(AppError::InvalidInput(
+            "Clone destination parent must be an absolute Host-selected path".to_owned(),
+        ));
+    }
+    validate_operation_id(&request.operation_id)?;
+    if let Some(profile_id) = request.profile_id.as_deref() {
+        validate_uuid(profile_id, "transport profile ID")?;
+    }
+    match &request.source {
+        CloneSourceRequest::Intent { intent_id } => {
+            validate_uuid(intent_id, "Clone intent ID")?;
+            if request.plugin_id != GIT_CLIENT_PLUGIN_ID {
+                return Err(AppError::PermissionDenied);
+            }
+        }
+        CloneSourceRequest::Manual { remote_url } => {
+            if remote_url.is_empty()
+                || remote_url.len() > 4096
+                || remote_url.chars().any(char::is_control)
+            {
+                return Err(AppError::InvalidInput(
+                    "Clone Remote URL is invalid".to_owned(),
+                ));
+            }
+        }
+    }
+    if let CloneProjectTarget::Existing { project_id } = &request.project_target {
+        validate_uuid(project_id, "Project ID")?;
+    }
+    Ok(())
+}
+
+fn ensure_builtin_permission(
+    plugins: &PluginRegistry,
+    permissions: &PermissionGateway,
+    plugin_id: &str,
+    capability: &str,
+    resource: &str,
+) -> Result<(), AppError> {
+    validate_plugin_id(plugin_id)?;
+    let descriptor = plugins.get(plugin_id).ok_or(AppError::PermissionDenied)?;
+    if descriptor.manifest.kind != PluginKind::Builtin
+        || !plugins.manifest_requests(plugin_id, capability, resource)
+        || !permissions.is_allowed(plugin_id, capability, resource)?
+    {
+        return Err(AppError::PermissionDenied);
+    }
+    Ok(())
+}
+
+fn ensure_permission(
+    plugins: &PluginRegistry,
+    permissions: &PermissionGateway,
+    plugin_id: &str,
+    capability: &str,
+    resource: &str,
+) -> Result<(), AppError> {
+    validate_plugin_id(plugin_id)?;
+    if plugins.get(plugin_id).is_none()
+        || !permissions.is_allowed(plugin_id, capability, resource)?
+    {
+        return Err(AppError::PermissionDenied);
+    }
+    Ok(())
+}
+
+fn validate_plugin_id(plugin_id: &str) -> Result<(), AppError> {
+    if plugin_id.is_empty() || plugin_id.len() > 256 || plugin_id.chars().any(char::is_control) {
+        return Err(AppError::PermissionDenied);
+    }
+    Ok(())
+}
+
+fn validate_operation_id(operation_id: &str) -> Result<(), AppError> {
+    validate_uuid(operation_id, "transport operation ID")
+}
+
+fn validate_uuid(value: &str, label: &str) -> Result<(), AppError> {
+    Uuid::parse_str(value)
+        .map(|_| ())
+        .map_err(|_| AppError::InvalidInput(format!("{label} is invalid")))
+}
+
 fn context_from(request: GitContextRequest) -> Result<QueryContext, Box<ErrorEnvelope>> {
     let context = QueryContext {
         project_id: request.project_id,
@@ -1428,12 +2476,17 @@ fn command_error(error: AppError) -> Box<ErrorEnvelope> {
 mod tests {
     use super::app_info;
     use super::{
-        GitIdentityCreateRequest, GitProjectCreateRequest, GitProjectDeleteRequest,
-        GitRepositoryCommitRequest, GitRepositoryIdentityBindRequest, GitWorkspaceRequest,
-        GitWorkspaceUpdateRequest, ProviderAccountConnectRequest,
+        CloneSourceRequest, GitCloneNativeRequest, GitIdentityCreateRequest,
+        GitProjectCreateRequest, GitProjectDeleteRequest, GitRepositoryCommitRequest,
+        GitRepositoryFetchNativeRequest, GitRepositoryIdentityBindRequest,
+        GitRepositoryPushNativeRequest, GitTransportProfileCreateNativeRequest,
+        GitTransportProfileDeletionImpactResponse, GitTransportProfileDeletionRepository,
+        GitWorkspaceRequest, GitWorkspaceUpdateRequest, ProviderAccountConnectRequest,
         ProviderInstanceCreateCommandRequest, ProviderRepositoryListRequest, ThemeActivateRequest,
-        ThemeCatalogResponse, provider_account_resource, provider_repository_list_core,
-        revoke_provider_account_permission,
+        ThemeCatalogResponse, ensure_builtin_permission, ensure_exact_builtin_permission,
+        ensure_interactive_network_allowed, ensure_permission, provider_account_resource,
+        provider_repository_list_core, revoke_provider_account_permission,
+        validate_clone_native_request,
     };
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1444,7 +2497,9 @@ mod tests {
 
     use crate::db::Database;
     use crate::error::{AppError, ErrorEnvelope, ProviderFailure};
+    use crate::git::transport::model::{CloneProjectTarget, TransportKind};
     use crate::plugins::permissions::PermissionGateway;
+    use crate::plugins::registry::PluginRegistry;
     use crate::providers::adapter::{
         AdapterAccountContext, ProviderAdapterRegistry, RepositoryDiscoveryProvider,
     };
@@ -1508,6 +2563,236 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn plugin_transport_requests_cannot_enable_interaction_without_host_confirmation() {
+        assert!(ensure_interactive_network_allowed("git-ramus.git-client", false).is_err());
+        assert!(ensure_interactive_network_allowed("external.example", false).is_err());
+        assert!(ensure_interactive_network_allowed("git-ramus.git-client", true).is_ok());
+    }
+
+    #[test]
+    fn clone_native_request_requires_host_injected_absolute_parent() {
+        let request = GitCloneNativeRequest {
+            plugin_id: "git-ramus.git-client".to_owned(),
+            source: CloneSourceRequest::Manual {
+                remote_url: "https://git.example.test/acme/repo.git".to_owned(),
+            },
+            transport_kind: TransportKind::Https,
+            profile_id: None,
+            destination_parent: "relative/path".into(),
+            folder_name: "repo".to_owned(),
+            project_target: CloneProjectTarget::New {
+                name: "Repo".to_owned(),
+            },
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            interactive_confirmed: true,
+        };
+        assert!(validate_clone_native_request(&request).is_err());
+    }
+
+    #[test]
+    fn transport_native_dtos_are_strict_and_reject_plugin_controlled_execution_fields() {
+        let destination = std::env::temp_dir().to_string_lossy().into_owned();
+        let clone: GitCloneNativeRequest = serde_json::from_value(json!({
+            "pluginId": "git-ramus.git-client",
+            "source": {
+                "kind": "manual",
+                "remoteUrl": "https://git.example.test/acme/repo.git"
+            },
+            "transportKind": "https",
+            "profileId": null,
+            "destinationParent": destination,
+            "folderName": "repo",
+            "projectTarget": { "kind": "new", "name": "Repo" },
+            "operationId": uuid::Uuid::new_v4().to_string(),
+            "interactiveConfirmed": true
+        }))
+        .expect("Host-injected Clone request parses");
+        assert!(validate_clone_native_request(&clone).is_ok());
+
+        assert!(
+            serde_json::from_value::<GitCloneNativeRequest>(json!({
+                "pluginId": "git-ramus.git-client",
+                "source": {
+                    "kind": "manual",
+                    "remoteUrl": "https://git.example.test/acme/repo.git"
+                },
+                "transportKind": "https",
+                "profileId": null,
+                "folderName": "repo",
+                "projectTarget": { "kind": "new", "name": "Repo" },
+                "operationId": uuid::Uuid::new_v4().to_string(),
+                "interactiveConfirmed": true
+            }))
+            .is_err()
+        );
+        let clone_with_secret = json!({
+            "pluginId": "git-ramus.git-client",
+            "source": { "kind": "intent", "intentId": uuid::Uuid::new_v4().to_string() },
+            "transportKind": "https",
+            "profileId": null,
+            "destinationParent": std::env::temp_dir(),
+            "folderName": "repo",
+            "projectTarget": { "kind": "new", "name": "Repo" },
+            "operationId": uuid::Uuid::new_v4().to_string(),
+            "interactiveConfirmed": true,
+            "pat": "must-not-cross"
+        });
+        assert!(serde_json::from_value::<GitCloneNativeRequest>(clone_with_secret).is_err());
+
+        assert!(
+            serde_json::from_value::<GitTransportProfileCreateNativeRequest>(json!({
+                "pluginId": "git-ramus.git-client",
+                "kind": "ssh",
+                "displayName": "Work SSH",
+                "sshKeyAction": "selectFile",
+                "identitiesOnly": true
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<GitRepositoryFetchNativeRequest>(json!({
+                "pluginId": "git-ramus.git-client",
+                "projectId": uuid::Uuid::new_v4().to_string(),
+                "workspaceId": null,
+                "repositoryId": uuid::Uuid::new_v4().to_string(),
+                "remoteName": "origin",
+                "operationId": uuid::Uuid::new_v4().to_string(),
+                "interactiveConfirmed": true,
+                "args": ["--force"]
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<GitRepositoryPushNativeRequest>(json!({
+                "pluginId": "git-ramus.git-client",
+                "projectId": uuid::Uuid::new_v4().to_string(),
+                "workspaceId": null,
+                "repositoryId": uuid::Uuid::new_v4().to_string(),
+                "target": null,
+                "operationId": uuid::Uuid::new_v4().to_string(),
+                "interactiveConfirmed": true,
+                "refspec": "+refs/heads/*:refs/heads/*"
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn transport_deletion_impact_matches_the_public_repository_summary_contract() {
+        let response = GitTransportProfileDeletionImpactResponse {
+            profile_id: "c19f947f-afb2-4f87-8b44-0d325dfa60a2".to_owned(),
+            repositories: vec![GitTransportProfileDeletionRepository {
+                repository_id: "e012ea50-4a67-4bb5-977a-ab3234901adf".to_owned(),
+                display_name: "skills".to_owned(),
+                transport_kind: TransportKind::Ssh,
+            }],
+        };
+        let value = serde_json::to_value(response).unwrap();
+        assert_eq!(
+            value,
+            json!({
+                "profileId": "c19f947f-afb2-4f87-8b44-0d325dfa60a2",
+                "repositories": [{
+                    "repositoryId": "e012ea50-4a67-4bb5-977a-ab3234901adf",
+                    "displayName": "skills",
+                    "transportKind": "ssh"
+                }]
+            })
+        );
+        assert!(value.get("repositoryIds").is_none());
+    }
+
+    #[test]
+    fn transport_profile_boundaries_require_a_declared_and_granted_builtin_caller() {
+        let directory = tempfile::tempdir().expect("temporary plugin root creates");
+        write_transport_permission_plugin(directory.path(), "git-ramus.transport-ui", "builtin");
+        write_transport_permission_plugin(directory.path(), "example.transport-ui", "external");
+        let registry = PluginRegistry::discover(directory.path()).expect("plugins discover");
+        let database = Database::open_in_memory().expect("database opens");
+        let now = Utc::now().to_rfc3339();
+        database
+            .with_connection(|connection| {
+                for (plugin_id, kind) in [
+                    ("git-ramus.transport-ui", "builtin"),
+                    ("example.transport-ui", "external"),
+                ] {
+                    connection.execute(
+                        "INSERT INTO plugin_installations(plugin_id,version,kind,root_path,installed_at,updated_at) VALUES(?1,'0.1.0',?2,?1,?3,?3)",
+                        rusqlite::params![plugin_id, kind, now],
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        let permissions = PermissionGateway::new(database);
+        permissions
+            .grant_manifest_permissions(&registry.get("git-ramus.transport-ui").unwrap().manifest)
+            .unwrap();
+        permissions
+            .grant_dynamic(
+                "example.transport-ui",
+                "git.transport:manage",
+                "transport-profiles",
+            )
+            .unwrap();
+
+        assert!(
+            ensure_builtin_permission(
+                &registry,
+                &permissions,
+                "git-ramus.transport-ui",
+                "git.transport:manage",
+                "transport-profiles",
+            )
+            .is_ok()
+        );
+        assert!(
+            ensure_builtin_permission(
+                &registry,
+                &permissions,
+                "example.transport-ui",
+                "git.transport:manage",
+                "transport-profiles",
+            )
+            .is_err()
+        );
+        assert!(
+            ensure_permission(
+                &registry,
+                &permissions,
+                "example.transport-ui",
+                "git.transport:manage",
+                "transport-profiles",
+            )
+            .is_ok()
+        );
+        assert!(
+            ensure_exact_builtin_permission(
+                &registry,
+                &permissions,
+                "git-ramus.transport-ui",
+                "git-ramus.git-client",
+                "git.transport:manage",
+                "transport-profiles",
+            )
+            .is_err()
+        );
+    }
+
+    fn write_transport_permission_plugin(root: &std::path::Path, id: &str, kind: &str) {
+        let plugin = root.join(id);
+        std::fs::create_dir_all(&plugin).unwrap();
+        std::fs::write(
+            plugin.join("plugin.json"),
+            format!(
+                r#"{{"schemaVersion":1,"id":"{id}","name":"Transport UI","version":"0.1.0","publisher":"test","description":"Transport UI","kind":"{kind}","sdkVersion":"^0.1.0","entrypoints":{{"ui":"ui.html"}},"contributions":{{"navigation":[]}},"permissions":[{{"capability":"git.transport:manage","resources":["transport-profiles"]}}]}}"#
+            ),
+        )
+        .unwrap();
+        std::fs::write(plugin.join("ui.html"), "<h1>Transport</h1>").unwrap();
     }
 
     #[test]

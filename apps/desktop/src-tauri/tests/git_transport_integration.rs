@@ -24,7 +24,9 @@ use git_ramus_desktop_lib::git::transport::model::{
     EffectiveTransportSource, FetchInput, NetworkProgress, NetworkStage, PullInput, PushInput,
     PushTarget, TransportKind,
 };
-use git_ramus_desktop_lib::git::transport::operation::TransportOperationRegistry;
+use git_ramus_desktop_lib::git::transport::operation::{
+    TransportAuthorizationDomain, TransportOperationRegistry,
+};
 use git_ramus_desktop_lib::git::transport::profile_service::{
     DriftResolution, ProfileDeletionResolution, TransportProfileService,
 };
@@ -1198,7 +1200,9 @@ fn fetch_updates_remote_refs_and_persisted_ahead_behind() {
         "https://git.example.test/acme/repository.git"
     );
     let events = progress.events.lock().unwrap();
-    assert_eq!(events.first().unwrap().stage, NetworkStage::Transferring);
+    assert_eq!(events[0].stage, NetworkStage::Validating);
+    assert_eq!(events[1].stage, NetworkStage::AwaitingAuthentication);
+    assert_eq!(events[2].stage, NetworkStage::Transferring);
     assert_eq!(events.last().unwrap().stage, NetworkStage::Completed);
     assert!(
         events
@@ -1216,6 +1220,68 @@ fn fetch_updates_remote_refs_and_persisted_ahead_behind() {
         .snapshot
         .unwrap();
     assert_eq!(snapshot.behind, 1);
+}
+
+#[test]
+fn reserved_fetch_honors_cancellation_before_preflight_without_starting_git_or_a_job() {
+    let fixture = TransportFixture::with_https_bare_remote();
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let operation_guard = fixture
+        .transport
+        .reserve_operation(
+            operation_id.clone(),
+            "plugin.owner",
+            TransportAuthorizationDomain::Repositories,
+        )
+        .unwrap();
+    assert!(
+        fixture
+            .transport
+            .cancel_owned_operation(
+                &operation_id,
+                "plugin.owner",
+                TransportAuthorizationDomain::Repositories,
+            )
+            .unwrap()
+    );
+    let command_count = fixture.captured_git_commands.lock().unwrap().len();
+
+    let error = fixture
+        .transport
+        .fetch_reserved(
+            FetchInput {
+                repository_id: fixture.repository_id.clone(),
+                context: fixture.project_context(),
+                remote_name: "origin".to_owned(),
+                operation_id: operation_id.clone(),
+                interactive: true,
+            },
+            Arc::new(NoopNetworkProgressReporter),
+            operation_guard,
+        )
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        AppError::Transport(failure) if failure.code() == "git.transport.cancelled"
+    ));
+    assert_eq!(
+        fixture.captured_git_commands.lock().unwrap().len(),
+        command_count
+    );
+    assert!(
+        JobService::new(fixture.database.clone())
+            .list()
+            .unwrap()
+            .iter()
+            .all(|job| job.id != operation_id)
+    );
+    assert!(
+        fixture
+            .transport
+            .operation_authorization(&operation_id)
+            .is_none()
+    );
 }
 
 #[test]
@@ -1355,6 +1421,65 @@ fn push_sets_upstream_once_and_rejects_non_fast_forward_without_force() {
         "origin".to_owned(),
         "HEAD:refs/heads/feature/safe".to_owned(),
     ]));
+}
+
+#[test]
+fn reserved_clone_honors_cancellation_before_preflight_without_consuming_the_intent() {
+    let fixture = CloneFixture::with_provider_source_and_https_bare_remote();
+    let input = fixture.input("cancel-before-preflight");
+    let operation_id = input.operation_id.clone();
+    let operation_guard = fixture
+        .base
+        .transport
+        .reserve_operation(
+            operation_id.clone(),
+            "plugin.owner",
+            TransportAuthorizationDomain::CloneIntents,
+        )
+        .unwrap();
+    assert!(
+        fixture
+            .base
+            .transport
+            .cancel_owned_operation(
+                &operation_id,
+                "plugin.owner",
+                TransportAuthorizationDomain::CloneIntents,
+            )
+            .unwrap()
+    );
+
+    let error = fixture
+        .base
+        .transport
+        .clone_repository_reserved(input, fixture.progress(), operation_guard)
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        AppError::Transport(failure) if failure.code() == "git.transport.cancelled"
+    ));
+    assert!(
+        fixture
+            .base
+            .transport
+            .clone_intents()
+            .get(&fixture.intent_id)
+            .is_ok()
+    );
+    assert!(
+        !fixture
+            .project_root
+            .join("cancel-before-preflight")
+            .exists()
+    );
+    assert!(
+        JobService::new(fixture.base.database.clone())
+            .list()
+            .unwrap()
+            .iter()
+            .all(|job| job.id != operation_id)
+    );
 }
 
 #[test]
@@ -1504,10 +1629,12 @@ fn clone_provider_binding_failure_is_partial_and_never_deletes_the_final_reposit
     assert!(operation.profile_applied);
     assert!(!operation.provider_binding_complete);
     assert!(std::path::Path::new(&operation.owner_marker_path).is_file());
-    assert_eq!(
-        progress.events.lock().unwrap().last().unwrap().stage,
-        NetworkStage::Partial
-    );
+    let events = progress.events.lock().unwrap();
+    assert_eq!(events[0].stage, NetworkStage::Validating);
+    assert_eq!(events[1].stage, NetworkStage::AwaitingAuthentication);
+    assert_eq!(events[2].stage, NetworkStage::Transferring);
+    assert_eq!(events.last().unwrap().stage, NetworkStage::Partial);
+    drop(events);
     let recovery = fixture.base.transport.classify_clone_recovery().unwrap();
     assert_eq!(recovery.len(), 1);
     assert_eq!(

@@ -13,8 +13,22 @@ struct RegistryState {
 }
 
 struct OperationEntry {
-    resource_key: String,
+    resource_key: Option<String>,
+    plugin_id: String,
+    domain: TransportAuthorizationDomain,
     cancellation: Arc<AtomicBool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportAuthorizationDomain {
+    CloneIntents,
+    Repositories,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransportOperationAuthorization {
+    pub plugin_id: String,
+    pub domain: TransportAuthorizationDomain,
 }
 
 #[derive(Clone, Default)]
@@ -23,6 +37,44 @@ pub struct TransportOperationRegistry {
 }
 
 impl TransportOperationRegistry {
+    pub fn reserve(
+        &self,
+        operation_id: impl Into<String>,
+        plugin_id: impl Into<String>,
+        domain: TransportAuthorizationDomain,
+    ) -> Result<TransportOperationGuard, AppError> {
+        let operation_id = operation_id.into();
+        let plugin_id = plugin_id.into();
+        if operation_id.is_empty() || plugin_id.is_empty() {
+            return Err(AppError::InvalidInput(
+                "transport operation identity is empty".to_owned(),
+            ));
+        }
+
+        let mut state = self.state.lock();
+        if state.operations.contains_key(&operation_id) {
+            return Err(AppError::Transport(TransportFailure::repository_busy()));
+        }
+
+        let cancellation = Arc::new(AtomicBool::new(false));
+        state.operations.insert(
+            operation_id.clone(),
+            OperationEntry {
+                resource_key: None,
+                plugin_id,
+                domain,
+                cancellation: cancellation.clone(),
+            },
+        );
+        Ok(TransportOperationGuard {
+            state: Arc::downgrade(&self.state),
+            operation_id,
+            resource_key: None,
+            cancellation,
+            active: true,
+        })
+    }
+
     pub fn register(
         &self,
         operation_id: impl Into<String>,
@@ -30,35 +82,41 @@ impl TransportOperationRegistry {
     ) -> Result<TransportOperationGuard, AppError> {
         let operation_id = operation_id.into();
         let resource_key = resource_key.into();
-        if operation_id.is_empty() || resource_key.is_empty() {
-            return Err(AppError::InvalidInput(
-                "transport operation identity is empty".to_owned(),
-            ));
-        }
-        let mut state = self.state.lock();
-        if state.operations.contains_key(&operation_id)
-            || state.resources.contains_key(&resource_key)
-        {
-            return Err(AppError::Transport(TransportFailure::repository_busy()));
-        }
-        let cancellation = Arc::new(AtomicBool::new(false));
-        state
-            .resources
-            .insert(resource_key.clone(), operation_id.clone());
-        state.operations.insert(
-            operation_id.clone(),
-            OperationEntry {
-                resource_key: resource_key.clone(),
-                cancellation: cancellation.clone(),
-            },
-        );
-        Ok(TransportOperationGuard {
-            state: Arc::downgrade(&self.state),
+        let mut guard = self.reserve(
             operation_id,
-            resource_key,
-            cancellation,
-            active: true,
-        })
+            "git-transport.internal",
+            TransportAuthorizationDomain::Repositories,
+        )?;
+        guard.bind_resource(resource_key)?;
+        Ok(guard)
+    }
+
+    pub fn authorization(&self, operation_id: &str) -> Option<TransportOperationAuthorization> {
+        let state = self.state.lock();
+        state
+            .operations
+            .get(operation_id)
+            .map(|entry| TransportOperationAuthorization {
+                plugin_id: entry.plugin_id.clone(),
+                domain: entry.domain,
+            })
+    }
+
+    pub fn cancel_owned(
+        &self,
+        operation_id: &str,
+        plugin_id: &str,
+        domain: TransportAuthorizationDomain,
+    ) -> Result<bool, AppError> {
+        let state = self.state.lock();
+        let Some(entry) = state.operations.get(operation_id) else {
+            return Ok(false);
+        };
+        if entry.plugin_id != plugin_id || entry.domain != domain {
+            return Err(AppError::PermissionDenied);
+        }
+        entry.cancellation.store(true, Ordering::Release);
+        Ok(true)
     }
 
     pub fn cancel(&self, operation_id: &str) -> bool {
@@ -74,7 +132,7 @@ impl TransportOperationRegistry {
 pub struct TransportOperationGuard {
     state: Weak<Mutex<RegistryState>>,
     operation_id: String,
-    resource_key: String,
+    resource_key: Option<String>,
     cancellation: Arc<AtomicBool>,
     active: bool,
 }
@@ -86,6 +144,62 @@ impl TransportOperationGuard {
 
     pub fn cancellation(&self) -> Arc<AtomicBool> {
         self.cancellation.clone()
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancellation.load(Ordering::Acquire)
+    }
+
+    pub fn bind_resource(&mut self, resource_key: impl Into<String>) -> Result<(), AppError> {
+        let resource_key = resource_key.into();
+        if resource_key.is_empty() {
+            return Err(AppError::InvalidInput(
+                "transport operation resource is empty".to_owned(),
+            ));
+        }
+        if !self.active {
+            return Err(AppError::Canceled);
+        }
+
+        let Some(state) = self.state.upgrade() else {
+            self.active = false;
+            return Err(AppError::Canceled);
+        };
+        let mut state = state.lock();
+        let Some(entry) = state.operations.get(&self.operation_id) else {
+            self.active = false;
+            return Err(AppError::Canceled);
+        };
+        if !Arc::ptr_eq(&entry.cancellation, &self.cancellation) {
+            self.active = false;
+            return Err(AppError::Canceled);
+        }
+        if self.cancellation.load(Ordering::Acquire) {
+            return Err(AppError::Canceled);
+        }
+        if let Some(bound_resource) = &entry.resource_key {
+            return if bound_resource == &resource_key {
+                Ok(())
+            } else {
+                Err(AppError::InvalidInput(
+                    "transport operation is already bound to another resource".to_owned(),
+                ))
+            };
+        }
+        if state.resources.contains_key(&resource_key) {
+            return Err(AppError::Transport(TransportFailure::repository_busy()));
+        }
+
+        state
+            .resources
+            .insert(resource_key.clone(), self.operation_id.clone());
+        state
+            .operations
+            .get_mut(&self.operation_id)
+            .expect("operation exists while registry lock is held")
+            .resource_key = Some(resource_key.clone());
+        self.resource_key = Some(resource_key);
+        Ok(())
     }
 
     pub fn finish(mut self) {
@@ -102,7 +216,7 @@ impl TransportOperationGuard {
         };
         let mut state = state.lock();
         let completed = !self.cancellation.load(Ordering::Acquire);
-        remove_registration(&mut state, &self.operation_id, &self.resource_key);
+        remove_registration(&mut state, &self.operation_id, self.resource_key.as_deref());
         self.active = false;
         completed
     }
@@ -116,24 +230,26 @@ impl TransportOperationGuard {
             return;
         };
         let mut state = state.lock();
-        remove_registration(&mut state, &self.operation_id, &self.resource_key);
+        remove_registration(&mut state, &self.operation_id, self.resource_key.as_deref());
     }
 }
 
-fn remove_registration(state: &mut RegistryState, operation_id: &str, resource_key: &str) {
+fn remove_registration(state: &mut RegistryState, operation_id: &str, resource_key: Option<&str>) {
     let owns_operation = state
         .operations
         .get(operation_id)
-        .is_some_and(|entry| entry.resource_key == resource_key);
+        .is_some_and(|entry| entry.resource_key.as_deref() == resource_key);
     if owns_operation {
         state.operations.remove(operation_id);
     }
-    let owns_resource = state
-        .resources
-        .get(resource_key)
-        .is_some_and(|owner| owner == operation_id);
-    if owns_resource {
-        state.resources.remove(resource_key);
+    if let Some(resource_key) = resource_key {
+        let owns_resource = state
+            .resources
+            .get(resource_key)
+            .is_some_and(|owner| owner == operation_id);
+        if owns_resource {
+            state.resources.remove(resource_key);
+        }
     }
 }
 
@@ -147,7 +263,8 @@ impl Drop for TransportOperationGuard {
 mod tests {
     use std::sync::atomic::Ordering;
 
-    use super::TransportOperationRegistry;
+    use super::{TransportAuthorizationDomain, TransportOperationRegistry};
+    use crate::error::AppError;
 
     #[test]
     fn registry_rejects_duplicate_ids_and_resources_and_cancels_only_the_owner() {
@@ -196,5 +313,67 @@ mod tests {
         assert!(registry.cancel("canceled"));
         assert!(!canceled.finish_if_not_cancelled());
         assert!(registry.register("canceled", "repository-two").is_ok());
+    }
+
+    #[test]
+    fn reserved_operations_bind_owner_domain_and_honor_early_cancellation() {
+        let registry = TransportOperationRegistry::default();
+        let mut guard = registry
+            .reserve(
+                "operation",
+                "plugin.owner",
+                TransportAuthorizationDomain::CloneIntents,
+            )
+            .unwrap();
+        let authorization = registry.authorization("operation").unwrap();
+        assert_eq!(authorization.plugin_id, "plugin.owner");
+        assert_eq!(
+            authorization.domain,
+            TransportAuthorizationDomain::CloneIntents
+        );
+        assert!(matches!(
+            registry.cancel_owned(
+                "operation",
+                "plugin.other",
+                TransportAuthorizationDomain::CloneIntents,
+            ),
+            Err(AppError::PermissionDenied)
+        ));
+        assert!(
+            registry
+                .cancel_owned(
+                    "operation",
+                    "plugin.owner",
+                    TransportAuthorizationDomain::CloneIntents,
+                )
+                .unwrap()
+        );
+        assert!(matches!(
+            guard.bind_resource("clone:/destination"),
+            Err(AppError::Canceled)
+        ));
+        drop(guard);
+        assert!(registry.authorization("operation").is_none());
+    }
+
+    #[test]
+    fn separately_reserved_operations_cannot_bind_the_same_resource() {
+        let registry = TransportOperationRegistry::default();
+        let mut first = registry
+            .reserve(
+                "operation-one",
+                "plugin.one",
+                TransportAuthorizationDomain::Repositories,
+            )
+            .unwrap();
+        let mut second = registry
+            .reserve(
+                "operation-two",
+                "plugin.two",
+                TransportAuthorizationDomain::Repositories,
+            )
+            .unwrap();
+        first.bind_resource("repository:one").unwrap();
+        assert!(second.bind_resource("repository:one").is_err());
     }
 }

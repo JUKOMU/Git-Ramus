@@ -59,6 +59,24 @@ macro_rules! invoke_handlers {
             commands::git_repository_bind_identity,
             commands::git_repository_unbind_identity,
             commands::git_repository_effective_identity,
+            commands::git_transport_profile_list,
+            commands::git_transport_profile_create,
+            commands::git_transport_profile_update,
+            commands::git_transport_profile_deletion_impact,
+            commands::git_transport_profile_delete,
+            commands::git_transport_select_destination_parent,
+            commands::git_transport_select_ssh_key,
+            commands::git_repository_effective_transport,
+            commands::git_repository_network_state,
+            commands::git_repository_bind_transport,
+            commands::git_repository_unbind_transport,
+            commands::git_clone_intent_create,
+            commands::git_clone_intent_get,
+            commands::git_repository_clone,
+            commands::git_repository_fetch,
+            commands::git_repository_pull,
+            commands::git_repository_push,
+            commands::git_transport_operation_cancel,
             commands::provider_instance_list,
             commands::provider_instance_create,
             commands::provider_instance_update,
@@ -129,6 +147,11 @@ const fn e2e_provider_fixture_handler_enabled() -> bool {
 }
 
 #[cfg(test)]
+const fn transport_e2e_command_handler_enabled() -> bool {
+    cfg!(all(feature = "e2e", debug_assertions))
+}
+
+#[cfg(test)]
 mod tests {
     #[test]
     fn e2e_seed_fixture_handler_matches_the_debug_feature_boundary() {
@@ -142,6 +165,14 @@ mod tests {
     fn e2e_provider_fixture_handler_matches_the_debug_feature_boundary() {
         assert_eq!(
             super::e2e_provider_fixture_handler_enabled(),
+            cfg!(all(feature = "e2e", debug_assertions))
+        );
+    }
+
+    #[test]
+    fn transport_e2e_command_handler_matches_the_debug_feature_boundary() {
+        assert_eq!(
+            super::transport_e2e_command_handler_enabled(),
             cfg!(all(feature = "e2e", debug_assertions))
         );
     }

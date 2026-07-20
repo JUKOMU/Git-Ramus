@@ -4,9 +4,16 @@ use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 
 use crate::db::Database;
-use crate::error::AppError;
+use crate::error::{AppError, TransportFailure};
+use crate::git::engine::{GitRunner, SystemGitRunner};
 use crate::git::repository::RepositoryWriteLocks;
 use crate::git::service::GitService;
+use crate::git::transport::clone::{
+    CloneIntentBroker, CloneIntentRegistry, CloneRepositoryResolver,
+};
+use crate::git::transport::operation::TransportOperationRegistry;
+use crate::git::transport::profile_service::TransportProfileService;
+use crate::git::transport::service::GitTransportService;
 use crate::identity::IdentityService;
 use crate::jobs::JobService;
 use crate::plugins::PluginRegistry;
@@ -31,6 +38,8 @@ pub struct AppState {
     pub plugins: PluginRegistry,
     pub permissions: PermissionGateway,
     pub providers: ProviderService,
+    pub transport: GitTransportService,
+    pub clone_intents: CloneIntentBroker,
     pub themes: ThemeManager,
     #[cfg(all(feature = "e2e", debug_assertions))]
     pub(crate) e2e_app_data_root: PathBuf,
@@ -131,15 +140,47 @@ impl AppState {
             Arc::clone(&secrets),
             provider_adapters,
         );
+        let runner: Arc<dyn GitRunner> = Arc::new(SystemGitRunner::new());
+        let git = GitService::with_runner_concurrency_and_write_locks(
+            database.clone(),
+            runner.clone(),
+            4,
+            write_locks.clone(),
+        );
+        let identities = IdentityService::with_write_locks(database.clone(), write_locks.clone());
+        let profiles =
+            TransportProfileService::new(database.clone(), write_locks.clone(), runner.clone());
+        let jobs = JobService::new(database.clone());
+        let operations = TransportOperationRegistry::default();
+        let intent_registry = CloneIntentRegistry::default();
+        let resolver: Arc<dyn CloneRepositoryResolver> = Arc::new(providers.clone());
+        let clone_intents = CloneIntentBroker::new(intent_registry.clone(), resolver);
+        let transport = GitTransportService::new(
+            database.clone(),
+            git.clone(),
+            profiles,
+            jobs.clone(),
+            operations,
+            write_locks,
+            runner,
+        )
+        .with_clone_support(intent_registry, Some(Arc::new(providers.clone())));
+        jobs.fail_running_by_kind_prefix(
+            "git.transport.",
+            TransportFailure::interrupted().envelope(),
+        )?;
+        let _recovery = transport.classify_clone_recovery()?;
         providers.retry_secret_cleanup()?;
         Ok(Self {
-            jobs: JobService::new(database.clone()),
-            git: GitService::with_write_locks(database.clone(), write_locks.clone()),
-            identities: IdentityService::with_write_locks(database.clone(), write_locks),
+            jobs,
+            git,
+            identities,
             secrets,
             plugins,
             permissions,
             providers,
+            transport,
+            clone_intents,
             themes,
             database,
             #[cfg(all(feature = "e2e", debug_assertions))]
@@ -232,6 +273,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::AppState;
+    use crate::jobs::model::JobStatus;
 
     #[cfg(all(feature = "e2e", debug_assertions))]
     use super::{E2E_APP_DATA_PREFIX, resolve_e2e_app_data_override};
@@ -315,6 +357,36 @@ mod tests {
                 .permissions
                 .is_allowed("git-ramus.welcome", "app:read", "info")
                 .expect("permission reads")
+        );
+    }
+
+    #[test]
+    fn bootstrap_marks_interrupted_transport_jobs() {
+        let directory = tempdir().expect("temp directory creates");
+        let plugin_root = directory.path().join("plugins");
+        write_builtin_plugin(&plugin_root);
+        let database_path = directory.path().join("git-ramus.db");
+
+        let first = AppState::from_paths(&database_path, &plugin_root).expect("bootstrap succeeds");
+        let job = first
+            .jobs
+            .create("git.transport.fetch", "Interrupted Fetch")
+            .expect("transport Job creates");
+        first.jobs.start(&job.id).expect("transport Job starts");
+        drop(first);
+
+        let second = AppState::from_paths(&database_path, &plugin_root).expect("restart succeeds");
+        let interrupted = second
+            .jobs
+            .list()
+            .expect("Jobs list")
+            .into_iter()
+            .find(|candidate| candidate.id == job.id)
+            .expect("interrupted Job remains visible");
+        assert_eq!(interrupted.status, JobStatus::Failed);
+        assert_eq!(
+            interrupted.error.as_ref().map(|error| error.code.as_str()),
+            Some("git.transport.interrupted")
         );
     }
 
