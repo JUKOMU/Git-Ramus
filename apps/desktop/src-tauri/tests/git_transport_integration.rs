@@ -6,14 +6,17 @@ use std::sync::{Arc, Mutex};
 use chrono::Utc;
 use git_ramus_desktop_lib::db::Database;
 use git_ramus_desktop_lib::error::AppError;
-use git_ramus_desktop_lib::git::engine::{GitCommand, GitOutput, GitRunner, SystemGitRunner};
+use git_ramus_desktop_lib::git::engine::{
+    GitCommand, GitOutput, GitRunContext, GitRunner, SystemGitRunner,
+};
 use git_ramus_desktop_lib::git::model::{Project, Remote, Repository, RepositoryKind, Trust};
 use git_ramus_desktop_lib::git::repository::{
     ProjectRepository, RepositoryRepository, RepositoryWriteLocks, TrustRepository,
 };
 use git_ramus_desktop_lib::git::service::{GitService, QueryContext};
 use git_ramus_desktop_lib::git::transport::model::{
-    EffectiveTransportSource, FetchInput, NetworkProgress, NetworkStage,
+    EffectiveTransportSource, FetchInput, NetworkProgress, NetworkStage, PullInput, PushInput,
+    PushTarget,
 };
 use git_ramus_desktop_lib::git::transport::operation::TransportOperationRegistry;
 use git_ramus_desktop_lib::git::transport::profile_service::{
@@ -36,6 +39,39 @@ struct FailingConfigWriteRunner {
 #[derive(Default)]
 struct RecordingNetworkProgressReporter {
     events: Mutex<Vec<NetworkProgress>>,
+}
+
+struct RecordingGitRunner {
+    inner: Arc<dyn GitRunner>,
+    commands: Arc<Mutex<Vec<Vec<String>>>>,
+}
+
+impl RecordingGitRunner {
+    fn record(&self, command: &GitCommand) {
+        self.commands.lock().unwrap().push(
+            command
+                .args
+                .iter()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect(),
+        );
+    }
+}
+
+impl GitRunner for RecordingGitRunner {
+    fn run(&self, command: GitCommand) -> Result<GitOutput, AppError> {
+        self.record(&command);
+        self.inner.run(command)
+    }
+
+    fn run_with_context(
+        &self,
+        command: GitCommand,
+        context: GitRunContext,
+    ) -> Result<GitOutput, AppError> {
+        self.record(&command);
+        self.inner.run_with_context(command, context)
+    }
 }
 
 impl NetworkProgressReporter for RecordingNetworkProgressReporter {
@@ -71,6 +107,7 @@ struct TransportFixture {
     service: TransportProfileService,
     git: GitService,
     transport: GitTransportService,
+    captured_git_commands: Arc<Mutex<Vec<Vec<String>>>>,
 }
 
 impl TransportFixture {
@@ -93,6 +130,16 @@ impl TransportFixture {
     fn with_https_bare_remote() -> Self {
         let fixture = Self::with_options(None, None, true);
         fixture.trust();
+        fixture
+    }
+
+    fn with_untracked_local_branch() -> Self {
+        let fixture = Self::with_https_bare_remote();
+        run_git(
+            &fixture.repository_path,
+            &["checkout", "--quiet", "-b", "local-feature"],
+        );
+        fixture.commit_local("local-feature.txt");
         fixture
     }
 
@@ -223,6 +270,11 @@ impl TransportFixture {
             }),
             None => Arc::new(runner),
         };
+        let captured_git_commands = Arc::new(Mutex::new(Vec::new()));
+        let runner: Arc<dyn GitRunner> = Arc::new(RecordingGitRunner {
+            inner: runner,
+            commands: captured_git_commands.clone(),
+        });
         let write_locks = RepositoryWriteLocks::default();
         let git = GitService::with_runner_concurrency_and_write_locks(
             database.clone(),
@@ -252,6 +304,7 @@ impl TransportFixture {
             service,
             git,
             transport,
+            captured_git_commands,
         }
     }
 
@@ -300,6 +353,109 @@ impl TransportFixture {
         run_git(writer, &["commit", "--quiet", "-m", "remote update"]);
         run_git(writer, &["push", "--quiet", "origin", "main"]);
     }
+
+    fn pull_input(&self) -> PullInput {
+        PullInput {
+            repository_id: self.repository_id.clone(),
+            context: self.project_context(),
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            interactive: true,
+        }
+    }
+
+    fn push_input(&self) -> PushInput {
+        PushInput {
+            repository_id: self.repository_id.clone(),
+            context: self.project_context(),
+            target: None,
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            interactive: true,
+        }
+    }
+
+    fn commit_local(&self, file_name: &str) {
+        run_git(
+            &self.repository_path,
+            &["config", "user.name", "Git-Ramus Fixture"],
+        );
+        run_git(
+            &self.repository_path,
+            &["config", "user.email", "fixture@git-ramus.invalid"],
+        );
+        std::fs::write(self.repository_path.join(file_name), "local update\n")
+            .expect("local update writes");
+        run_git_strings(
+            &self.repository_path,
+            &["add".to_owned(), "--".to_owned(), file_name.to_owned()],
+        );
+        run_git(
+            &self.repository_path,
+            &["commit", "--quiet", "-m", "local update"],
+        );
+    }
+
+    fn head_oid(&self) -> String {
+        git_stdout(&self.repository_path, &["rev-parse", "HEAD"])
+    }
+
+    fn git_dir(&self) -> std::path::PathBuf {
+        self.repository_path.join(".git")
+    }
+
+    fn upstream(&self) -> Option<String> {
+        let output = Command::new("git")
+            .current_dir(&self.repository_path)
+            .args([
+                "rev-parse",
+                "--abbrev-ref",
+                "--symbolic-full-name",
+                "@{upstream}",
+            ])
+            .output()
+            .expect("Git upstream probe starts");
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8(output.stdout).unwrap().trim().to_owned())
+    }
+
+    fn rewrite_remote_branch(&self, branch_name: &str) {
+        let writer = self
+            .remote_writer_path
+            .as_ref()
+            .expect("fixture has a Bare Remote writer");
+        run_git_strings(
+            writer,
+            &[
+                "checkout".to_owned(),
+                "--quiet".to_owned(),
+                "-B".to_owned(),
+                branch_name.to_owned(),
+                "main".to_owned(),
+            ],
+        );
+        std::fs::write(writer.join("remote-rewrite.txt"), "remote rewrite\n")
+            .expect("Remote rewrite writes");
+        run_git(writer, &["add", "--", "remote-rewrite.txt"]);
+        run_git(
+            writer,
+            &["commit", "--quiet", "-m", "rewrite remote branch"],
+        );
+        run_git_strings(
+            writer,
+            &[
+                "push".to_owned(),
+                "--quiet".to_owned(),
+                "--force".to_owned(),
+                "origin".to_owned(),
+                branch_name.to_owned(),
+            ],
+        );
+    }
+
+    fn captured_git_args(&self) -> Vec<Vec<String>> {
+        self.captured_git_commands.lock().unwrap().clone()
+    }
 }
 
 fn run_git(repository: &Path, arguments: &[&str]) {
@@ -326,6 +482,16 @@ fn run_git_strings(repository: &Path, arguments: &[String]) {
         "Git fixture command failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn git_stdout(repository: &Path, arguments: &[&str]) -> String {
+    let output = Command::new("git")
+        .current_dir(repository)
+        .args(arguments)
+        .output()
+        .expect("Git starts");
+    assert!(output.status.success());
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
 #[test]
@@ -738,4 +904,103 @@ fn fetch_rejects_a_remote_that_mismatches_the_bound_profile() {
         AppError::Transport(failure)
             if failure.code() == "git.transport.profile-mismatch"
     ));
+}
+
+#[test]
+fn pull_fast_forwards_but_divergence_never_creates_a_merge_or_rebase() {
+    let fixture = TransportFixture::with_https_bare_remote();
+    fixture.advance_remote("remote.txt");
+    fixture
+        .transport
+        .pull(fixture.pull_input(), Arc::new(NoopNetworkProgressReporter))
+        .unwrap();
+    assert!(fixture.repository_path.join("remote.txt").is_file());
+
+    fixture.commit_local("local.txt");
+    fixture.advance_remote("other.txt");
+    let before = fixture.head_oid();
+    let error = fixture
+        .transport
+        .pull(fixture.pull_input(), Arc::new(NoopNetworkProgressReporter))
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        AppError::Transport(failure)
+            if failure.code() == "git.transport.non-fast-forward"
+    ));
+    assert_eq!(fixture.head_oid(), before);
+    assert!(!fixture.git_dir().join("MERGE_HEAD").exists());
+    assert!(!fixture.git_dir().join("rebase-merge").exists());
+    assert!(!fixture.git_dir().join("rebase-apply").exists());
+    assert!(fixture.captured_git_args().contains(&vec![
+        "pull".to_owned(),
+        "--ff-only".to_owned(),
+        "--progress".to_owned(),
+    ]));
+    assert!(
+        fixture
+            .captured_git_args()
+            .iter()
+            .flatten()
+            .all(|argument| argument != "stash" && argument != "--rebase")
+    );
+}
+
+#[test]
+fn push_sets_upstream_once_and_rejects_non_fast_forward_without_force() {
+    let fixture = TransportFixture::with_untracked_local_branch();
+    fixture
+        .transport
+        .push(
+            PushInput {
+                target: Some(PushTarget {
+                    remote_name: "origin".to_owned(),
+                    branch_name: "feature/safe".to_owned(),
+                }),
+                ..fixture.push_input()
+            },
+            Arc::new(NoopNetworkProgressReporter),
+        )
+        .unwrap();
+    assert_eq!(fixture.upstream().as_deref(), Some("origin/feature/safe"));
+
+    fixture.rewrite_remote_branch("feature/safe");
+    let error = fixture
+        .transport
+        .push(
+            PushInput {
+                target: None,
+                ..fixture.push_input()
+            },
+            Arc::new(NoopNetworkProgressReporter),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        AppError::Transport(failure)
+            if failure.code() == "git.transport.non-fast-forward"
+    ));
+    assert!(
+        fixture
+            .captured_git_args()
+            .iter()
+            .flatten()
+            .all(|argument| { argument != "--force" && argument != "--force-with-lease" })
+    );
+    let commands = fixture.captured_git_args();
+    assert!(commands.contains(&vec![
+        "push".to_owned(),
+        "--progress".to_owned(),
+        "--set-upstream".to_owned(),
+        "--".to_owned(),
+        "origin".to_owned(),
+        "HEAD:refs/heads/feature/safe".to_owned(),
+    ]));
+    assert!(commands.contains(&vec![
+        "push".to_owned(),
+        "--progress".to_owned(),
+        "--".to_owned(),
+        "origin".to_owned(),
+        "HEAD:refs/heads/feature/safe".to_owned(),
+    ]));
 }

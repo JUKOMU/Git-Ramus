@@ -7,8 +7,9 @@ use parking_lot::Mutex;
 
 use super::model::{
     EffectiveTransportSource, FetchInput, NetworkOperationResult, NetworkProgress, NetworkStage,
-    RemoteTransportKind, RepositoryNetworkState, RepositoryRemoteSummary, TransportDriftStatus,
-    TransportKind, UpstreamCandidate,
+    PullInput, PushInput, RemoteTransportKind, RepositoryNetworkState,
+    RepositoryOperationInProgress, RepositoryRemoteSummary, TransportDriftStatus, TransportKind,
+    UpstreamCandidate,
 };
 use super::operation::TransportOperationRegistry;
 use super::profile_service::TransportProfileService;
@@ -25,7 +26,19 @@ use crate::git::repository::{RepositoryRepository, RepositoryWriteLocks};
 use crate::git::service::{GitService, QueryContext, RepositoryScanRecord};
 use crate::jobs::JobService;
 
-const FETCH_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const NETWORK_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+struct NetworkExecutionRequest {
+    repository_id: String,
+    context: QueryContext,
+    operation_id: String,
+    interactive: bool,
+    job_kind: &'static str,
+    title: String,
+    failed_step: &'static str,
+    args: Vec<OsString>,
+    remote_name: Option<String>,
+}
 
 pub trait NetworkProgressReporter: Send + Sync {
     fn report(&self, progress: NetworkProgress);
@@ -101,7 +114,6 @@ impl GitTransportService {
             return Err(AppError::TrustRequired);
         }
         let remote_name = validate_remote_name(&input.remote_name)?;
-        let repository = self.repositories.get(&input.repository_id)?;
         let remote = self
             .repositories
             .get_remote(&input.repository_id, remote_name)?;
@@ -112,11 +124,204 @@ impl GitTransportService {
         let validated_url = validate_clone_url(remote_url)?;
         self.validate_effective_transport(&input.repository_id, &validated_url)?;
 
-        let _operation = self.operations.register(
-            &input.operation_id,
-            format!("repository:{}", input.repository_id),
+        self.execute_network(
+            NetworkExecutionRequest {
+                repository_id: input.repository_id,
+                context: input.context,
+                operation_id: input.operation_id,
+                interactive: input.interactive,
+                job_kind: "git.transport.fetch",
+                title: format!("Fetch {remote_name}"),
+                failed_step: "fetch",
+                args: vec![
+                    OsString::from("fetch"),
+                    OsString::from("--progress"),
+                    OsString::from("--"),
+                    OsString::from(remote_name),
+                ],
+                remote_name: Some(remote.name),
+            },
+            reporter,
+        )
+    }
+
+    pub fn pull(
+        &self,
+        input: PullInput,
+        reporter: Arc<dyn NetworkProgressReporter>,
+    ) -> Result<NetworkOperationResult, AppError> {
+        validate_operation_id(&input.operation_id)?;
+        self.ensure_trusted_context(&input.context, &input.repository_id)?;
+        let state = self.network_state(&input.context, &input.repository_id)?;
+        let upstream = pull_preflight(&state)?;
+        let remote_name = validate_remote_name(&upstream.remote_name)?;
+        let (_, remote_url) = self.resolve_remote(&input.repository_id, remote_name, false)?;
+        self.validate_effective_transport(&input.repository_id, &remote_url)?;
+
+        self.execute_network(
+            NetworkExecutionRequest {
+                repository_id: input.repository_id,
+                context: input.context,
+                operation_id: input.operation_id,
+                interactive: input.interactive,
+                job_kind: "git.transport.pull",
+                title: format!("Pull {remote_name}"),
+                failed_step: "pull",
+                args: vec![
+                    OsString::from("pull"),
+                    OsString::from("--ff-only"),
+                    OsString::from("--progress"),
+                ],
+                remote_name: Some(upstream.remote_name),
+            },
+            reporter,
+        )
+    }
+
+    pub fn push(
+        &self,
+        input: PushInput,
+        reporter: Arc<dyn NetworkProgressReporter>,
+    ) -> Result<NetworkOperationResult, AppError> {
+        validate_operation_id(&input.operation_id)?;
+        self.ensure_trusted_context(&input.context, &input.repository_id)?;
+        let state = self.network_state(&input.context, &input.repository_id)?;
+        ensure_repository_can_write_network(&state)?;
+        let (target, set_upstream) = match (state.upstream, input.target) {
+            (Some(upstream), None) => (upstream, false),
+            (None, Some(target)) => (
+                UpstreamCandidate {
+                    remote_name: target.remote_name,
+                    branch_name: target.branch_name,
+                },
+                true,
+            ),
+            (None, None) => {
+                return Err(AppError::Transport(TransportFailure::upstream_required()));
+            }
+            (Some(_), Some(_)) => {
+                return Err(AppError::InvalidInput(
+                    "push target is allowed only when no upstream exists".to_owned(),
+                ));
+            }
+        };
+        let remote_name = validate_remote_name(&target.remote_name)?;
+        validate_branch_name_shape(&target.branch_name)?;
+        let repository = self.repositories.get(&input.repository_id)?;
+        self.validate_branch_with_git(&repository, &target.branch_name)?;
+        let (_, remote_url) = self.resolve_remote(&input.repository_id, remote_name, true)?;
+        self.validate_effective_transport(&input.repository_id, &remote_url)?;
+        let refspec = format!("HEAD:refs/heads/{}", target.branch_name);
+        let mut args = vec![OsString::from("push"), OsString::from("--progress")];
+        if set_upstream {
+            args.push(OsString::from("--set-upstream"));
+        }
+        args.extend([
+            OsString::from("--"),
+            OsString::from(remote_name),
+            OsString::from(refspec),
+        ]);
+
+        self.execute_network(
+            NetworkExecutionRequest {
+                repository_id: input.repository_id,
+                context: input.context,
+                operation_id: input.operation_id,
+                interactive: input.interactive,
+                job_kind: "git.transport.push",
+                title: format!("Push {remote_name}"),
+                failed_step: "push",
+                args,
+                remote_name: Some(target.remote_name),
+            },
+            reporter,
+        )
+    }
+
+    pub fn network_state(
+        &self,
+        context: &QueryContext,
+        repository_id: &str,
+    ) -> Result<RepositoryNetworkState, AppError> {
+        self.git
+            .validate_repository_context(context, repository_id)?;
+        let record = self.git.get_snapshot(context, repository_id)?;
+        let record = if record.snapshot.is_some() {
+            record
+        } else {
+            self.git
+                .refresh_repository_in_context(context, repository_id)?
+        };
+        let snapshot = required_refreshed_snapshot(&record)?;
+        self.network_state_from_snapshot(context, repository_id, &snapshot)
+    }
+
+    fn ensure_trusted_context(
+        &self,
+        context: &QueryContext,
+        repository_id: &str,
+    ) -> Result<(), AppError> {
+        self.git
+            .validate_repository_context(context, repository_id)?;
+        if !self
+            .git
+            .is_repository_trusted_in_context(context, repository_id)?
+        {
+            return Err(AppError::TrustRequired);
+        }
+        Ok(())
+    }
+
+    fn resolve_remote(
+        &self,
+        repository_id: &str,
+        remote_name: &str,
+        for_push: bool,
+    ) -> Result<(Remote, ValidatedRemoteUrl), AppError> {
+        let remote = self.repositories.get_remote(repository_id, remote_name)?;
+        let url = if for_push {
+            remote.push_url.as_deref().or(remote.fetch_url.as_deref())
+        } else {
+            remote.fetch_url.as_deref()
+        }
+        .ok_or_else(|| AppError::NotFound(format!("URL for Remote {remote_name}")))?;
+        let validated = validate_clone_url(url)?;
+        Ok((remote, validated))
+    }
+
+    fn validate_branch_with_git(
+        &self,
+        repository: &crate::git::model::Repository,
+        branch_name: &str,
+    ) -> Result<(), AppError> {
+        let output = self.runner.run(GitCommand {
+            repo: PathBuf::from(&repository.canonical_path),
+            args: vec![
+                OsString::from("check-ref-format"),
+                OsString::from("--branch"),
+                OsString::from(branch_name),
+            ],
+            stdin: None,
+            timeout: Duration::from_secs(10),
+        })?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(AppError::InvalidInput("invalid Git branch name".to_owned()))
+        }
+    }
+
+    fn execute_network(
+        &self,
+        request: NetworkExecutionRequest,
+        reporter: Arc<dyn NetworkProgressReporter>,
+    ) -> Result<NetworkOperationResult, AppError> {
+        let repository = self.repositories.get(&request.repository_id)?;
+        let operation_guard = self.operations.register(
+            &request.operation_id,
+            format!("repository:{}", request.repository_id),
         )?;
-        let repository_lock = self.write_locks.lock_for(&input.repository_id);
+        let repository_lock = self.write_locks.lock_for(&request.repository_id);
         let repository_guard = match repository_lock.try_lock() {
             Ok(guard) => guard,
             Err(std::sync::TryLockError::WouldBlock) => {
@@ -125,11 +330,9 @@ impl GitTransportService {
             Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
         };
 
-        let queued = self.jobs.create_with_id(
-            &input.operation_id,
-            "git.transport.fetch",
-            &format!("Fetch {remote_name}"),
-        )?;
+        let queued =
+            self.jobs
+                .create_with_id(&request.operation_id, request.job_kind, &request.title)?;
         let running = match self.jobs.start(&queued.id) {
             Ok(job) => job,
             Err(error) => {
@@ -138,36 +341,31 @@ impl GitTransportService {
             }
         };
         reporter.report(NetworkProgress {
-            operation_id: input.operation_id.clone(),
+            operation_id: request.operation_id.clone(),
             stage: NetworkStage::Transferring,
             fraction: None,
             objects: None,
             bytes: None,
         });
         let progress = Arc::new(ProgressBridge::new(
-            input.operation_id.clone(),
+            request.operation_id.clone(),
             self.jobs.clone(),
             reporter.clone(),
         ));
-        let mut context = GitRunContext::new(if input.interactive {
+        let mut context = GitRunContext::new(if request.interactive {
             GitExecutionPolicy::ForegroundNetworkInteractive
         } else {
             GitExecutionPolicy::BackgroundNetworkNonInteractive
         })
         .with_progress(progress);
-        context.cancellation = _operation.cancellation();
+        context.cancellation = operation_guard.cancellation();
 
         let execution = self.runner.run_with_context(
             GitCommand {
                 repo: PathBuf::from(&repository.canonical_path),
-                args: vec![
-                    OsString::from("fetch"),
-                    OsString::from("--progress"),
-                    OsString::from("--"),
-                    OsString::from(remote_name),
-                ],
+                args: request.args,
                 stdin: None,
-                timeout: FETCH_TIMEOUT,
+                timeout: NETWORK_TIMEOUT,
             },
             context,
         );
@@ -177,29 +375,32 @@ impl GitTransportService {
         drop(repository_guard);
         let refresh = self
             .git
-            .refresh_repository_in_context(&input.context, &input.repository_id);
+            .refresh_repository_in_context(&request.context, &request.repository_id);
 
-        let output = match execution {
-            Ok(output) if output.status.success() => output,
+        match execution {
+            Ok(output) if output.status.success() => {}
             Ok(output) => {
                 let failure = classify_git_failure(&output.stderr)
-                    .with_operation(&input.operation_id)
-                    .with_resource(&input.repository_id)
-                    .with_failed_step("fetch");
+                    .with_operation(&request.operation_id)
+                    .with_resource(&request.repository_id)
+                    .with_failed_step(request.failed_step);
                 self.finish_failed_job(&running.id, &failure, false)?;
-                reporter.report(terminal_progress(&input.operation_id, NetworkStage::Failed));
+                reporter.report(terminal_progress(
+                    &request.operation_id,
+                    NetworkStage::Failed,
+                ));
                 let _ = refresh;
                 return Err(AppError::Transport(failure));
             }
             Err(error) => {
                 let (failure, canceled) = classify_execution_error(error);
                 let failure = failure
-                    .with_operation(&input.operation_id)
-                    .with_resource(&input.repository_id)
-                    .with_failed_step("fetch");
+                    .with_operation(&request.operation_id)
+                    .with_resource(&request.repository_id)
+                    .with_failed_step(request.failed_step);
                 self.finish_failed_job(&running.id, &failure, canceled)?;
                 reporter.report(terminal_progress(
-                    &input.operation_id,
+                    &request.operation_id,
                     if canceled {
                         NetworkStage::Cancelled
                     } else {
@@ -209,24 +410,24 @@ impl GitTransportService {
                 let _ = refresh;
                 return Err(AppError::Transport(failure));
             }
-        };
-        drop(output);
+        }
 
-        let record =
-            refresh.map_err(|_| self.partial_after_fetch(&input.operation_id, &running.id))?;
+        let record = refresh
+            .map_err(|_| self.partial_after_operation(&request.operation_id, &running.id))?;
         let snapshot = required_refreshed_snapshot(&record)
-            .map_err(|_| self.partial_after_fetch(&input.operation_id, &running.id))?;
-        let network_state =
-            self.network_state_from_snapshot(&input.context, &input.repository_id, &snapshot)?;
+            .map_err(|_| self.partial_after_operation(&request.operation_id, &running.id))?;
+        let network_state = self
+            .network_state_from_snapshot(&request.context, &request.repository_id, &snapshot)
+            .map_err(|_| self.partial_after_operation(&request.operation_id, &running.id))?;
         let job = self.jobs.succeed(&running.id)?;
         reporter.report(terminal_progress(
-            &input.operation_id,
+            &request.operation_id,
             NetworkStage::Completed,
         ));
         Ok(NetworkOperationResult {
-            operation_id: input.operation_id,
-            repository_id: input.repository_id,
-            remote_name: Some(remote.name),
+            operation_id: request.operation_id,
+            repository_id: request.repository_id,
+            remote_name: request.remote_name,
             job,
             snapshot,
             network_state,
@@ -271,7 +472,7 @@ impl GitTransportService {
         Ok(())
     }
 
-    fn partial_after_fetch(&self, operation_id: &str, job_id: &str) -> AppError {
+    fn partial_after_operation(&self, operation_id: &str, job_id: &str) -> AppError {
         let failure = TransportFailure::partial()
             .with_operation(operation_id)
             .with_failed_step("refresh");
@@ -290,9 +491,45 @@ impl GitTransportService {
     ) -> Result<RepositoryNetworkState, AppError> {
         self.git
             .validate_repository_context(context, repository_id)?;
+        let repository = self.repositories.get(repository_id)?;
+        let repository_path = PathBuf::from(&repository.canonical_path);
+        let lock = self.write_locks.lock_for(repository_id);
+        let _guard = match lock.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(AppError::Transport(TransportFailure::repository_busy()));
+            }
+            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+        };
+        let branch = optional_probe_line(
+            self.runner.as_ref(),
+            &repository_path,
+            &["symbolic-ref", "--quiet", "--short", "HEAD"],
+        )?;
+        let upstream_name = optional_probe_line(
+            self.runner.as_ref(),
+            &repository_path,
+            &[
+                "rev-parse",
+                "--abbrev-ref",
+                "--symbolic-full-name",
+                "@{upstream}",
+            ],
+        )?;
+        let git_dir = required_probe_line(
+            self.runner.as_ref(),
+            &repository_path,
+            &["rev-parse", "--absolute-git-dir"],
+        )?;
+        let git_dir = PathBuf::from(git_dir);
+        if !git_dir.is_absolute() {
+            return Err(AppError::InvalidInput(
+                "Git directory probe was not absolute".to_owned(),
+            ));
+        }
+        let in_progress = operation_in_progress(&git_dir);
         let remotes = self.repositories.list_remotes(repository_id)?;
-        let upstream = snapshot
-            .upstream
+        let upstream = upstream_name
             .as_deref()
             .and_then(|upstream| split_upstream(upstream, &remotes));
         let remotes = remotes
@@ -301,14 +538,14 @@ impl GitTransportService {
             .collect();
         Ok(RepositoryNetworkState {
             repository_id: repository_id.to_owned(),
-            branch: snapshot.branch.clone(),
-            detached: snapshot.branch.is_none() && snapshot.head_oid.is_some(),
+            branch: branch.clone(),
+            detached: branch.is_none() && snapshot.head_oid.is_some(),
             upstream,
             remotes,
             ahead: snapshot.ahead,
             behind: snapshot.behind,
             conflicted_count: snapshot.conflicted_count,
-            in_progress: None,
+            in_progress,
         })
     }
 }
@@ -382,6 +619,122 @@ fn terminal_progress(operation_id: &str, stage: NetworkStage) -> NetworkProgress
     }
 }
 
+fn validate_operation_id(operation_id: &str) -> Result<(), AppError> {
+    uuid::Uuid::parse_str(operation_id)
+        .map(|_| ())
+        .map_err(|_| AppError::InvalidInput("transport operation id must be a UUID".to_owned()))
+}
+
+fn ensure_repository_can_write_network(state: &RepositoryNetworkState) -> Result<(), AppError> {
+    if state.detached {
+        return Err(AppError::Transport(TransportFailure::detached_head()));
+    }
+    if state.conflicted_count > 0 || state.in_progress.is_some() {
+        return Err(AppError::Transport(
+            TransportFailure::operation_in_progress(),
+        ));
+    }
+    Ok(())
+}
+
+fn pull_preflight(state: &RepositoryNetworkState) -> Result<UpstreamCandidate, AppError> {
+    ensure_repository_can_write_network(state)?;
+    state
+        .upstream
+        .clone()
+        .ok_or_else(|| AppError::Transport(TransportFailure::upstream_required()))
+}
+
+fn validate_branch_name_shape(value: &str) -> Result<(), AppError> {
+    if value.is_empty()
+        || value.len() > 1024
+        || value.starts_with(['-', '.'])
+        || value.ends_with(['/', '.'])
+        || value.ends_with(".lock")
+        || value.contains("..")
+        || value.contains("@{")
+        || value.contains("//")
+        || value.chars().any(|character| {
+            let code = u32::from(character);
+            code <= 0x20 || code == 0x7f || "~^:?*[\\".contains(character)
+        })
+    {
+        return Err(AppError::InvalidInput("invalid Git branch name".to_owned()));
+    }
+    Ok(())
+}
+
+fn optional_probe_line(
+    runner: &dyn GitRunner,
+    repository: &std::path::Path,
+    args: &[&str],
+) -> Result<Option<String>, AppError> {
+    let output = run_probe(runner, repository, args)?;
+    if output.status.success() {
+        return decode_probe_line(&output.stdout).map(Some);
+    }
+    if matches!(output.status.code(), Some(1 | 128)) {
+        return Ok(None);
+    }
+    Err(AppError::Git("Git state probe failed".to_owned()))
+}
+
+fn required_probe_line(
+    runner: &dyn GitRunner,
+    repository: &std::path::Path,
+    args: &[&str],
+) -> Result<String, AppError> {
+    let output = run_probe(runner, repository, args)?;
+    if !output.status.success() {
+        return Err(AppError::Git("Git state probe failed".to_owned()));
+    }
+    decode_probe_line(&output.stdout)
+}
+
+fn run_probe(
+    runner: &dyn GitRunner,
+    repository: &std::path::Path,
+    args: &[&str],
+) -> Result<crate::git::GitOutput, AppError> {
+    runner.run(GitCommand {
+        repo: repository.to_path_buf(),
+        args: args.iter().map(OsString::from).collect(),
+        stdin: None,
+        timeout: Duration::from_secs(10),
+    })
+}
+
+fn decode_probe_line(bytes: &[u8]) -> Result<String, AppError> {
+    let value = std::str::from_utf8(bytes)
+        .map_err(|_| AppError::InvalidInput("Git state probe is not UTF-8".to_owned()))?
+        .trim_end_matches(['\r', '\n']);
+    if value.is_empty() || value.contains(['\r', '\n', '\0']) {
+        return Err(AppError::InvalidInput(
+            "Git state probe returned malformed output".to_owned(),
+        ));
+    }
+    Ok(value.to_owned())
+}
+
+fn operation_in_progress(git_dir: &std::path::Path) -> Option<RepositoryOperationInProgress> {
+    if git_dir.join("MERGE_HEAD").is_file() {
+        return Some(RepositoryOperationInProgress::Merge);
+    }
+    if git_dir.join("rebase-merge").is_dir() || git_dir.join("rebase-apply").is_dir() {
+        return Some(RepositoryOperationInProgress::Rebase);
+    }
+    if git_dir.join("CHERRY_PICK_HEAD").is_file() {
+        return Some(RepositoryOperationInProgress::CherryPick);
+    }
+    if git_dir.join("REVERT_HEAD").is_file() {
+        return Some(RepositoryOperationInProgress::Revert);
+    }
+    if git_dir.join("BISECT_LOG").is_file() || git_dir.join("BISECT_START").is_file() {
+        return Some(RepositoryOperationInProgress::Bisect);
+    }
+    None
+}
+
 fn validate_remote_name(value: &str) -> Result<&str, AppError> {
     if value.is_empty()
         || value.len() > 255
@@ -410,6 +763,17 @@ fn classify_execution_error(error: AppError) -> (TransportFailure, bool) {
 
 fn classify_git_failure(stderr: &[u8]) -> TransportFailure {
     let stderr = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+    if contains_any(
+        &stderr,
+        &[
+            "non-fast-forward",
+            "not possible to fast-forward",
+            "fetch first",
+            "failed to push some refs",
+        ],
+    ) {
+        return TransportFailure::non_fast_forward();
+    }
     if contains_any(
         &stderr,
         &[
@@ -688,5 +1052,110 @@ mod tests {
         let debug = format!("{failure:?}");
         assert!(!debug.contains("password"));
         assert!(!debug.contains("private.git"));
+    }
+
+    fn ready_network_state() -> RepositoryNetworkState {
+        RepositoryNetworkState {
+            repository_id: "repository".to_owned(),
+            branch: Some("main".to_owned()),
+            detached: false,
+            upstream: Some(UpstreamCandidate {
+                remote_name: "origin".to_owned(),
+                branch_name: "main".to_owned(),
+            }),
+            remotes: Vec::new(),
+            ahead: 0,
+            behind: 0,
+            conflicted_count: 0,
+            in_progress: None,
+        }
+    }
+
+    #[test]
+    fn pull_preflight_rejects_detached_missing_upstream_conflicts_and_operations() {
+        let mut state = ready_network_state();
+        state.detached = true;
+        assert!(matches!(
+            pull_preflight(&state),
+            Err(AppError::Transport(failure))
+                if failure.code() == "git.transport.detached-head"
+        ));
+
+        let mut state = ready_network_state();
+        state.upstream = None;
+        assert!(matches!(
+            pull_preflight(&state),
+            Err(AppError::Transport(failure))
+                if failure.code() == "git.transport.upstream-required"
+        ));
+
+        let mut state = ready_network_state();
+        state.conflicted_count = 1;
+        assert!(matches!(
+            pull_preflight(&state),
+            Err(AppError::Transport(failure))
+                if failure.code() == "git.transport.operation-in-progress"
+        ));
+
+        for operation in [
+            RepositoryOperationInProgress::Merge,
+            RepositoryOperationInProgress::Rebase,
+            RepositoryOperationInProgress::CherryPick,
+            RepositoryOperationInProgress::Revert,
+            RepositoryOperationInProgress::Bisect,
+        ] {
+            let mut state = ready_network_state();
+            state.in_progress = Some(operation);
+            assert!(matches!(
+                pull_preflight(&state),
+                Err(AppError::Transport(failure))
+                    if failure.code() == "git.transport.operation-in-progress"
+            ));
+        }
+    }
+
+    #[test]
+    fn git_directory_markers_are_machine_readable_for_every_supported_operation() {
+        for (marker, operation) in [
+            ("MERGE_HEAD", RepositoryOperationInProgress::Merge),
+            (
+                "CHERRY_PICK_HEAD",
+                RepositoryOperationInProgress::CherryPick,
+            ),
+            ("REVERT_HEAD", RepositoryOperationInProgress::Revert),
+            ("BISECT_LOG", RepositoryOperationInProgress::Bisect),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            std::fs::write(directory.path().join(marker), "marker").unwrap();
+            assert_eq!(operation_in_progress(directory.path()), Some(operation));
+        }
+        for marker in ["rebase-merge", "rebase-apply"] {
+            let directory = tempfile::tempdir().unwrap();
+            std::fs::create_dir(directory.path().join(marker)).unwrap();
+            assert_eq!(
+                operation_in_progress(directory.path()),
+                Some(RepositoryOperationInProgress::Rebase)
+            );
+        }
+    }
+
+    #[test]
+    fn push_branch_shape_has_no_option_or_refspec_escape_hatch() {
+        assert!(validate_branch_name_shape("feature/safe").is_ok());
+        for invalid in [
+            "-force",
+            ".hidden",
+            "refs//heads",
+            "topic..other",
+            "topic@{upstream}",
+            "topic.lock",
+            "topic:refs/heads/evil",
+        ] {
+            assert!(validate_branch_name_shape(invalid).is_err(), "{invalid}");
+        }
+        assert_eq!(
+            classify_git_failure(b"! [rejected] main -> main (fetch first)").code(),
+            "git.transport.non-fast-forward"
+        );
     }
 }
