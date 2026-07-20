@@ -1588,6 +1588,31 @@ pub async fn git_clone_intent_create(
 }
 
 #[tauri::command]
+pub fn git_clone_intent_open(
+    state: State<'_, AppState>,
+    request: GitCloneIntentNativeRequest,
+) -> CommandResult<GitCloneIntentReference> {
+    ensure_exact_builtin_permission(
+        &state.plugins,
+        &state.permissions,
+        &request.plugin_id,
+        PROVIDER_CENTER_PLUGIN_ID,
+        "git.network:execute",
+        CLONE_INTENTS_RESOURCE,
+    )
+    .map_err(command_error)?;
+    validate_uuid(&request.intent_id, "Clone intent ID").map_err(command_error)?;
+    state
+        .transport
+        .clone_intents()
+        .get_for_creator(&request.intent_id, &request.plugin_id)
+        .map(|intent| GitCloneIntentReference {
+            intent_id: intent.id,
+        })
+        .map_err(command_error)
+}
+
+#[tauri::command]
 pub fn git_clone_intent_get(
     state: State<'_, AppState>,
     request: GitCloneIntentNativeRequest,

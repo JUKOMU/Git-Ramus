@@ -32,6 +32,10 @@
     {
       "capability": "repositories:read",
       "resources": ["repositories"]
+    },
+    {
+      "capability": "git.network:execute",
+      "resources": ["clone-intents"]
     }
   ]
 }

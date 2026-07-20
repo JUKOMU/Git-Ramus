@@ -89,6 +89,10 @@ function createClient() {
           return { items: [{ instance: providerInstance, account: providerAccount }] };
         case "providers.listRepositories":
           return { items: [], nextCursor: null, hasMore: false, rateLimit: null };
+        case "cloneIntents.create":
+          return { intentId: "90e1e991-f93e-4e78-817e-d0ceeb06a749" };
+        case "cloneIntents.open":
+          return null;
         case "providers.matchLocalRemotes":
           return { items: [] };
         case "providers.listBindings":
@@ -130,6 +134,39 @@ describe("Provider Center API", () => {
       "providers.listBindings"
     ]);
     expect(JSON.stringify(client.requests)).not.toMatch(/pat|secretRef|customCaPath|[A-Z]:\\/iu);
+  });
+
+  it("creates a Clone intent with repository identity only", async () => {
+    const client = createClient();
+    const api = createProviderCenterApi(client);
+
+    await expect(api.createCloneIntent(accountId, "4242")).resolves.toEqual({
+      intentId: "90e1e991-f93e-4e78-817e-d0ceeb06a749"
+    });
+    expect(client.requests).toEqual([
+      {
+        method: "cloneIntents.create",
+        params: { accountId, repositoryId: "4242" }
+      }
+    ]);
+    expect(JSON.stringify(client.requests)).not.toMatch(
+      /pat|secret|sshKeyPath|destination|[A-Z]:\\|\/home\//iu
+    );
+  });
+
+  it("asks the Host to open a persisted Clone intent without constructing a route", async () => {
+    const client = createClient();
+    const api = createProviderCenterApi(client);
+
+    await api.openCloneIntent("90e1e991-f93e-4e78-817e-d0ceeb06a749");
+
+    expect(client.requests).toEqual([
+      {
+        method: "cloneIntents.open",
+        params: { intentId: "90e1e991-f93e-4e78-817e-d0ceeb06a749" }
+      }
+    ]);
+    expect(JSON.stringify(client.requests)).not.toContain("/clone/");
   });
 
   it("cancels an in-flight repository page with the same operation ID", async () => {

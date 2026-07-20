@@ -143,6 +143,7 @@ const hostApi: HostApi = {
   bindRepositoryTransport: vi.fn(),
   unbindRepositoryTransport: vi.fn(),
   createCloneIntent: vi.fn(),
+  openCloneIntent: vi.fn(),
   getCloneIntent: vi.fn(),
   cloneRepository: vi.fn(),
   fetchRepository: vi.fn(),

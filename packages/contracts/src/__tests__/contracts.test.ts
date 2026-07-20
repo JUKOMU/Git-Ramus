@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import manifest from "../../../../plugins/builtin-welcome/plugin.json";
 import gitClientManifest from "../../../../plugins/git-client/plugin.json";
+import providerCenterManifest from "../../../../plugins/provider-center/plugin.json";
 import compactManifest from "../../../../plugins/builtin-compact-theme/plugin.json";
 import compactTheme from "../../../../plugins/builtin-compact-theme/theme.json";
 import providerContracts from "../__fixtures__/provider-contracts.json";
@@ -231,6 +232,16 @@ describe("shared contracts", () => {
         capability: "git.network:execute",
         resources: ["repositories", "clone-intents"]
       }
+    ]);
+  });
+
+  it("grants Provider Center only Provider access and Clone intent execution", () => {
+    const parsed = pluginManifestSchema.parse(providerCenterManifest);
+    expect(parsed.permissions).toEqual([
+      { capability: "providers:read", resources: ["providers"] },
+      { capability: "providers:manage", resources: ["providers"] },
+      { capability: "repositories:read", resources: ["repositories"] },
+      { capability: "git.network:execute", resources: ["clone-intents"] }
     ]);
   });
 

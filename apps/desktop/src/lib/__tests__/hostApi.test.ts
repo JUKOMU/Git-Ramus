@@ -787,30 +787,60 @@ describe("trusted Git transport Host API", () => {
     ]);
   });
 
-  it("publishes a Git Client Clone route after creating a Provider intent", async () => {
+  it("publishes a Git Client Clone route only after the Provider confirms the persisted intent", async () => {
     invoke.mockResolvedValue({ intentId: cloneIntentId });
     const api = transportApi();
 
-    await expect(
-      api.createCloneIntent("git-ramus.provider-center", {
-        accountId: providerAccountId,
-        repositoryId: "42"
-      })
-    ).resolves.toEqual({ intentId: cloneIntentId });
+    const reference = await api.createCloneIntent("git-ramus.provider-center", {
+      accountId: providerAccountId,
+      repositoryId: "42"
+    });
 
-    expect(invoke).toHaveBeenCalledWith("git_clone_intent_create", {
+    expect(reference).toEqual({ intentId: cloneIntentId });
+    expect(invoke).toHaveBeenNthCalledWith(1, "git_clone_intent_create", {
       request: {
         pluginId: "git-ramus.provider-center",
         accountId: providerAccountId,
         repositoryId: "42"
       }
     });
+    expect(cloneNavigation.publish).not.toHaveBeenCalled();
+
+    await api.openCloneIntent("git-ramus.provider-center", reference);
+
+    expect(invoke).toHaveBeenNthCalledWith(2, "git_clone_intent_open", {
+      request: {
+        pluginId: "git-ramus.provider-center",
+        intentId: cloneIntentId
+      }
+    });
     expect(cloneNavigation.publish).toHaveBeenCalledWith(`/clone/${cloneIntentId}`);
   });
 
-  it("queues concurrent persisted Clone intents without losing either navigation", async () => {
+  it("does not publish Clone navigation when native ownership validation fails", async () => {
+    invoke.mockImplementation(async (command: string) => {
+      if (command === "git_clone_intent_create") return { intentId: cloneIntentId };
+      if (command === "git_clone_intent_open") throw new Error("not the intent creator");
+      throw new Error(`unexpected command: ${command}`);
+    });
+    const api = transportApi();
+    const reference = await api.createCloneIntent("git-ramus.provider-center", {
+      accountId: providerAccountId,
+      repositoryId: "42"
+    });
+
+    await expect(api.openCloneIntent("git-ramus.git-client", reference)).rejects.toThrow(
+      "not the intent creator"
+    );
+
+    expect(cloneNavigation.publish).not.toHaveBeenCalled();
+  });
+
+  it("queues concurrent persisted Clone intents without losing confirmed navigation", async () => {
     const secondIntentId = "d9202a5a-5f1f-41dc-98c7-605beb91418f";
     invoke
+      .mockResolvedValueOnce({ intentId: cloneIntentId })
+      .mockResolvedValueOnce({ intentId: secondIntentId })
       .mockResolvedValueOnce({ intentId: cloneIntentId })
       .mockResolvedValueOnce({ intentId: secondIntentId });
     const navigation = createCloneNavigationBroker();
@@ -822,7 +852,7 @@ describe("trusted Git transport Host API", () => {
       cloneNavigation: navigation
     });
 
-    await Promise.all([
+    const references = await Promise.all([
       api.createCloneIntent("git-ramus.provider-center", {
         accountId: providerAccountId,
         repositoryId: "42"
@@ -832,6 +862,11 @@ describe("trusted Git transport Host API", () => {
         repositoryId: "43"
       })
     ]);
+    expect(navigation.current()).toBeNull();
+
+    await Promise.all(
+      references.map((reference) => api.openCloneIntent("git-ramus.provider-center", reference))
+    );
 
     const first = navigation.current()!;
     expect(first.route).toBe(`/clone/${cloneIntentId}`);

@@ -429,6 +429,12 @@ const routes: Readonly<Record<string, Route>> = {
     (params, hostApi, pluginId) => hostApi.createCloneIntent(pluginId, params),
     "network"
   ),
+  "cloneIntents.open": defineRoute(
+    "git.network:execute",
+    RPC_RESOURCES.cloneIntents,
+    cloneIntentRequestSchema,
+    (params, hostApi, pluginId) => hostApi.openCloneIntent(pluginId, params)
+  ),
   "cloneIntents.get": defineRoute(
     "git.network:execute",
     RPC_RESOURCES.cloneIntents,

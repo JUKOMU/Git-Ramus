@@ -83,6 +83,7 @@ function createHostApi(): HostApi {
     bindRepositoryTransport: vi.fn(),
     unbindRepositoryTransport: vi.fn(),
     createCloneIntent: vi.fn(),
+    openCloneIntent: vi.fn(),
     getCloneIntent: vi.fn(),
     cloneRepository: vi.fn(),
     fetchRepository: vi.fn(),
@@ -566,6 +567,7 @@ describe("Git transport RPC routes", () => {
         "repositories.bindTransport",
         "repositories.unbindTransport",
         "cloneIntents.create",
+        "cloneIntents.open",
         "cloneIntents.get",
         "repositories.clone",
         "repositories.fetch",
@@ -614,6 +616,20 @@ describe("Git transport RPC routes", () => {
       resource: "clone-intents"
     });
     expect(hostApi.createCloneIntent).toHaveBeenCalledWith(pluginId, params);
+  });
+
+  it("requires Clone execution before opening a persisted intent", async () => {
+    const params = { intentId: cloneIntentId };
+    vi.mocked(hostApi.openCloneIntent).mockResolvedValue();
+
+    await dispatchPluginRpc(pluginId, request("cloneIntents.open", params), hostApi);
+
+    expect(hostApi.authorizePluginCall).toHaveBeenCalledWith({
+      pluginId,
+      capability: "git.network:execute",
+      resource: "clone-intents"
+    });
+    expect(hostApi.openCloneIntent).toHaveBeenCalledWith(pluginId, params);
   });
 
   it("requires network execution and repository write before Fetch", async () => {

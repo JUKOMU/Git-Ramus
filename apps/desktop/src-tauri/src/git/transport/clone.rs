@@ -153,6 +153,24 @@ impl CloneIntentRegistry {
             .ok_or_else(|| AppError::NotFound(format!("Clone intent {intent_id}")))
     }
 
+    pub fn get_for_creator(
+        &self,
+        intent_id: &str,
+        creator_plugin_id: &str,
+    ) -> Result<CloneIntent, AppError> {
+        let now = self.clock.now();
+        let mut records = self.records.lock();
+        purge_expired_intents(&mut records, now);
+        let record = records
+            .get(intent_id)
+            .filter(|record| !record.consumed)
+            .ok_or_else(|| AppError::NotFound(format!("Clone intent {intent_id}")))?;
+        if record.creator_plugin_id != creator_plugin_id {
+            return Err(AppError::PermissionDenied);
+        }
+        Ok(record.intent.clone())
+    }
+
     pub fn consume(
         &self,
         intent_id: &str,
@@ -2116,6 +2134,35 @@ mod tests {
         assert_eq!(registry.records.lock().len(), 1);
         assert!(registry.cancel(&active.id));
         assert!(registry.records.lock().is_empty());
+    }
+
+    #[test]
+    fn clone_intent_openability_is_bound_to_the_creator_and_active_lifetime() {
+        let now = Utc::now();
+        let clock = Arc::new(TestClock(Mutex::new(now)));
+        let registry = CloneIntentRegistry::with_clock(clock.clone());
+        let intent = registry
+            .insert_verified("git-ramus.provider-center", "account", remote_repository())
+            .unwrap();
+
+        assert_eq!(
+            registry
+                .get_for_creator(&intent.id, "git-ramus.provider-center")
+                .unwrap()
+                .id,
+            intent.id
+        );
+        assert!(matches!(
+            registry.get_for_creator(&intent.id, "git-ramus.git-client"),
+            Err(AppError::PermissionDenied)
+        ));
+
+        *clock.0.lock().unwrap() = now + Duration::minutes(11);
+        assert!(
+            registry
+                .get_for_creator(&intent.id, "git-ramus.provider-center")
+                .is_err()
+        );
     }
 
     #[cfg(any(unix, windows))]

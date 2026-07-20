@@ -71,6 +71,7 @@ macro_rules! invoke_handlers {
             commands::git_repository_bind_transport,
             commands::git_repository_unbind_transport,
             commands::git_clone_intent_create,
+            commands::git_clone_intent_open,
             commands::git_clone_intent_get,
             commands::git_repository_clone,
             commands::git_repository_fetch,

@@ -276,6 +276,18 @@ p {
   gap: var(--gr-spacing-md, 12px);
 }
 
+.repository-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+  gap: var(--gr-spacing-sm, 8px);
+}
+
+.repository-actions .repository-url {
+  min-width: 0;
+}
+
 .binding-suggestion {
   align-items: flex-start;
   flex-wrap: wrap;
@@ -296,5 +308,11 @@ p {
   .provider-grid,
   .repository-filters {
     grid-template-columns: 1fr;
+  }
+
+  .repository-results li,
+  .repository-actions {
+    align-items: stretch;
+    flex-direction: column;
   }
 }

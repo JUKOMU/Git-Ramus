@@ -1,4 +1,6 @@
 import {
+  cloneIntentReferenceSchema,
+  cloneIntentRequestSchema,
   errorEnvelopeSchema,
   providerAccountConnectRequestSchema,
   providerAccountDeleteRequestSchema,
@@ -25,6 +27,7 @@ import {
   providerLocalRemoteMatchRequestSchema,
   providerOperationCancelRequestSchema,
   providerReadAccessRevokeRequestSchema,
+  providerCloneIntentCreateRequestSchema,
   providerRepositoryListRequestSchema,
   providerRepositoryPageSchema,
   type ProviderAccountDeleteRequest,
@@ -45,6 +48,7 @@ import {
   type ProviderOperationCancelRequest,
   type ProviderRepositoryListRequest,
   type ProviderRepositoryPage,
+  type CloneIntentReference,
   type ErrorEnvelope
 } from "@git-ramus/contracts";
 import { createRequestId, type PluginClient } from "@git-ramus/plugin-sdk";
@@ -69,6 +73,8 @@ export interface ProviderCenterApi {
     input: Omit<ProviderRepositoryListRequest, "operationId">,
     signal?: AbortSignal
   ): Promise<ProviderRepositoryPage>;
+  createCloneIntent(accountId: string, repositoryId: string): Promise<CloneIntentReference>;
+  openCloneIntent(intentId: string): Promise<void>;
   cancelOperation(request: ProviderOperationCancelRequest): Promise<void>;
   matchLocalRemotes(
     input: Omit<ProviderLocalRemoteMatchRequest, "operationId">,
@@ -215,6 +221,27 @@ export function createProviderCenterApi(client: PluginClient): ProviderCenterApi
         throw normalizeError(error, "Unable to load Provider repositories");
       }
     },
+    createCloneIntent: async (accountId, repositoryId) => {
+      try {
+        const request = providerCloneIntentCreateRequestSchema.parse({ accountId, repositoryId });
+        return await requestParsed(
+          client,
+          "cloneIntents.create",
+          request,
+          cloneIntentReferenceSchema,
+          "Unable to create Clone intent"
+        );
+      } catch (error) {
+        throw normalizeError(error, "Unable to create Clone intent");
+      }
+    },
+    openCloneIntent: (intentId) =>
+      requestVoid(
+        client,
+        "cloneIntents.open",
+        cloneIntentRequestSchema.parse({ intentId }),
+        "Unable to open Clone intent"
+      ),
     cancelOperation: (request) =>
       requestVoid(
         client,

@@ -5,7 +5,7 @@ import type {
   ProviderVisibility,
   RemoteRepository
 } from "@git-ramus/contracts";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ProviderCenterApi } from "../api";
 import { normalizeError } from "../api";
 import { ErrorNotice } from "./InstancePanel";
@@ -32,6 +32,9 @@ export function RepositoryBrowser({ api, account }: RepositoryBrowserProps) {
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [cloningRepositoryIds, setCloningRepositoryIds] = useState<ReadonlySet<string>>(
+    () => new Set()
+  );
   const [error, setError] = useState<ErrorEnvelope | null>(null);
   const [rateLimit, setRateLimit] = useState<{
     remaining: number | null;
@@ -40,6 +43,21 @@ export function RepositoryBrowser({ api, account }: RepositoryBrowserProps) {
   const generation = useRef(0);
   const initialLoad = useRef(true);
   const loadMoreController = useRef<AbortController | null>(null);
+  const cloneGeneration = useRef(0);
+  const cloneAccountId = useRef<string | null>(account?.id ?? null);
+  const cloningRepositoryIdsRef = useRef(new Set<string>());
+
+  useLayoutEffect(() => {
+    const currentGeneration = ++cloneGeneration.current;
+    cloneAccountId.current = account?.id ?? null;
+    cloningRepositoryIdsRef.current = new Set();
+    void Promise.resolve().then(() => {
+      if (currentGeneration === cloneGeneration.current) setCloningRepositoryIds(new Set());
+    });
+    return () => {
+      if (currentGeneration === cloneGeneration.current) cloneGeneration.current += 1;
+    };
+  }, [account?.id, api]);
 
   useEffect(() => {
     const currentGeneration = ++generation.current;
@@ -118,6 +136,41 @@ export function RepositoryBrowser({ api, account }: RepositoryBrowserProps) {
           setLoadingMore(false);
           if (loadMoreController.current === controller) loadMoreController.current = null;
         }
+      });
+  };
+
+  const createCloneIntent = (repository: RemoteRepository) => {
+    if (
+      account === null ||
+      !canCloneRepository(repository) ||
+      cloningRepositoryIdsRef.current.has(repository.repositoryId)
+    ) {
+      return;
+    }
+    const accountId = account.id;
+    const currentGeneration = cloneGeneration.current;
+    cloningRepositoryIdsRef.current.add(repository.repositoryId);
+    setCloningRepositoryIds(new Set(cloningRepositoryIdsRef.current));
+    setError(null);
+    void api
+      .createCloneIntent(accountId, repository.repositoryId)
+      .then((reference) => {
+        if (currentGeneration !== cloneGeneration.current || cloneAccountId.current !== accountId) {
+          return undefined;
+        }
+        return api.openCloneIntent(reference.intentId);
+      })
+      .catch((cause) => {
+        if (currentGeneration === cloneGeneration.current && cloneAccountId.current === accountId) {
+          setError(normalizeError(cause, "Unable to create Clone intent"));
+        }
+      })
+      .finally(() => {
+        if (currentGeneration !== cloneGeneration.current || cloneAccountId.current !== accountId) {
+          return;
+        }
+        cloningRepositoryIdsRef.current.delete(repository.repositoryId);
+        setCloningRepositoryIds(new Set(cloningRepositoryIdsRef.current));
       });
   };
 
@@ -243,7 +296,18 @@ export function RepositoryBrowser({ api, account }: RepositoryBrowserProps) {
                 {item.archived ? " · archived" : ""}
               </small>
             </span>
-            <small className="repository-url">{item.webUrl}</small>
+            <div className="repository-actions">
+              <small className="repository-url">{item.webUrl}</small>
+              <button
+                type="button"
+                aria-label={`Clone ${item.fullName}`}
+                title={cloneDisabledReason(item)}
+                disabled={!canCloneRepository(item) || cloningRepositoryIds.has(item.repositoryId)}
+                onClick={() => createCloneIntent(item)}
+              >
+                {cloningRepositoryIds.has(item.repositoryId) ? "Opening…" : "Clone"}
+              </button>
+            </div>
           </li>
         ))}
       </ul>
@@ -263,6 +327,19 @@ function uniqueRepositories(items: RemoteRepository[]): RemoteRepository[] {
     seen.add(item.repositoryId);
     return true;
   });
+}
+
+function canCloneRepository(repository: RemoteRepository): boolean {
+  return (
+    !repository.archived &&
+    (["read", "write", "admin"] as readonly string[]).includes(repository.permission)
+  );
+}
+
+function cloneDisabledReason(repository: RemoteRepository): string | undefined {
+  if (repository.archived) return "Archived repositories cannot be cloned";
+  if (!canCloneRepository(repository)) return "Read access is required to clone this repository";
+  return undefined;
 }
 
 function isAbortError(error: unknown): boolean {

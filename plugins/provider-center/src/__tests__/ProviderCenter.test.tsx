@@ -29,6 +29,8 @@ function api(): ProviderCenterApi {
       hasMore: false,
       rateLimit: null
     })),
+    createCloneIntent: vi.fn(),
+    openCloneIntent: vi.fn(),
     cancelOperation: vi.fn(),
     matchLocalRemotes: vi.fn(async () => ({ items: [] })),
     listBindings: vi.fn(async () => ({ items: [] })),

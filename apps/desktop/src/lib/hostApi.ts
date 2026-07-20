@@ -281,6 +281,7 @@ export interface HostApi {
     pluginId: string,
     request: ProviderCloneIntentCreateRequest
   ): Promise<CloneIntentReference>;
+  openCloneIntent(pluginId: string, request: CloneIntentRequest): Promise<void>;
   getCloneIntent(pluginId: string, request: CloneIntentRequest): Promise<CloneIntentSummary>;
   cloneRepository(pluginId: string, request: CloneRequest): Promise<CloneResult | null>;
   fetchRepository(
@@ -641,8 +642,16 @@ export function createTauriHostApi(dependencies: {
           request: { pluginId, ...parsed }
         })
       );
-      cloneNavigation.publish(`/clone/${reference.intentId}`);
       return reference;
+    },
+    openCloneIntent: async (pluginId, request) => {
+      const parsed = cloneIntentRequestSchema.parse(request);
+      const reference = cloneIntentReferenceSchema.parse(
+        await invoke<unknown>("git_clone_intent_open", {
+          request: { pluginId, ...parsed }
+        })
+      );
+      cloneNavigation.publish(`/clone/${reference.intentId}`);
     },
     getCloneIntent: (pluginId, request) => {
       const parsed = cloneIntentRequestSchema.parse(request);
