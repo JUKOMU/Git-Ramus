@@ -5,6 +5,7 @@ use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::error::AppError;
@@ -158,6 +159,31 @@ impl TransportConfigSnapshot {
     pub fn empty() -> Self {
         Self::default()
     }
+
+    pub fn sha256(&self) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update((self.values.len() as u64).to_be_bytes());
+        for (key, values) in &self.values {
+            update_hash_field(&mut hasher, key.as_bytes());
+            hasher.update((values.len() as u64).to_be_bytes());
+            for value in values {
+                update_hash_field(&mut hasher, value.as_bytes());
+            }
+        }
+        let digest = hasher.finalize();
+        let mut encoded = String::with_capacity(digest.len() * 2);
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        for byte in digest {
+            encoded.push(HEX[(byte >> 4) as usize] as char);
+            encoded.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+        encoded
+    }
+}
+
+fn update_hash_field(hasher: &mut Sha256, value: &[u8]) {
+    hasher.update((value.len() as u64).to_be_bytes());
+    hasher.update(value);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

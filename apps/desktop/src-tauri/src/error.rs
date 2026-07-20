@@ -42,8 +42,12 @@ pub enum AppError {
     },
     #[error("operation completed with partial results: {0}")]
     PartialResult(String),
+    #[error("operation canceled")]
+    Canceled,
     #[error("{0}")]
     Provider(ProviderFailure),
+    #[error("{0}")]
+    Transport(TransportFailure),
 }
 
 impl fmt::Debug for AppError {
@@ -66,7 +70,9 @@ impl fmt::Debug for AppError {
             Self::UserActionRequired(_) => "UserActionRequired",
             Self::SigningFailed { .. } => "SigningFailed",
             Self::PartialResult(_) => "PartialResult",
+            Self::Canceled => "Canceled",
             Self::Provider(_) => "Provider",
+            Self::Transport(_) => "Transport",
         };
         formatter.write_str(label)
     }
@@ -114,6 +120,367 @@ pub struct ErrorEnvelope {
     pub retry_after_ms: Option<u64>,
     pub recovery_actions: Vec<RecoveryAction>,
     pub details: Option<serde_json::Map<String, Value>>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct TransportFailure(Box<TransportFailureData>);
+
+#[derive(Clone, PartialEq, Eq)]
+struct TransportFailureData {
+    code: &'static str,
+    category: ErrorCategory,
+    message: &'static str,
+    retryable: bool,
+    recovery_actions: Vec<RecoveryAction>,
+    operation_id: Option<String>,
+    plugin_id: Option<String>,
+    resource_id: Option<String>,
+    failed_step: Option<String>,
+}
+
+impl TransportFailure {
+    pub fn authentication_required() -> Self {
+        Self::new(
+            "git.transport.authentication-required",
+            ErrorCategory::UserActionRequired,
+            "Git authentication is required",
+            false,
+            vec![recovery(
+                "authenticate-git-transport",
+                "Authenticate and retry",
+                RecoveryActionKind::Reauthorize,
+            )],
+        )
+    }
+
+    pub fn authentication_cancelled() -> Self {
+        Self::new(
+            "git.transport.authentication-cancelled",
+            ErrorCategory::UserActionRequired,
+            "Git authentication was canceled",
+            false,
+            vec![recovery(
+                "retry-git-authentication",
+                "Retry authentication",
+                RecoveryActionKind::Retry,
+            )],
+        )
+    }
+
+    pub fn permission_denied() -> Self {
+        Self::new(
+            "git.transport.permission-denied",
+            ErrorCategory::UserActionRequired,
+            "Remote permission was denied",
+            false,
+            vec![recovery(
+                "review-remote-permissions",
+                "Review Remote permissions",
+                RecoveryActionKind::OpenSettings,
+            )],
+        )
+    }
+
+    pub fn host_key_unverified() -> Self {
+        Self::new(
+            "git.transport.host-key-unverified",
+            ErrorCategory::UserActionRequired,
+            "SSH Host Key is not verified",
+            false,
+            vec![recovery(
+                "verify-ssh-host-key",
+                "Review SSH Host Key",
+                RecoveryActionKind::OpenSettings,
+            )],
+        )
+    }
+
+    pub fn network_unreachable() -> Self {
+        Self::new(
+            "git.transport.network-unreachable",
+            ErrorCategory::Retryable,
+            "Git Remote is unreachable",
+            true,
+            vec![retry_transport()],
+        )
+    }
+
+    pub fn tls() -> Self {
+        Self::new(
+            "git.transport.tls",
+            ErrorCategory::UserActionRequired,
+            "Git TLS verification failed",
+            false,
+            vec![recovery(
+                "review-git-certificate",
+                "Review certificate settings",
+                RecoveryActionKind::OpenSettings,
+            )],
+        )
+    }
+
+    pub fn remote_not_found() -> Self {
+        Self::new(
+            "git.transport.remote-not-found",
+            ErrorCategory::UserActionRequired,
+            "Git Remote was not found",
+            false,
+            vec![recovery(
+                "review-git-remote",
+                "Review Remote",
+                RecoveryActionKind::OpenSettings,
+            )],
+        )
+    }
+
+    pub fn upstream_required() -> Self {
+        Self::new(
+            "git.transport.upstream-required",
+            ErrorCategory::UserActionRequired,
+            "An upstream branch is required",
+            false,
+            vec![recovery(
+                "select-push-target",
+                "Select Push target",
+                RecoveryActionKind::ResolveConflict,
+            )],
+        )
+    }
+
+    pub fn detached_head() -> Self {
+        Self::new(
+            "git.transport.detached-head",
+            ErrorCategory::UserActionRequired,
+            "HEAD is detached",
+            false,
+            vec![recovery(
+                "select-local-branch",
+                "Select a local Branch",
+                RecoveryActionKind::ResolveConflict,
+            )],
+        )
+    }
+
+    pub fn operation_in_progress() -> Self {
+        Self::new(
+            "git.transport.operation-in-progress",
+            ErrorCategory::UserActionRequired,
+            "Another Git operation requires attention",
+            false,
+            vec![recovery(
+                "resolve-repository-state",
+                "Open repository status",
+                RecoveryActionKind::ResolveConflict,
+            )],
+        )
+    }
+
+    pub fn non_fast_forward() -> Self {
+        Self::new(
+            "git.transport.non-fast-forward",
+            ErrorCategory::UserActionRequired,
+            "Remote history requires integration",
+            false,
+            vec![recovery(
+                "resolve-history",
+                "Open repository status",
+                RecoveryActionKind::ResolveConflict,
+            )],
+        )
+    }
+
+    pub fn repository_busy() -> Self {
+        Self::new(
+            "git.transport.repository-busy",
+            ErrorCategory::Retryable,
+            "Repository is busy",
+            true,
+            vec![retry_transport()],
+        )
+    }
+
+    pub fn profile_mismatch() -> Self {
+        Self::new(
+            "git.transport.profile-mismatch",
+            ErrorCategory::UserActionRequired,
+            "Transport Profile does not match the Remote",
+            false,
+            vec![recovery(
+                "select-transport-profile",
+                "Select Transport Profile",
+                RecoveryActionKind::OpenSettings,
+            )],
+        )
+    }
+
+    pub fn config_drift() -> Self {
+        Self::new(
+            "git.transport.config-drift",
+            ErrorCategory::UserActionRequired,
+            "Managed Git configuration changed externally",
+            false,
+            vec![recovery(
+                "resolve-transport-drift",
+                "Resolve configuration drift",
+                RecoveryActionKind::ResolveConflict,
+            )],
+        )
+    }
+
+    pub fn destination_exists() -> Self {
+        Self::new(
+            "git.transport.destination-exists",
+            ErrorCategory::Validation,
+            "Clone destination already exists",
+            false,
+            Vec::new(),
+        )
+    }
+
+    pub fn unsafe_path() -> Self {
+        Self::new(
+            "git.transport.unsafe-path",
+            ErrorCategory::Validation,
+            "Clone path is unsafe",
+            false,
+            Vec::new(),
+        )
+    }
+
+    pub fn cancelled() -> Self {
+        Self::new(
+            "git.transport.cancelled",
+            ErrorCategory::Validation,
+            "Git network operation was canceled",
+            false,
+            Vec::new(),
+        )
+    }
+
+    pub fn timeout() -> Self {
+        Self::new(
+            "git.transport.timeout",
+            ErrorCategory::Retryable,
+            "Git network operation timed out",
+            true,
+            vec![retry_transport()],
+        )
+    }
+
+    pub fn partial() -> Self {
+        Self::new(
+            "git.transport.partial",
+            ErrorCategory::PartialResult,
+            "Git operation completed only partially",
+            false,
+            vec![recovery(
+                "retry-partial-transport-step",
+                "Retry incomplete step",
+                RecoveryActionKind::Retry,
+            )],
+        )
+    }
+
+    pub fn interrupted() -> Self {
+        Self::new(
+            "git.transport.interrupted",
+            ErrorCategory::UserActionRequired,
+            "Git network operation was interrupted",
+            false,
+            vec![recovery(
+                "review-interrupted-transport",
+                "Review interrupted operation",
+                RecoveryActionKind::ResolveConflict,
+            )],
+        )
+    }
+
+    pub fn code(&self) -> &'static str {
+        self.0.code
+    }
+
+    pub fn with_operation(mut self, operation_id: impl Into<String>) -> Self {
+        self.0.operation_id = Some(operation_id.into());
+        self
+    }
+
+    pub fn with_plugin(mut self, plugin_id: impl Into<String>) -> Self {
+        self.0.plugin_id = Some(plugin_id.into());
+        self
+    }
+
+    pub fn with_resource(mut self, resource_id: impl Into<String>) -> Self {
+        self.0.resource_id = Some(resource_id.into());
+        self
+    }
+
+    pub fn with_failed_step(mut self, failed_step: impl Into<String>) -> Self {
+        self.0.failed_step = Some(failed_step.into());
+        self
+    }
+
+    fn new(
+        code: &'static str,
+        category: ErrorCategory,
+        message: &'static str,
+        retryable: bool,
+        recovery_actions: Vec<RecoveryAction>,
+    ) -> Self {
+        Self(Box::new(TransportFailureData {
+            code,
+            category,
+            message,
+            retryable,
+            recovery_actions,
+            operation_id: None,
+            plugin_id: None,
+            resource_id: None,
+            failed_step: None,
+        }))
+    }
+
+    pub fn envelope(&self) -> ErrorEnvelope {
+        ErrorEnvelope {
+            code: self.0.code.to_owned(),
+            category: self.0.category,
+            message: self.0.message.to_owned(),
+            operation_id: self.0.operation_id.clone(),
+            plugin_id: self.0.plugin_id.clone(),
+            resource_id: self.0.resource_id.clone(),
+            failed_step: self.0.failed_step.clone(),
+            retryable: self.0.retryable,
+            retry_after_ms: None,
+            recovery_actions: self.0.recovery_actions.clone(),
+            details: None,
+        }
+    }
+}
+
+impl fmt::Display for TransportFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.0.message)
+    }
+}
+
+impl fmt::Debug for TransportFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TransportFailure")
+            .field("code", &self.0.code)
+            .field("operation_id", &self.0.operation_id)
+            .field("plugin_id", &self.0.plugin_id)
+            .field("resource_id", &self.0.resource_id)
+            .field("failed_step", &self.0.failed_step)
+            .finish()
+    }
+}
+
+fn retry_transport() -> RecoveryAction {
+    recovery(
+        "retry-git-transport",
+        "Retry operation",
+        RecoveryActionKind::Retry,
+    )
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -376,6 +743,9 @@ fn recovery(id: &str, label: &str, kind: RecoveryActionKind) -> RecoveryAction {
 
 impl From<AppError> for ErrorEnvelope {
     fn from(error: AppError) -> Self {
+        if let AppError::Transport(failure) = &error {
+            return failure.envelope();
+        }
         if let AppError::Provider(failure) = &error {
             return failure.envelope();
         }
@@ -395,7 +765,9 @@ impl From<AppError> for ErrorEnvelope {
             AppError::UserActionRequired(_) => "user.action-required",
             AppError::SigningFailed { .. } => "git.signing-failed",
             AppError::PartialResult(_) => "git.partial-result",
+            AppError::Canceled => "operation.canceled",
             AppError::Provider(_) => unreachable!("Provider failures return above"),
+            AppError::Transport(_) => unreachable!("Transport failures return above"),
         };
         let category = match &error {
             AppError::InvalidInput(_) | AppError::NotFound(_) => ErrorCategory::Validation,
@@ -405,6 +777,7 @@ impl From<AppError> for ErrorEnvelope {
             | AppError::UserActionRequired(_)
             | AppError::SigningFailed { .. } => ErrorCategory::UserActionRequired,
             AppError::PartialResult(_) => ErrorCategory::PartialResult,
+            AppError::Canceled => ErrorCategory::Validation,
             AppError::Timeout => ErrorCategory::Retryable,
             AppError::Database(_)
             | AppError::Io(_)
@@ -413,6 +786,7 @@ impl From<AppError> for ErrorEnvelope {
             | AppError::Git(_)
             | AppError::OutputLimit => ErrorCategory::InternalFatal,
             AppError::Provider(_) => unreachable!("Provider failures return above"),
+            AppError::Transport(_) => unreachable!("Transport failures return above"),
         };
         let (failed_step, resource_id, details) = match &error {
             AppError::SigningFailed {
@@ -485,7 +859,65 @@ fn classify_signing_failure(reason: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppError, ErrorCategory, ErrorEnvelope, ProviderFailure};
+    use super::{AppError, ErrorCategory, ErrorEnvelope, ProviderFailure, TransportFailure};
+
+    #[test]
+    fn transport_failure_envelopes_never_echo_remote_or_key_material() {
+        let error = AppError::Transport(
+            TransportFailure::authentication_required()
+                .with_operation("b95c216a-dac4-45d1-8169-8dbfbc0c0315")
+                .with_resource("repository/0f85befd-5246-4a3e-9db0-7807e3df97a4")
+                .with_failed_step("awaitingAuthentication"),
+        );
+        let debug = format!("{error:?}");
+        let envelope = ErrorEnvelope::from(error);
+        let serialized = serde_json::to_string(&envelope).unwrap();
+        assert_eq!(envelope.code, "git.transport.authentication-required");
+        assert_eq!(
+            envelope.operation_id.as_deref(),
+            Some("b95c216a-dac4-45d1-8169-8dbfbc0c0315")
+        );
+        for secret in [
+            "ghp_super_secret",
+            r"C:\Users\name\.ssh\id_ed25519",
+            "user:password@",
+        ] {
+            assert!(!serialized.contains(secret));
+            assert!(!debug.contains(secret));
+        }
+    }
+
+    #[test]
+    fn every_transport_failure_constructor_has_a_unique_stable_code() {
+        let failures = [
+            TransportFailure::authentication_required(),
+            TransportFailure::authentication_cancelled(),
+            TransportFailure::permission_denied(),
+            TransportFailure::host_key_unverified(),
+            TransportFailure::network_unreachable(),
+            TransportFailure::tls(),
+            TransportFailure::remote_not_found(),
+            TransportFailure::upstream_required(),
+            TransportFailure::detached_head(),
+            TransportFailure::operation_in_progress(),
+            TransportFailure::non_fast_forward(),
+            TransportFailure::repository_busy(),
+            TransportFailure::profile_mismatch(),
+            TransportFailure::config_drift(),
+            TransportFailure::destination_exists(),
+            TransportFailure::unsafe_path(),
+            TransportFailure::cancelled(),
+            TransportFailure::timeout(),
+            TransportFailure::partial(),
+            TransportFailure::interrupted(),
+        ];
+        let codes = failures
+            .iter()
+            .map(TransportFailure::code)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(codes.len(), failures.len());
+        assert!(codes.iter().all(|code| code.starts_with("git.transport.")));
+    }
 
     #[test]
     fn provider_failures_serialize_without_tokens_or_urls() {
