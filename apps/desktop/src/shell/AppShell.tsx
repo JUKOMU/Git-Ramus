@@ -6,7 +6,12 @@ import type {
   ThemeState
 } from "@git-ramus/contracts";
 import type { CSSProperties, ReactNode } from "react";
+import { transportPromptBroker } from "../git-transport/promptBroker";
+import { TransportConfirmationDialog } from "../git-transport/TransportConfirmationDialog";
 import type { HostApi } from "../lib/hostApi";
+import { providerAccessBroker, providerCredentialBroker } from "../providers/promptBroker";
+import { ProviderAccessDialog } from "../providers/ProviderAccessDialog";
+import { ProviderCredentialDialog } from "../providers/ProviderCredentialDialog";
 import { TaskCenter } from "./TaskCenter";
 
 interface AppShellProps {
@@ -80,7 +85,12 @@ export function AppShell(props: AppShellProps) {
           {props.version === null ? "Host loading" : `Host ${props.version}`}
         </div>
       </aside>
-      <main className="workspace">{props.children}</main>
+      <main className="workspace">
+        {props.children}
+        <ProviderCredentialDialog broker={providerCredentialBroker} />
+        <ProviderAccessDialog broker={providerAccessBroker} />
+        <TransportConfirmationDialog broker={transportPromptBroker} />
+      </main>
       <TaskCenter jobs={props.jobs} hostApi={props.hostApi} />
     </div>
   );

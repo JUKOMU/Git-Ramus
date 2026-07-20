@@ -16,9 +16,16 @@ interface PluginFrameProps {
   hostApi: HostApi;
   route?: string;
   theme?: ThemeDefinition | null;
+  onRouteReady?(pluginId: string, route: string): void;
 }
 
-export function PluginFrame({ descriptor, hostApi, route = "/", theme = null }: PluginFrameProps) {
+export function PluginFrame({
+  descriptor,
+  hostApi,
+  route = "/",
+  theme = null,
+  onRouteReady
+}: PluginFrameProps) {
   const frameRef = useRef<HTMLIFrameElement>(null);
   const readyRef = useRef(false);
   const initializedRef = useRef(false);
@@ -44,8 +51,10 @@ export function PluginFrame({ descriptor, hostApi, route = "/", theme = null }: 
         return;
       }
       if (parsed.data.type === "plugin:ready") {
+        const firstReady = !readyRef.current;
         readyRef.current = true;
         setBridgeStatus("ready");
+        if (firstReady) onRouteReady?.(descriptor.manifest.id, route);
         return;
       }
       if (parsed.data.type === "rpc:request") {
@@ -93,7 +102,7 @@ export function PluginFrame({ descriptor, hostApi, route = "/", theme = null }: 
     };
     window.addEventListener("message", receive);
     return () => window.removeEventListener("message", receive);
-  }, [descriptor.manifest.id, hostApi, sessionId]);
+  }, [descriptor.manifest.id, hostApi, onRouteReady, route, sessionId]);
 
   useEffect(() => {
     if (!initializedRef.current) {

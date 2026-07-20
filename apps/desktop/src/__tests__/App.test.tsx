@@ -2,6 +2,8 @@ import type { PluginDescriptor, ThemeCatalog, ThemeState } from "@git-ramus/cont
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
+import { cloneNavigationBroker } from "../git-transport/cloneNavigationBroker";
+import { transportPromptBroker } from "../git-transport/promptBroker";
 import type { HostApi } from "../lib/hostApi";
 import { tauriHostApi } from "../lib/hostApi";
 import { providerCredentialBroker } from "../providers/promptBroker";
@@ -159,13 +161,31 @@ function createHostApi(plugins: PluginDescriptor[] = []): HostApi {
     matchLocalProviderRemotes: vi.fn(),
     listProviderBindings: vi.fn(),
     bindProviderRemote: vi.fn(),
-    unbindProviderRemote: vi.fn()
+    unbindProviderRemote: vi.fn(),
+    listTransportProfiles: vi.fn(),
+    createTransportProfile: vi.fn(),
+    updateTransportProfile: vi.fn(),
+    getTransportProfileDeletionImpact: vi.fn(),
+    deleteTransportProfile: vi.fn(),
+    getEffectiveRepositoryTransport: vi.fn(),
+    getRepositoryNetworkState: vi.fn(),
+    bindRepositoryTransport: vi.fn(),
+    unbindRepositoryTransport: vi.fn(),
+    createCloneIntent: vi.fn(),
+    getCloneIntent: vi.fn(),
+    cloneRepository: vi.fn(),
+    fetchRepository: vi.fn(),
+    pullRepository: vi.fn(),
+    pushRepository: vi.fn(),
+    cancelTransportOperation: vi.fn()
   };
 }
 
 afterEach(() => {
-  cleanup();
   providerCredentialBroker.cancelAll();
+  transportPromptBroker.cancelAll();
+  cloneNavigationBroker.clear();
+  cleanup();
   vi.restoreAllMocks();
   listen.mockReset();
 });
@@ -190,6 +210,128 @@ describe("App", () => {
     expect(dialog.closest("iframe")).toBeNull();
     providerCredentialBroker.cancelAll();
     await expect(pending).resolves.toBeNull();
+  });
+
+  it("mounts the trusted transport dialog as a Shell-owned sibling of the plugin iframe", async () => {
+    const pending = transportPromptBroker.confirm({
+      pluginId: "git-ramus.git-client",
+      operationId: "b95c216a-dac4-45d1-8169-8dbfbc0c0315",
+      kind: "network",
+      operation: "fetch",
+      resourceLabel: "origin"
+    });
+    render(<App hostApi={createHostApi([gitClient])} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Overview" }));
+    const frame = await screen.findByTitle("Git Client plugin");
+    const dialog = await screen.findByRole("alertdialog", {
+      name: "Confirm Git network operation"
+    });
+
+    expect(dialog.closest("iframe")).toBeNull();
+    expect(dialog.closest("[data-testid='app-shell']")).not.toBeNull();
+    expect(frame.closest("[data-testid='app-shell']")).toBe(
+      dialog.closest("[data-testid='app-shell']")
+    );
+    expect(frame.parentElement).toBe(dialog.closest(".transport-prompt-overlay")?.parentElement);
+    transportPromptBroker.cancelAll();
+    await expect(pending).resolves.toBe(false);
+  });
+
+  it("consumes Clone navigation by selecting Git Client with the exact intent route", async () => {
+    const plugins = deferred<PluginDescriptor[]>();
+    const hostApi = createHostApi();
+    hostApi.listPlugins = vi.fn(() => plugins.promise);
+    render(<App hostApi={hostApi} />);
+    const route = "/clone/90e1e991-f93e-4e78-817e-d0ceeb06a749";
+
+    act(() => {
+      cloneNavigationBroker.publish(route);
+    });
+    expect(cloneNavigationBroker.current()?.route).toBe(route);
+
+    await act(async () => {
+      plugins.resolve([gitClient]);
+      await plugins.promise;
+    });
+
+    const frame = await screen.findByTitle("Git Client plugin");
+    expect(frame).toHaveAttribute("data-plugin-route", route);
+    expect(cloneNavigationBroker.current()?.route).toBe(route);
+    const frameWindow = (frame as HTMLIFrameElement).contentWindow;
+    if (frameWindow === null) throw new Error("expected iframe window");
+    const postMessage = vi.fn();
+    Object.defineProperty(frameWindow, "postMessage", { configurable: true, value: postMessage });
+    fireEvent.load(frame);
+    const init = postMessage.mock.calls
+      .map(([message]) => message)
+      .find((message) => message.type === "host:init");
+    expect(init).toMatchObject({ route });
+
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          source: frameWindow,
+          data: { type: "plugin:ready", sessionId: init.sessionId }
+        })
+      );
+    });
+    await waitFor(() => expect(cloneNavigationBroker.current()).toBeNull());
+  });
+
+  it("delivers queued Clone routes one iframe acknowledgement at a time", async () => {
+    const firstRoute = "/clone/90e1e991-f93e-4e78-817e-d0ceeb06a749";
+    const secondRoute = "/clone/b95c216a-dac4-45d1-8169-8dbfbc0c0315";
+    cloneNavigationBroker.publish(firstRoute);
+    cloneNavigationBroker.publish(secondRoute);
+    render(<App hostApi={createHostApi([gitClient])} />);
+
+    const firstFrame = await screen.findByTitle("Git Client plugin");
+    expect(firstFrame).toHaveAttribute("data-plugin-route", firstRoute);
+    const firstWindow = (firstFrame as HTMLIFrameElement).contentWindow!;
+    const firstPost = vi.fn();
+    Object.defineProperty(firstWindow, "postMessage", { configurable: true, value: firstPost });
+    fireEvent.load(firstFrame);
+    const firstInit = firstPost.mock.calls
+      .map(([message]) => message)
+      .find((message) => message.type === "host:init");
+    expect(firstInit).toMatchObject({ route: firstRoute });
+    expect(cloneNavigationBroker.current()?.route).toBe(firstRoute);
+
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          source: firstWindow,
+          data: { type: "plugin:ready", sessionId: firstInit.sessionId }
+        })
+      );
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTitle("Git Client plugin")).toHaveAttribute(
+        "data-plugin-route",
+        secondRoute
+      )
+    );
+    const secondFrame = screen.getByTitle("Git Client plugin");
+    expect(secondFrame).not.toBe(firstFrame);
+    expect(cloneNavigationBroker.current()?.route).toBe(secondRoute);
+    const secondWindow = (secondFrame as HTMLIFrameElement).contentWindow!;
+    const secondPost = vi.fn();
+    Object.defineProperty(secondWindow, "postMessage", { configurable: true, value: secondPost });
+    fireEvent.load(secondFrame);
+    const secondInit = secondPost.mock.calls
+      .map(([message]) => message)
+      .find((message) => message.type === "host:init");
+    expect(secondInit).toMatchObject({ route: secondRoute });
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          source: secondWindow,
+          data: { type: "plugin:ready", sessionId: secondInit.sessionId }
+        })
+      );
+    });
+    await waitFor(() => expect(cloneNavigationBroker.current()).toBeNull());
   });
 
   it("does not render hardcoded no-op navigation entries", async () => {

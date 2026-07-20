@@ -179,6 +179,22 @@ function createHostApi(): HostApi {
     matchLocalProviderRemotes: vi.fn(),
     listProviderBindings: vi.fn(),
     bindProviderRemote: vi.fn(),
-    unbindProviderRemote: vi.fn()
+    unbindProviderRemote: vi.fn(),
+    listTransportProfiles: vi.fn(),
+    createTransportProfile: vi.fn(),
+    updateTransportProfile: vi.fn(),
+    getTransportProfileDeletionImpact: vi.fn(),
+    deleteTransportProfile: vi.fn(),
+    getEffectiveRepositoryTransport: vi.fn(),
+    getRepositoryNetworkState: vi.fn(),
+    bindRepositoryTransport: vi.fn(),
+    unbindRepositoryTransport: vi.fn(),
+    createCloneIntent: vi.fn(),
+    getCloneIntent: vi.fn(),
+    cloneRepository: vi.fn(),
+    fetchRepository: vi.fn(),
+    pullRepository: vi.fn(),
+    pushRepository: vi.fn(),
+    cancelTransportOperation: vi.fn()
   };
 }

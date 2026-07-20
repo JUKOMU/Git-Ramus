@@ -1,7 +1,13 @@
 import {
   changesResultSchema,
   authorizationDecisionSchema,
+  cloneIntentReferenceSchema,
+  cloneIntentRequestSchema,
+  cloneIntentSummarySchema,
+  cloneRequestSchema,
+  cloneResultSchema,
   diffResultSchema,
+  effectiveTransportSchema,
   effectiveIdentitySchema,
   gitContextRequestSchema,
   identityBindingSchema,
@@ -11,6 +17,7 @@ import {
   identityProfileSchema,
   identityUpdateRequestSchema,
   overviewSchema,
+  networkOperationResultSchema,
   providerAccountConnectRequestSchema,
   providerAccountDeleteRequestSchema,
   providerAccountDeletionImpactRequestSchema,
@@ -36,6 +43,7 @@ import {
   providerLocalRemoteMatchRequestSchema,
   providerOperationCancelRequestSchema,
   providerReadAccessRevokeRequestSchema,
+  providerCloneIntentCreateRequestSchema,
   providerRepositoryListRequestSchema,
   providerRepositoryPageSchema,
   projectListResponseSchema,
@@ -46,16 +54,31 @@ import {
   repositoryDiffRequestSchema,
   repositoryIdentityBindRequestSchema,
   repositoryIdentityRequestSchema,
+  repositoryFetchRequestSchema,
+  repositoryNetworkStateSchema,
+  repositoryPullRequestSchema,
+  repositoryPushRequestSchema,
   repositoryRequestSchema,
   repositoryScanRecordSchema,
   repositoryStageRequestSchema,
   repositoryUnstageRequestSchema,
+  repositoryTransportBindRequestSchema,
+  repositoryTransportBindingSchema,
+  repositoryTransportUnbindRequestSchema,
   scanProjectResultSchema,
   trustResponseSchema,
   trustStatusResponseSchema,
   themeActivateRequestSchema,
   themeCatalogSchema,
   themeStateSchema,
+  transportOperationCancelRequestSchema,
+  transportProfileCreateRequestSchema,
+  transportProfileDeleteRequestSchema,
+  transportProfileDeletionImpactSchema,
+  transportProfileListResponseSchema,
+  transportProfileRequestSchema,
+  transportProfileSummarySchema,
+  transportProfileUpdateRequestSchema,
   workspaceCreateRequestSchema,
   workspaceDeleteRequestSchema,
   workspaceListResponseSchema,
@@ -67,8 +90,14 @@ import {
 } from "@git-ramus/contracts";
 import type {
   ChangesResult,
+  CloneIntentReference,
+  CloneIntentRequest,
+  CloneIntentSummary,
+  CloneRequest,
+  CloneResult,
   DiffResult,
   EffectiveIdentity,
+  EffectiveTransport,
   GitContextRequest,
   IdentityBinding,
   IdentityCreateRequest,
@@ -77,6 +106,7 @@ import type {
   IdentityProfileRequest,
   IdentityUpdateRequest,
   Job,
+  NetworkOperationResult,
   Overview,
   PluginDescriptor,
   Project,
@@ -101,6 +131,7 @@ import type {
   ProviderBindingListResponse,
   ProviderBindingSetRequest,
   ProviderBindingSuggestion,
+  ProviderCloneIntentCreateRequest,
   ProviderInstance,
   ProviderInstanceCreateRequest,
   ProviderInstanceListResponse,
@@ -115,16 +146,31 @@ import type {
   RepositoryDiffRequest,
   RepositoryIdentityBindRequest,
   RepositoryIdentityRequest,
+  RepositoryFetchRequest,
+  RepositoryNetworkState,
+  RepositoryPullRequest,
+  RepositoryPushRequest,
   RepositoryRequest,
   RepositoryScanRecord,
   RepositoryStageRequest,
   RepositoryUnstageRequest,
+  RepositoryTransportBindRequest,
+  RepositoryTransportBinding,
+  RepositoryTransportUnbindRequest,
   ScanProjectResult,
   TrustResponse,
   TrustStatusResponse,
   ThemeActivateRequest,
   ThemeCatalog,
   ThemeState,
+  TransportOperationCancelRequest,
+  TransportProfileCreateRequest,
+  TransportProfileDeleteRequest,
+  TransportProfileDeletionImpact,
+  TransportProfileListResponse,
+  TransportProfileRequest,
+  TransportProfileSummary,
+  TransportProfileUpdateRequest,
   Workspace,
   WorkspaceCreateRequest,
   WorkspaceDeleteRequest,
@@ -135,6 +181,16 @@ import type {
 } from "@git-ramus/contracts";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import {
+  cloneNavigationBroker,
+  type CloneNavigationPublisher
+} from "../git-transport/cloneNavigationBroker";
+import { transportPromptBroker } from "../git-transport/promptBroker";
+import type { GitTransportFilePort, GitTransportPromptPort } from "../git-transport/promptPorts";
+import {
+  nativeGitTransportFilePort,
+  unavailableGitTransportPromptPort
+} from "../git-transport/promptPorts";
 import { providerPromptBrokerPort } from "../providers/promptBroker";
 import type { HostFileSelectionPort, ProviderPromptPort } from "../providers/promptPorts";
 import { nativeCertificateFileSelectionPort } from "../providers/promptPorts";
@@ -191,6 +247,58 @@ export interface HostApi {
   bindRepositoryIdentity(request: RepositoryIdentityBindRequest): Promise<IdentityBinding>;
   unbindRepositoryIdentity(request: RepositoryIdentityRequest): Promise<void>;
   getEffectiveRepositoryIdentity(request: RepositoryIdentityRequest): Promise<EffectiveIdentity>;
+  listTransportProfiles(pluginId: string): Promise<TransportProfileListResponse>;
+  createTransportProfile(
+    pluginId: string,
+    request: TransportProfileCreateRequest
+  ): Promise<TransportProfileSummary | null>;
+  updateTransportProfile(
+    pluginId: string,
+    request: TransportProfileUpdateRequest
+  ): Promise<TransportProfileSummary | null>;
+  getTransportProfileDeletionImpact(
+    pluginId: string,
+    request: TransportProfileRequest
+  ): Promise<TransportProfileDeletionImpact>;
+  deleteTransportProfile(pluginId: string, request: TransportProfileDeleteRequest): Promise<void>;
+  getEffectiveRepositoryTransport(
+    pluginId: string,
+    request: RepositoryRequest
+  ): Promise<EffectiveTransport>;
+  getRepositoryNetworkState(
+    pluginId: string,
+    request: RepositoryRequest
+  ): Promise<RepositoryNetworkState>;
+  bindRepositoryTransport(
+    pluginId: string,
+    request: RepositoryTransportBindRequest
+  ): Promise<RepositoryTransportBinding | null>;
+  unbindRepositoryTransport(
+    pluginId: string,
+    request: RepositoryTransportUnbindRequest
+  ): Promise<void>;
+  createCloneIntent(
+    pluginId: string,
+    request: ProviderCloneIntentCreateRequest
+  ): Promise<CloneIntentReference>;
+  getCloneIntent(pluginId: string, request: CloneIntentRequest): Promise<CloneIntentSummary>;
+  cloneRepository(pluginId: string, request: CloneRequest): Promise<CloneResult | null>;
+  fetchRepository(
+    pluginId: string,
+    request: RepositoryFetchRequest
+  ): Promise<NetworkOperationResult | null>;
+  pullRepository(
+    pluginId: string,
+    request: RepositoryPullRequest
+  ): Promise<NetworkOperationResult | null>;
+  pushRepository(
+    pluginId: string,
+    request: RepositoryPushRequest
+  ): Promise<NetworkOperationResult | null>;
+  cancelTransportOperation(
+    pluginId: string,
+    request: TransportOperationCancelRequest
+  ): Promise<void>;
   listProviderInstances(): Promise<ProviderInstanceListResponse>;
   createProviderInstance(request: ProviderInstanceCreateRequest): Promise<ProviderInstance | null>;
   updateProviderInstance(request: ProviderInstanceUpdateRequest): Promise<ProviderInstance | null>;
@@ -238,10 +346,18 @@ export interface HostApi {
 export function createTauriHostApi(dependencies: {
   prompts: ProviderPromptPort;
   files: HostFileSelectionPort;
+  transportPrompts?: GitTransportPromptPort;
+  transportFiles?: GitTransportFilePort;
+  cloneNavigation?: CloneNavigationPublisher;
 }): HostApi {
   const { prompts, files } = dependencies;
+  const transportPrompts = dependencies.transportPrompts ?? unavailableGitTransportPromptPort;
+  const transportFiles = dependencies.transportFiles ?? nativeGitTransportFilePort;
+  const cloneNavigation = dependencies.cloneNavigation ?? cloneNavigationBroker;
   const instanceCache = new Map<string, ProviderInstance>();
   const accountCache = new Map<string, ProviderAccountSummary>();
+  const cloneIntentCache = new Map<string, CloneIntentSummary>();
+  const networkStateCache = new Map<string, RepositoryNetworkState>();
   return {
     getAppInfo: () => invoke<AppInfo>("get_app_info"),
     listPlugins: () => invoke<PluginDescriptor[]>("list_plugins"),
@@ -395,6 +511,273 @@ export function createTauriHostApi(dependencies: {
         effectiveIdentitySchema,
         request
       ),
+    listTransportProfiles: (pluginId) =>
+      invoke<unknown>("git_transport_profile_list", {
+        request: { pluginId }
+      }).then((value) => transportProfileListResponseSchema.parse(value)),
+    createTransportProfile: async (pluginId, request) => {
+      const parsed = transportProfileCreateRequestSchema.parse(request);
+      if (parsed.kind === "ssh") {
+        const selected = await transportFiles.selectSshPrivateKey();
+        if (selected === null) return null;
+        const sshKeyPath = validateSelectedHostPath(selected);
+        return transportProfileSummarySchema.parse(
+          await invoke<unknown>("git_transport_profile_create", {
+            request: {
+              pluginId,
+              kind: "ssh",
+              displayName: parsed.displayName,
+              sshKeyPath,
+              identitiesOnly: parsed.identitiesOnly
+            }
+          })
+        );
+      }
+      return transportProfileSummarySchema.parse(
+        await invoke<unknown>("git_transport_profile_create", {
+          request: {
+            pluginId,
+            kind: "https",
+            displayName: parsed.displayName,
+            username: parsed.username,
+            useHttpPath: parsed.useHttpPath
+          }
+        })
+      );
+    },
+    updateTransportProfile: async (pluginId, request) => {
+      const parsed = transportProfileUpdateRequestSchema.parse(request);
+      if (parsed.kind === "ssh") {
+        let sshKeyPath: string | null = null;
+        if (parsed.sshKeyAction === "selectFile") {
+          const selected = await transportFiles.selectSshPrivateKey();
+          if (selected === null) return null;
+          sshKeyPath = validateSelectedHostPath(selected);
+        }
+        return transportProfileSummarySchema.parse(
+          await invoke<unknown>("git_transport_profile_update", {
+            request: {
+              pluginId,
+              kind: "ssh",
+              profileId: parsed.profileId,
+              displayName: parsed.displayName,
+              sshKeyPath,
+              identitiesOnly: parsed.identitiesOnly
+            }
+          })
+        );
+      }
+      return transportProfileSummarySchema.parse(
+        await invoke<unknown>("git_transport_profile_update", {
+          request: {
+            pluginId,
+            kind: "https",
+            profileId: parsed.profileId,
+            displayName: parsed.displayName,
+            username: parsed.username,
+            useHttpPath: parsed.useHttpPath
+          }
+        })
+      );
+    },
+    getTransportProfileDeletionImpact: (pluginId, request) => {
+      const parsed = transportProfileRequestSchema.parse(request);
+      return invoke<unknown>("git_transport_profile_deletion_impact", {
+        request: { pluginId, ...parsed }
+      }).then((value) => transportProfileDeletionImpactSchema.parse(value));
+    },
+    deleteTransportProfile: async (pluginId, request) => {
+      const parsed = transportProfileDeleteRequestSchema.parse(request);
+      await invoke<unknown>("git_transport_profile_delete", {
+        request: { pluginId, ...parsed }
+      });
+    },
+    getEffectiveRepositoryTransport: (pluginId, request) => {
+      const parsed = repositoryRequestSchema.parse(request);
+      return invoke<unknown>("git_repository_effective_transport", {
+        request: { pluginId, ...parsed }
+      }).then((value) => effectiveTransportSchema.parse(value));
+    },
+    getRepositoryNetworkState: (pluginId, request) => {
+      const parsed = repositoryRequestSchema.parse(request);
+      return invoke<unknown>("git_repository_network_state", {
+        request: { pluginId, ...parsed }
+      }).then((value) => {
+        const state = repositoryNetworkStateSchema.parse(value);
+        networkStateCache.set(state.repositoryId, state);
+        return state;
+      });
+    },
+    bindRepositoryTransport: async (pluginId, request) => {
+      const parsed = repositoryTransportBindRequestSchema.parse(request);
+      if (
+        parsed.replaceExisting &&
+        !(await transportPrompts.confirm({
+          pluginId,
+          operationId: null,
+          kind: "replaceConfig",
+          operation: "bindProfile",
+          resourceLabel: `repository ${parsed.repositoryId}`
+        }))
+      ) {
+        return null;
+      }
+      return repositoryTransportBindingSchema.parse(
+        await invoke<unknown>("git_repository_bind_transport", {
+          request: { pluginId, ...parsed }
+        })
+      );
+    },
+    unbindRepositoryTransport: async (pluginId, request) => {
+      const parsed = repositoryTransportUnbindRequestSchema.parse(request);
+      await invoke<unknown>("git_repository_unbind_transport", {
+        request: { pluginId, ...parsed }
+      });
+    },
+    createCloneIntent: async (pluginId, request) => {
+      const parsed = providerCloneIntentCreateRequestSchema.parse(request);
+      const reference = cloneIntentReferenceSchema.parse(
+        await invoke<unknown>("git_clone_intent_create", {
+          request: { pluginId, ...parsed }
+        })
+      );
+      cloneNavigation.publish(`/clone/${reference.intentId}`);
+      return reference;
+    },
+    getCloneIntent: (pluginId, request) => {
+      const parsed = cloneIntentRequestSchema.parse(request);
+      return invoke<unknown>("git_clone_intent_get", {
+        request: { pluginId, ...parsed }
+      }).then((value) => {
+        const intent = cloneIntentSummarySchema.parse(value);
+        cloneIntentCache.set(intent.id, intent);
+        return intent;
+      });
+    },
+    cloneRepository: async (pluginId, request) => {
+      const parsed = cloneRequestSchema.parse(request);
+      if (transportPrompts.isOperationCanceled(pluginId, parsed.operationId)) return null;
+      const sourceLabel =
+        parsed.source.kind === "manual"
+          ? safeManualRemoteSummary(parsed.source.remoteUrl)
+          : (cloneIntentCache.get(parsed.source.intentId)?.repository.fullName ??
+            `intent ${parsed.source.intentId}`);
+      const sourceApproved = await transportPrompts.confirm({
+        pluginId,
+        operationId: parsed.operationId,
+        kind: "sourceTrust",
+        operation: "clone",
+        resourceLabel: sourceLabel
+      });
+      if (!sourceApproved || transportPrompts.isOperationCanceled(pluginId, parsed.operationId)) {
+        return null;
+      }
+      const networkApproved = await transportPrompts.confirm({
+        pluginId,
+        operationId: parsed.operationId,
+        kind: "network",
+        operation: "clone",
+        resourceLabel: `${parsed.folderName} · ${cloneProjectTargetLabel(parsed.projectTarget)}`
+      });
+      if (!networkApproved || transportPrompts.isOperationCanceled(pluginId, parsed.operationId)) {
+        return null;
+      }
+      const selected = await transportFiles.selectDestinationParent();
+      if (selected === null || transportPrompts.isOperationCanceled(pluginId, parsed.operationId)) {
+        return null;
+      }
+      const destinationParent = validateSelectedHostPath(selected);
+      return cloneResultSchema.parse(
+        await invoke<unknown>("git_repository_clone", {
+          request: {
+            pluginId,
+            ...parsed,
+            destinationParent,
+            interactiveConfirmed: true
+          }
+        })
+      );
+    },
+    fetchRepository: async (pluginId, request) => {
+      const parsed = repositoryFetchRequestSchema.parse(request);
+      if (transportPrompts.isOperationCanceled(pluginId, parsed.operationId)) return null;
+      const confirmed = await transportPrompts.confirm({
+        pluginId,
+        operationId: parsed.operationId,
+        kind: "network",
+        operation: "fetch",
+        resourceLabel: repositoryNetworkLabel(
+          networkStateCache.get(parsed.repositoryId),
+          parsed.repositoryId,
+          parsed.remoteName,
+          false
+        )
+      });
+      if (!confirmed || transportPrompts.isOperationCanceled(pluginId, parsed.operationId)) {
+        return null;
+      }
+      return networkOperationResultSchema.parse(
+        await invoke<unknown>("git_repository_fetch", {
+          request: { pluginId, ...parsed, interactiveConfirmed: true }
+        })
+      );
+    },
+    pullRepository: async (pluginId, request) => {
+      const parsed = repositoryPullRequestSchema.parse(request);
+      if (transportPrompts.isOperationCanceled(pluginId, parsed.operationId)) return null;
+      const confirmed = await transportPrompts.confirm({
+        pluginId,
+        operationId: parsed.operationId,
+        kind: "network",
+        operation: "pull",
+        resourceLabel: repositoryNetworkLabel(
+          networkStateCache.get(parsed.repositoryId),
+          parsed.repositoryId,
+          null,
+          false
+        )
+      });
+      if (!confirmed || transportPrompts.isOperationCanceled(pluginId, parsed.operationId)) {
+        return null;
+      }
+      return networkOperationResultSchema.parse(
+        await invoke<unknown>("git_repository_pull", {
+          request: { pluginId, ...parsed, interactiveConfirmed: true }
+        })
+      );
+    },
+    pushRepository: async (pluginId, request) => {
+      const parsed = repositoryPushRequestSchema.parse(request);
+      if (transportPrompts.isOperationCanceled(pluginId, parsed.operationId)) return null;
+      const confirmed = await transportPrompts.confirm({
+        pluginId,
+        operationId: parsed.operationId,
+        kind: "network",
+        operation: "push",
+        resourceLabel: repositoryNetworkLabel(
+          networkStateCache.get(parsed.repositoryId),
+          parsed.repositoryId,
+          parsed.target?.remoteName ?? null,
+          true,
+          parsed.target?.branchName ?? null
+        )
+      });
+      if (!confirmed || transportPrompts.isOperationCanceled(pluginId, parsed.operationId)) {
+        return null;
+      }
+      return networkOperationResultSchema.parse(
+        await invoke<unknown>("git_repository_push", {
+          request: { pluginId, ...parsed, interactiveConfirmed: true }
+        })
+      );
+    },
+    cancelTransportOperation: async (pluginId, request) => {
+      const parsed = transportOperationCancelRequestSchema.parse(request);
+      transportPrompts.cancelOperation(pluginId, parsed.operationId);
+      await invoke<unknown>("git_transport_operation_cancel", {
+        request: { pluginId, ...parsed }
+      });
+    },
     listProviderInstances: () =>
       invokeParsed("provider_instance_list", providerInstanceListResponseSchema).then(
         (response) => {
@@ -642,7 +1025,10 @@ export function createTauriHostApi(dependencies: {
 
 export const tauriHostApi: HostApi = createTauriHostApi({
   prompts: providerPromptBrokerPort,
-  files: nativeCertificateFileSelectionPort
+  files: nativeCertificateFileSelectionPort,
+  transportPrompts: transportPromptBroker,
+  transportFiles: nativeGitTransportFilePort,
+  cloneNavigation: cloneNavigationBroker
 });
 
 interface RuntimeSchema<T> {
@@ -683,4 +1069,186 @@ function projectNameFromRoot(rootPath: string): string {
   const withoutTrailingSeparators = rootPath.replace(/[\\/]+$/u, "");
   const segments = withoutTrailingSeparators.split(/[\\/]/u);
   return segments.at(-1) || withoutTrailingSeparators || "Root";
+}
+
+function validateSelectedHostPath(value: string): string {
+  const path = value;
+  if (
+    path !== path.trim() ||
+    path.length === 0 ||
+    path.length > 32_768 ||
+    Array.from(path).some((character) => {
+      const code = character.charCodeAt(0);
+      return code < 0x20 || code === 0x7f;
+    }) ||
+    !/^(?:[A-Za-z]:[\\/]|\\\\|\/)/u.test(path)
+  ) {
+    throw new Error("Trusted Git transport picker returned an invalid path");
+  }
+  return path;
+}
+
+function safeManualRemoteSummary(value: string): string {
+  if (
+    value.length === 0 ||
+    value.length > 4096 ||
+    isGitRemoteHelper(value) ||
+    Array.from(value).some((character) => {
+      const code = character.charCodeAt(0);
+      return code < 0x20 || code === 0x7f;
+    })
+  ) {
+    throw new Error("Manual Clone source is an unsafe Git remote");
+  }
+
+  if (value.includes("://")) {
+    let remote: URL;
+    try {
+      remote = new URL(value);
+    } catch {
+      throw new Error("Manual Clone source is an unsafe Git remote");
+    }
+    const https = remote.protocol === "https:";
+    const ssh = remote.protocol === "ssh:";
+    const username = remote.username;
+    const path = normalizeSafeRepositoryPath(remote.pathname);
+    if (
+      (!https && !ssh) ||
+      remote.hostname.length === 0 ||
+      remote.password.length > 0 ||
+      (https && remote.username.length > 0) ||
+      (ssh && !isSafeSshUsername(username)) ||
+      value.includes("?") ||
+      value.includes("#")
+    ) {
+      throw new Error("Manual Clone source is an unsafe Git remote");
+    }
+    const port = canonicalGitPort(remote.protocol, remote.port);
+    const authority = gitRemoteAuthority(remote.hostname.toLowerCase(), port);
+    return https
+      ? `https://${authority}/${path}.git`
+      : `ssh://${username}@${authority}/${path}.git`;
+  }
+
+  const at = value.indexOf("@");
+  if (at <= 0 || value.indexOf("@", at + 1) !== -1) {
+    throw new Error("Manual Clone source is an unsafe Git remote");
+  }
+  const username = value.slice(0, at);
+  const hostAndPath = value.slice(at + 1);
+  const separator = hostAndPath.indexOf(":");
+  if (separator <= 0 || !isSafeSshUsername(username)) {
+    throw new Error("Manual Clone source is an unsafe Git remote");
+  }
+  const rawHost = hostAndPath.slice(0, separator);
+  const rawPath = hostAndPath.slice(separator + 1);
+  if (
+    rawHost.includes("/") ||
+    rawHost.includes("\\") ||
+    rawHost.includes(":") ||
+    rawPath.startsWith("/") ||
+    rawPath.startsWith("\\")
+  ) {
+    throw new Error("Manual Clone source is an unsafe Git remote");
+  }
+  let parsedHost: URL;
+  try {
+    parsedHost = new URL(`ssh://${rawHost}/`);
+  } catch {
+    throw new Error("Manual Clone source is an unsafe Git remote");
+  }
+  if (
+    parsedHost.hostname.length === 0 ||
+    parsedHost.username.length > 0 ||
+    parsedHost.password.length > 0 ||
+    parsedHost.port.length > 0 ||
+    parsedHost.pathname !== "/" ||
+    parsedHost.search.length > 0 ||
+    parsedHost.hash.length > 0
+  ) {
+    throw new Error("Manual Clone source is an unsafe Git remote");
+  }
+  const path = normalizeSafeRepositoryPath(rawPath);
+  return `${username}@${parsedHost.hostname.toLowerCase()}:${path}.git`;
+}
+
+function normalizeSafeRepositoryPath(value: string): string {
+  const trimmed = value.replace(/^\/+|\/+$/gu, "");
+  const path = trimmed.endsWith(".git") ? trimmed.slice(0, -4) : trimmed;
+  const lowered = path.toLowerCase();
+  if (
+    path.length === 0 ||
+    path.includes("\\") ||
+    path.includes("?") ||
+    path.includes("#") ||
+    lowered.includes("%00") ||
+    lowered.includes("%2f") ||
+    lowered.includes("%5c") ||
+    lowered.includes("%2e") ||
+    path
+      .split("/")
+      .some(
+        (component) =>
+          component.length === 0 ||
+          component === "." ||
+          component === ".." ||
+          Array.from(component).some((character) => character.charCodeAt(0) < 0x20)
+      )
+  ) {
+    throw new Error("Manual Clone source is an unsafe Git remote");
+  }
+  return path;
+}
+
+function isSafeSshUsername(value: string): boolean {
+  return value.length > 0 && value.length <= 256 && /^[A-Za-z0-9._-]+$/u.test(value);
+}
+
+function isGitRemoteHelper(value: string): boolean {
+  const separator = value.indexOf("::");
+  if (separator <= 0) return false;
+  return /^[A-Za-z][A-Za-z0-9+.-]*$/u.test(value.slice(0, separator));
+}
+
+function canonicalGitPort(protocol: string, value: string): string {
+  if ((protocol === "https:" && value === "443") || (protocol === "ssh:" && value === "22")) {
+    return "";
+  }
+  return value;
+}
+
+function gitRemoteAuthority(host: string, port: string): string {
+  const bracketed = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+  return port.length === 0 ? bracketed : `${bracketed}:${port}`;
+}
+
+function cloneProjectTargetLabel(target: CloneRequest["projectTarget"]): string {
+  return target.kind === "existing" ? `project ${target.projectId}` : `new project ${target.name}`;
+}
+
+function repositoryNetworkLabel(
+  state: RepositoryNetworkState | undefined,
+  repositoryId: string,
+  requestedRemoteName: string | null,
+  forPush: boolean,
+  requestedBranchName: string | null = null
+): string {
+  const remoteName = requestedRemoteName ?? state?.upstream?.remoteName ?? null;
+  const remote = state?.remotes.find((candidate) => candidate.name === remoteName);
+  const remoteUrl = forPush ? (remote?.pushUrl ?? remote?.fetchUrl) : remote?.fetchUrl;
+  const target =
+    remoteName === null
+      ? "configured upstream"
+      : remoteUrl === undefined
+        ? remoteName
+        : `${remoteName} (${remoteUrl})`;
+  const branchName =
+    requestedBranchName ?? (requestedRemoteName === null ? state?.upstream?.branchName : null);
+  return [
+    target,
+    branchName === null || branchName === undefined ? null : `branch ${branchName}`,
+    `repository ${repositoryId}`
+  ]
+    .filter((part): part is string => part !== null)
+    .join(" · ");
 }

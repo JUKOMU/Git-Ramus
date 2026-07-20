@@ -1,4 +1,6 @@
 import {
+  cloneIntentRequestSchema,
+  cloneRequestSchema,
   gitContextRequestSchema,
   identityCreateRequestSchema,
   identityProfileRequestSchema,
@@ -13,6 +15,7 @@ import {
   providerAccountRotateRequestSchema,
   providerAccountSetDefaultRequestSchema,
   providerAccountValidateRequestSchema,
+  providerCloneIntentCreateRequestSchema,
   providerBindingDeleteRequestSchema,
   providerBindingListRequestSchema,
   providerBindingSetRequestSchema,
@@ -26,11 +29,21 @@ import {
   providerRepositoryListRequestSchema,
   repositoryCommitRequestSchema,
   repositoryDiffRequestSchema,
+  repositoryFetchRequestSchema,
   repositoryIdentityBindRequestSchema,
   repositoryIdentityRequestSchema,
+  repositoryPullRequestSchema,
+  repositoryPushRequestSchema,
   repositoryRequestSchema,
   repositoryStageRequestSchema,
   repositoryUnstageRequestSchema,
+  repositoryTransportBindRequestSchema,
+  repositoryTransportUnbindRequestSchema,
+  transportOperationCancelRequestSchema,
+  transportProfileCreateRequestSchema,
+  transportProfileDeleteRequestSchema,
+  transportProfileRequestSchema,
+  transportProfileUpdateRequestSchema,
   workspaceCreateRequestSchema,
   workspaceDeleteRequestSchema,
   workspaceRequestSchema,
@@ -44,7 +57,9 @@ export const RPC_RESOURCES = {
   workspaces: "workspaces",
   repositories: "repositories",
   identities: "identities",
-  providers: "providers"
+  providers: "providers",
+  transportProfiles: "transport-profiles",
+  cloneIntents: "clone-intents"
 } as const;
 
 interface RuntimeSchema<T> {
@@ -67,6 +82,7 @@ interface PreparedAuthorizationRequirement {
 
 interface PreparedRoute {
   requirements: PreparedAuthorizationRequirement[];
+  rateLimit: "network" | null;
   execute(): Promise<unknown>;
 }
 
@@ -93,7 +109,8 @@ function defineRouteWithRequirements<T>(
   resource: string,
   schema: RuntimeSchema<T>,
   requirements: AuthorizationRequirement<T>[],
-  handle: (params: T, hostApi: HostApi, pluginId: string) => Promise<unknown>
+  handle: (params: T, hostApi: HostApi, pluginId: string) => Promise<unknown>,
+  rateLimit: "network" | null = null
 ): Route {
   return {
     resource,
@@ -106,6 +123,7 @@ function defineRouteWithRequirements<T>(
           resources: requirement.resources(parsed),
           mode: requirement.mode
         })),
+        rateLimit,
         execute: () => handle(parsed, hostApi, pluginId)
       };
     }
@@ -134,6 +152,20 @@ function providerAccountReadRequirement<
     resources: ({ accountId }) => [`provider-account/${accountId}`, RPC_RESOURCES.providers],
     mode: "any"
   };
+}
+
+function repositoryNetworkWriteRequirements<T>(): AuthorizationRequirement<T>[] {
+  return [
+    fixedRequirement("git.network:execute", RPC_RESOURCES.repositories),
+    fixedRequirement("repositories:write", RPC_RESOURCES.repositories)
+  ];
+}
+
+function transportAndRepositoryReadRequirements<T>(): AuthorizationRequirement<T>[] {
+  return [
+    fixedRequirement("git.transport:read", RPC_RESOURCES.transportProfiles),
+    fixedRequirement("repositories:read", RPC_RESOURCES.repositories)
+  ];
 }
 
 const emptyParamsSchema: RuntimeSchema<Record<string, never>> = {
@@ -327,6 +359,126 @@ const routes: Readonly<Record<string, Route>> = {
     repositoryIdentityRequestSchema,
     (params, hostApi) => hostApi.getEffectiveRepositoryIdentity(params)
   ),
+  "transportProfiles.list": defineRoute(
+    "git.transport:read",
+    RPC_RESOURCES.transportProfiles,
+    emptyParamsSchema,
+    (_params, hostApi, pluginId) => hostApi.listTransportProfiles(pluginId)
+  ),
+  "transportProfiles.create": defineRoute(
+    "git.transport:manage",
+    RPC_RESOURCES.transportProfiles,
+    transportProfileCreateRequestSchema,
+    (params, hostApi, pluginId) => hostApi.createTransportProfile(pluginId, params)
+  ),
+  "transportProfiles.update": defineRoute(
+    "git.transport:manage",
+    RPC_RESOURCES.transportProfiles,
+    transportProfileUpdateRequestSchema,
+    (params, hostApi, pluginId) => hostApi.updateTransportProfile(pluginId, params)
+  ),
+  "transportProfiles.getDeletionImpact": defineRoute(
+    "git.transport:read",
+    RPC_RESOURCES.transportProfiles,
+    transportProfileRequestSchema,
+    (params, hostApi, pluginId) => hostApi.getTransportProfileDeletionImpact(pluginId, params)
+  ),
+  "transportProfiles.delete": defineRoute(
+    "git.transport:manage",
+    RPC_RESOURCES.transportProfiles,
+    transportProfileDeleteRequestSchema,
+    (params, hostApi, pluginId) => hostApi.deleteTransportProfile(pluginId, params)
+  ),
+  "repositories.getEffectiveTransport": defineRouteWithRequirements(
+    RPC_RESOURCES.repositories,
+    repositoryRequestSchema,
+    transportAndRepositoryReadRequirements(),
+    (params, hostApi, pluginId) => hostApi.getEffectiveRepositoryTransport(pluginId, params)
+  ),
+  "repositories.getNetworkState": defineRouteWithRequirements(
+    RPC_RESOURCES.repositories,
+    repositoryRequestSchema,
+    transportAndRepositoryReadRequirements(),
+    (params, hostApi, pluginId) => hostApi.getRepositoryNetworkState(pluginId, params)
+  ),
+  "repositories.bindTransport": defineRouteWithRequirements(
+    RPC_RESOURCES.repositories,
+    repositoryTransportBindRequestSchema,
+    [
+      fixedRequirement("git.transport:manage", RPC_RESOURCES.transportProfiles),
+      fixedRequirement("repositories:write", RPC_RESOURCES.repositories)
+    ],
+    (params, hostApi, pluginId) => hostApi.bindRepositoryTransport(pluginId, params)
+  ),
+  "repositories.unbindTransport": defineRouteWithRequirements(
+    RPC_RESOURCES.repositories,
+    repositoryTransportUnbindRequestSchema,
+    [
+      fixedRequirement("git.transport:manage", RPC_RESOURCES.transportProfiles),
+      fixedRequirement("repositories:write", RPC_RESOURCES.repositories)
+    ],
+    (params, hostApi, pluginId) => hostApi.unbindRepositoryTransport(pluginId, params)
+  ),
+  "cloneIntents.create": defineRouteWithRequirements(
+    RPC_RESOURCES.cloneIntents,
+    providerCloneIntentCreateRequestSchema,
+    [
+      providerAccountReadRequirement(),
+      fixedRequirement("git.network:execute", RPC_RESOURCES.cloneIntents)
+    ],
+    (params, hostApi, pluginId) => hostApi.createCloneIntent(pluginId, params),
+    "network"
+  ),
+  "cloneIntents.get": defineRoute(
+    "git.network:execute",
+    RPC_RESOURCES.cloneIntents,
+    cloneIntentRequestSchema,
+    (params, hostApi, pluginId) => hostApi.getCloneIntent(pluginId, params)
+  ),
+  "repositories.clone": defineRouteWithRequirements(
+    RPC_RESOURCES.cloneIntents,
+    cloneRequestSchema,
+    [
+      fixedRequirement("git.network:execute", RPC_RESOURCES.cloneIntents),
+      fixedRequirement("repositories:write", RPC_RESOURCES.repositories)
+    ],
+    (params, hostApi, pluginId) => hostApi.cloneRepository(pluginId, params),
+    "network"
+  ),
+  "repositories.fetch": defineRouteWithRequirements(
+    RPC_RESOURCES.repositories,
+    repositoryFetchRequestSchema,
+    repositoryNetworkWriteRequirements(),
+    (params, hostApi, pluginId) => hostApi.fetchRepository(pluginId, params),
+    "network"
+  ),
+  "repositories.pull": defineRouteWithRequirements(
+    RPC_RESOURCES.repositories,
+    repositoryPullRequestSchema,
+    repositoryNetworkWriteRequirements(),
+    (params, hostApi, pluginId) => hostApi.pullRepository(pluginId, params),
+    "network"
+  ),
+  "repositories.push": defineRouteWithRequirements(
+    RPC_RESOURCES.repositories,
+    repositoryPushRequestSchema,
+    repositoryNetworkWriteRequirements(),
+    (params, hostApi, pluginId) => hostApi.pushRepository(pluginId, params),
+    "network"
+  ),
+  "repositories.cancelNetworkOperation": defineRouteWithRequirements(
+    RPC_RESOURCES.repositories,
+    transportOperationCancelRequestSchema,
+    [
+      {
+        check: "granted",
+        capability: "git.network:execute",
+        resources: () => [RPC_RESOURCES.repositories, RPC_RESOURCES.cloneIntents],
+        mode: "any"
+      }
+    ],
+    (params, hostApi, pluginId) => hostApi.cancelTransportOperation(pluginId, params)
+  ),
   "providers.listInstances": defineRoute(
     "providers:manage",
     RPC_RESOURCES.providers,
@@ -467,6 +619,28 @@ const routes: Readonly<Record<string, Route>> = {
   )
 };
 
+class PluginRpcConcurrencyLimiter {
+  private readonly active = new Map<string, number>();
+
+  constructor(private readonly limit: number) {}
+
+  tryAcquire(pluginId: string): (() => void) | null {
+    const current = this.active.get(pluginId) ?? 0;
+    if (current >= this.limit) return null;
+    this.active.set(pluginId, current + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const remaining = (this.active.get(pluginId) ?? 1) - 1;
+      if (remaining <= 0) this.active.delete(pluginId);
+      else this.active.set(pluginId, remaining);
+    };
+  }
+}
+
+const networkRpcLimiter = new PluginRpcConcurrencyLimiter(4);
+
 export function isKnownPluginRpcMethod(method: string): boolean {
   return routeFor(method) !== undefined;
 }
@@ -502,19 +676,28 @@ export async function dispatchPluginRpc(
     );
   }
 
-  for (const requirement of prepared.requirements) {
-    if (!(await requirementIsAllowed(pluginId, requirement, hostApi))) {
-      throw rpcError(
-        "permission.denied",
-        "userActionRequired",
-        "Permission denied",
-        pluginId,
-        requirement.resources[0] ?? route.resource,
-        "rpc.authorization"
-      );
-    }
+  const release =
+    prepared.rateLimit === "network" ? networkRpcLimiter.tryAcquire(pluginId) : () => undefined;
+  if (release === null) {
+    throw rateLimitError(pluginId, route.resource);
   }
-  return prepared.execute();
+  try {
+    for (const requirement of prepared.requirements) {
+      if (!(await requirementIsAllowed(pluginId, requirement, hostApi))) {
+        throw rpcError(
+          "permission.denied",
+          "userActionRequired",
+          "Permission denied",
+          pluginId,
+          requirement.resources[0] ?? route.resource,
+          "rpc.authorization"
+        );
+      }
+    }
+    return await prepared.execute();
+  } finally {
+    release();
+  }
 }
 
 async function requirementIsAllowed(
@@ -575,6 +758,22 @@ function rpcError(
     failedStep,
     retryable: false,
     retryAfterMs: null,
+    recoveryActions: [],
+    details: null
+  };
+}
+
+function rateLimitError(pluginId: string, resourceId: string): ErrorEnvelope {
+  return {
+    code: "rpc.rate-limited",
+    category: "retryable",
+    message: "Too many concurrent Git network requests",
+    operationId: null,
+    pluginId,
+    resourceId,
+    failedStep: "rpc.rate-limit",
+    retryable: true,
+    retryAfterMs: 250,
     recoveryActions: [],
     details: null
   };

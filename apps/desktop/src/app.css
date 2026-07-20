@@ -168,6 +168,27 @@ button {
   color: var(--gr-colors-textMuted, #94a3b8);
 }
 
+.transport-prompt-dialog {
+  border-color: color-mix(
+    in srgb,
+    var(--gr-colors-primary, #0c4a6e) 58%,
+    var(--gr-colors-border, #263247)
+  );
+}
+
+.transport-prompt-resource {
+  padding: var(--gr-spacing-md, 12px);
+  overflow-wrap: anywhere;
+  border: 1px solid var(--gr-colors-border, #263247);
+  border-radius: var(--gr-shape-radius, 8px);
+  color: var(--gr-colors-textMuted, #94a3b8);
+  background: var(--gr-colors-surfaceRaised, #1e293b);
+}
+
+.transport-prompt-resource strong {
+  color: var(--gr-colors-text, #e2e8f0);
+}
+
 .provider-prompt-context {
   margin: var(--gr-spacing-md, 12px) 0;
 }

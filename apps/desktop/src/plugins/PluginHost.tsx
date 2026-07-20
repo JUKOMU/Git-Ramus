@@ -7,9 +7,16 @@ interface PluginHostProps {
   hostApi: HostApi;
   route?: string;
   theme?: ThemeDefinition | null;
+  onRouteReady?(pluginId: string, route: string): void;
 }
 
-export function PluginHost({ descriptor, hostApi, route = "/", theme = null }: PluginHostProps) {
+export function PluginHost({
+  descriptor,
+  hostApi,
+  route = "/",
+  theme = null,
+  onRouteReady
+}: PluginHostProps) {
   if (descriptor === null) {
     return (
       <section className="empty-state">
@@ -37,6 +44,7 @@ export function PluginHost({ descriptor, hostApi, route = "/", theme = null }: P
       hostApi={hostApi}
       route={route}
       theme={theme}
+      {...(onRouteReady === undefined ? {} : { onRouteReady })}
     />
   );
 }

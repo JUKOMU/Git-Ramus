@@ -11,6 +11,8 @@ const profileId = "d23957ac-5c0f-4857-9124-7f1599a41f33";
 const providerInstanceId = "6da75ccf-f7df-4bf2-92b7-2c158765726f";
 const providerAccountId = "7f3c0214-373c-4d43-b0c7-cdaed1cbcc50";
 const providerOperationId = "f84223af-c753-4209-be36-12d381375fcb";
+const transportOperationId = "b95c216a-dac4-45d1-8169-8dbfbc0c0315";
+const cloneIntentId = "90e1e991-f93e-4e78-817e-d0ceeb06a749";
 
 function createHostApi(): HostApi {
   return {
@@ -70,7 +72,23 @@ function createHostApi(): HostApi {
     matchLocalProviderRemotes: vi.fn(),
     listProviderBindings: vi.fn(),
     bindProviderRemote: vi.fn(),
-    unbindProviderRemote: vi.fn()
+    unbindProviderRemote: vi.fn(),
+    listTransportProfiles: vi.fn(),
+    createTransportProfile: vi.fn(),
+    updateTransportProfile: vi.fn(),
+    getTransportProfileDeletionImpact: vi.fn(),
+    deleteTransportProfile: vi.fn(),
+    getEffectiveRepositoryTransport: vi.fn(),
+    getRepositoryNetworkState: vi.fn(),
+    bindRepositoryTransport: vi.fn(),
+    unbindRepositoryTransport: vi.fn(),
+    createCloneIntent: vi.fn(),
+    getCloneIntent: vi.fn(),
+    cloneRepository: vi.fn(),
+    fetchRepository: vi.fn(),
+    pullRepository: vi.fn(),
+    pushRepository: vi.fn(),
+    cancelTransportOperation: vi.fn()
   };
 }
 
@@ -528,6 +546,203 @@ describe("Git client RPC routes", () => {
   });
 });
 
+describe("Git transport RPC routes", () => {
+  let hostApi: HostApi;
+
+  beforeEach(() => {
+    hostApi = createHostApi();
+  });
+
+  it("registers the explicit transport surface and rejects generic execution routes", () => {
+    expect(
+      [
+        "transportProfiles.list",
+        "transportProfiles.create",
+        "transportProfiles.update",
+        "transportProfiles.getDeletionImpact",
+        "transportProfiles.delete",
+        "repositories.getEffectiveTransport",
+        "repositories.getNetworkState",
+        "repositories.bindTransport",
+        "repositories.unbindTransport",
+        "cloneIntents.create",
+        "cloneIntents.get",
+        "repositories.clone",
+        "repositories.fetch",
+        "repositories.pull",
+        "repositories.push",
+        "repositories.cancelNetworkOperation"
+      ].every(isKnownPluginRpcMethod)
+    ).toBe(true);
+    expect(isKnownPluginRpcMethod("repositories.executeGit")).toBe(false);
+    expect(isKnownPluginRpcMethod("transportProfiles.selectPath")).toBe(false);
+  });
+
+  it("requires transport read and repository read before returning Network State", async () => {
+    const params = { projectId, repositoryId };
+    vi.mocked(hostApi.getRepositoryNetworkState).mockResolvedValue({} as never);
+
+    await dispatchPluginRpc(pluginId, request("repositories.getNetworkState", params), hostApi);
+
+    expect(hostApi.authorizePluginCall).toHaveBeenCalledWith({
+      pluginId,
+      capability: "git.transport:read",
+      resource: "transport-profiles"
+    });
+    expect(hostApi.authorizePluginCall).toHaveBeenCalledWith({
+      pluginId,
+      capability: "repositories:read",
+      resource: "repositories"
+    });
+    expect(hostApi.getRepositoryNetworkState).toHaveBeenCalledWith(pluginId, params);
+  });
+
+  it("requires Provider account read and Clone execution before creating an intent", async () => {
+    const params = { accountId: providerAccountId, repositoryId: "42" };
+    vi.mocked(hostApi.createCloneIntent).mockResolvedValue({ intentId: cloneIntentId });
+
+    await dispatchPluginRpc(pluginId, request("cloneIntents.create", params), hostApi);
+
+    expect(hostApi.authorizePluginCall).toHaveBeenCalledWith({
+      pluginId,
+      capability: "providers:read",
+      resource: `provider-account/${providerAccountId}`
+    });
+    expect(hostApi.authorizePluginCall).toHaveBeenCalledWith({
+      pluginId,
+      capability: "git.network:execute",
+      resource: "clone-intents"
+    });
+    expect(hostApi.createCloneIntent).toHaveBeenCalledWith(pluginId, params);
+  });
+
+  it("requires network execution and repository write before Fetch", async () => {
+    const params = {
+      projectId,
+      repositoryId,
+      operationId: transportOperationId,
+      remoteName: "origin"
+    };
+    vi.mocked(hostApi.fetchRepository).mockResolvedValue({} as never);
+
+    await dispatchPluginRpc(pluginId, request("repositories.fetch", params), hostApi);
+
+    expect(hostApi.authorizePluginCall).toHaveBeenCalledWith({
+      pluginId,
+      capability: "git.network:execute",
+      resource: "repositories"
+    });
+    expect(hostApi.authorizePluginCall).toHaveBeenCalledWith({
+      pluginId,
+      capability: "repositories:write",
+      resource: "repositories"
+    });
+    expect(hostApi.fetchRepository).toHaveBeenCalledWith(pluginId, params);
+  });
+
+  it("requires repository write in addition to Clone execution so Provider Center cannot Clone", async () => {
+    const providerCenter = "git-ramus.provider-center";
+    const params = {
+      source: { kind: "manual", remoteUrl: "https://git.example.test/acme/repo.git" },
+      transportKind: "https",
+      profileId: null,
+      folderName: "repo",
+      projectTarget: { kind: "existing", projectId },
+      operationId: transportOperationId
+    };
+    vi.mocked(hostApi.authorizePluginCall).mockImplementation(async ({ capability }) => ({
+      allowed: capability === "git.network:execute"
+    }));
+
+    await expect(
+      dispatchPluginRpc(providerCenter, request("repositories.clone", params), hostApi)
+    ).rejects.toMatchObject({ code: "permission.denied", resourceId: "repositories" });
+    expect(hostApi.authorizePluginCall).toHaveBeenCalledWith({
+      pluginId: providerCenter,
+      capability: "git.network:execute",
+      resource: "clone-intents"
+    });
+    expect(hostApi.authorizePluginCall).toHaveBeenCalledWith({
+      pluginId: providerCenter,
+      capability: "repositories:write",
+      resource: "repositories"
+    });
+    expect(hostApi.cloneRepository).not.toHaveBeenCalled();
+  });
+
+  it("rate-limits the fifth concurrent network RPC per authenticated plugin", async () => {
+    const pending = deferred<never>();
+    vi.mocked(hostApi.fetchRepository).mockReturnValue(pending.promise);
+    const operationIds = [
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+      "33333333-3333-4333-8333-333333333333",
+      "44444444-4444-4444-8444-444444444444",
+      "55555555-5555-4555-8555-555555555555"
+    ];
+    const call = (operationId: string) =>
+      dispatchPluginRpc(
+        pluginId,
+        request("repositories.fetch", {
+          projectId,
+          repositoryId,
+          operationId,
+          remoteName: "origin"
+        }),
+        hostApi
+      );
+    const active = operationIds.slice(0, 4).map(call);
+    await vi.waitFor(() => expect(hostApi.fetchRepository).toHaveBeenCalledTimes(4));
+
+    await expect(call(operationIds[4]!)).rejects.toMatchObject({
+      code: "rpc.rate-limited",
+      category: "retryable",
+      retryable: true,
+      retryAfterMs: 250
+    });
+    pending.reject(new Error("release test operations"));
+    await Promise.allSettled(active);
+  });
+
+  it.each([
+    ["repositories.clone", "destinationParent"],
+    ["repositories.clone", "environment"],
+    ["repositories.fetch", "args"],
+    ["repositories.push", "refspec"],
+    ["transportProfiles.create", "sshKeyPath"],
+    ["transportProfiles.create", "path"]
+  ])("rejects forbidden %s field %s before authorization", async (method, field) => {
+    const base: Record<string, unknown> =
+      method === "repositories.clone"
+        ? {
+            source: { kind: "intent", intentId: cloneIntentId },
+            transportKind: "https",
+            profileId: null,
+            folderName: "repo",
+            projectTarget: { kind: "existing", projectId },
+            operationId: transportOperationId
+          }
+        : method === "repositories.fetch"
+          ? { projectId, repositoryId, operationId: transportOperationId, remoteName: "origin" }
+          : method === "repositories.push"
+            ? { projectId, repositoryId, operationId: transportOperationId, target: null }
+            : {
+                kind: "ssh",
+                displayName: "Work SSH",
+                identitiesOnly: true,
+                sshKeyAction: "selectFile"
+              };
+    base[field] = field === "environment" ? { GIT_CONFIG_COUNT: "1" } : "forbidden";
+
+    await expect(dispatchPluginRpc(pluginId, request(method, base), hostApi)).rejects.toMatchObject(
+      {
+        code: "rpc.invalid-params"
+      }
+    );
+    expect(hostApi.authorizePluginCall).not.toHaveBeenCalled();
+  });
+});
+
 describe("Provider RPC routes", () => {
   let hostApi: HostApi;
 
@@ -753,4 +968,14 @@ function error(code: string, category: ErrorEnvelope["category"], message: strin
     recoveryActions: [],
     details: null
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }

@@ -7,11 +7,9 @@ import {
 } from "@git-ramus/contracts";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { cloneNavigationBroker } from "./git-transport/cloneNavigationBroker";
 import type { HostApi } from "./lib/hostApi";
 import { tauriHostApi } from "./lib/hostApi";
-import { providerAccessBroker, providerCredentialBroker } from "./providers/promptBroker";
-import { ProviderAccessDialog } from "./providers/ProviderAccessDialog";
-import { ProviderCredentialDialog } from "./providers/ProviderCredentialDialog";
 import { PluginHost } from "./plugins/PluginHost";
 import { AppShell } from "./shell/AppShell";
 
@@ -67,6 +65,16 @@ export function App({ hostApi = tauriHostApi }: AppProps) {
     };
   }, [hostApi]);
 
+  useEffect(
+    () =>
+      cloneNavigationBroker.subscribe((navigation) => {
+        if (navigation !== null) {
+          setSelection({ pluginId: "git-ramus.git-client", route: navigation.route });
+        }
+      }),
+    []
+  );
+
   useEffect(() => {
     if (hostApi !== tauriHostApi) {
       return;
@@ -116,6 +124,12 @@ export function App({ hostApi = tauriHostApi }: AppProps) {
     () => plugins.find((plugin) => plugin.manifest.id === selection?.pluginId) ?? null,
     [plugins, selection?.pluginId]
   );
+
+  const acknowledgePluginRoute = useCallback((pluginId: string, route: string) => {
+    if (pluginId !== "git-ramus.git-client") return;
+    const navigation = cloneNavigationBroker.current();
+    if (navigation?.route === route) cloneNavigationBroker.consume(navigation.id);
+  }, []);
 
   const activateTheme = useCallback(
     (themeId: string) => {
@@ -175,9 +189,8 @@ export function App({ hostApi = tauriHostApi }: AppProps) {
           hostApi={hostApi}
           route={selection?.route ?? "/"}
           theme={themeState?.theme ?? null}
+          onRouteReady={acknowledgePluginRoute}
         />
-        <ProviderCredentialDialog broker={providerCredentialBroker} />
-        <ProviderAccessDialog broker={providerAccessBroker} />
       </AppShell>
     </>
   );

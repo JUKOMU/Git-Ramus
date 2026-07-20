@@ -1,5 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import providerContracts from "../../../../../packages/contracts/src/__fixtures__/provider-contracts.json";
+import transportContracts from "../../../../../packages/contracts/src/__fixtures__/transport-contracts.json";
+import {
+  createCloneNavigationBroker,
+  type CloneNavigationPublisher
+} from "../../git-transport/cloneNavigationBroker";
+import { createGitTransportPromptBroker } from "../../git-transport/promptBroker";
+import type { GitTransportFilePort, GitTransportPromptPort } from "../../git-transport/promptPorts";
+import { nativeGitTransportFilePort } from "../../git-transport/promptPorts";
+import { ProviderPromptGate } from "../../providers/promptBroker";
 import type { HostFileSelectionPort, ProviderPromptPort } from "../../providers/promptPorts";
 import {
   nativeCertificateFileSelectionPort,
@@ -19,6 +28,8 @@ const profileId = "d23957ac-5c0f-4857-9124-7f1599a41f33";
 const providerInstanceId = "6da75ccf-f7df-4bf2-92b7-2c158765726f";
 const providerAccountId = "7f3c0214-373c-4d43-b0c7-cdaed1cbcc50";
 const providerOperationId = "f84223af-c753-4209-be36-12d381375fcb";
+const transportOperationId = "b95c216a-dac4-45d1-8169-8dbfbc0c0315";
+const cloneIntentId = "90e1e991-f93e-4e78-817e-d0ceeb06a749";
 
 const project = {
   id: projectId,
@@ -516,6 +527,486 @@ describe("trusted Provider Host API", () => {
       "provider_binding_set",
       "provider_binding_delete"
     ]);
+  });
+});
+
+describe("trusted Git transport Host API", () => {
+  let providerPrompts: ProviderPromptPort;
+  let providerFiles: HostFileSelectionPort;
+  let transportPrompts: GitTransportPromptPort;
+  let transportFiles: GitTransportFilePort;
+  let cloneNavigation: CloneNavigationPublisher;
+
+  beforeEach(() => {
+    invoke.mockReset();
+    open.mockReset();
+    providerPrompts = {
+      requestCredential: vi.fn(async () => null),
+      requestAccountAccess: vi.fn(async () => null)
+    };
+    providerFiles = { selectCertificate: vi.fn(async () => null) };
+    transportPrompts = {
+      confirm: vi.fn(async () => true),
+      cancelOperation: vi.fn(),
+      isOperationCanceled: vi.fn(() => false)
+    };
+    transportFiles = {
+      selectDestinationParent: vi.fn(async () => "D:/Projects"),
+      selectSshPrivateKey: vi.fn(async () => "C:/Users/test/.ssh/id_ed25519")
+    };
+    cloneNavigation = { publish: vi.fn() };
+  });
+
+  function transportApi() {
+    return createTauriHostApi({
+      prompts: providerPrompts,
+      files: providerFiles,
+      transportPrompts,
+      transportFiles,
+      cloneNavigation
+    });
+  }
+
+  it("injects destination and confirmation only after trusted Clone interactions", async () => {
+    invoke.mockImplementation(async (command: string) => {
+      if (command === "git_repository_clone") return transportContracts.cloneResult;
+      throw new Error(`unexpected command: ${command}`);
+    });
+    const api = transportApi();
+    const request = {
+      source: { kind: "manual" as const, remoteUrl: "https://git.example.test/acme/repo.git" },
+      transportKind: "https" as const,
+      profileId: null,
+      folderName: "repo",
+      projectTarget: { kind: "existing" as const, projectId },
+      operationId: transportOperationId
+    };
+
+    await expect(api.cloneRepository("git-ramus.git-client", request)).resolves.toEqual(
+      transportContracts.cloneResult
+    );
+
+    expect(transportPrompts.confirm).toHaveBeenNthCalledWith(1, {
+      pluginId: "git-ramus.git-client",
+      operationId: transportOperationId,
+      kind: "sourceTrust",
+      operation: "clone",
+      resourceLabel: "https://git.example.test/acme/repo.git"
+    });
+    expect(transportPrompts.confirm).toHaveBeenNthCalledWith(2, {
+      pluginId: "git-ramus.git-client",
+      operationId: transportOperationId,
+      kind: "network",
+      operation: "clone",
+      resourceLabel: `repo · project ${projectId}`
+    });
+    expect(transportFiles.selectDestinationParent).toHaveBeenCalledOnce();
+    expect(invoke).toHaveBeenCalledWith("git_repository_clone", {
+      request: {
+        pluginId: "git-ramus.git-client",
+        ...request,
+        destinationParent: "D:/Projects",
+        interactiveConfirmed: true
+      }
+    });
+    expect(JSON.stringify(request)).not.toContain("D:/Projects");
+    expect(JSON.stringify(transportContracts.cloneResult)).not.toContain("D:/Projects");
+  });
+
+  it("returns null without opening a picker or invoking Rust when Clone trust is cancelled", async () => {
+    vi.mocked(transportPrompts.confirm).mockResolvedValueOnce(false);
+    const api = transportApi();
+
+    await expect(
+      api.cloneRepository("git-ramus.git-client", {
+        source: { kind: "intent", intentId: cloneIntentId },
+        transportKind: "ssh",
+        profileId: transportContracts.sshProfile.id,
+        folderName: "private-skill",
+        projectTarget: { kind: "existing", projectId },
+        operationId: transportOperationId
+      })
+    ).resolves.toBeNull();
+
+    expect(transportFiles.selectDestinationParent).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "https://token@git.example.test/acme/repo.git",
+    "git@git.example.test:acme/repo.git?token=super-secret",
+    "git@git.example.test:acme/repo.git#super-secret",
+    "git@git.example.test:../repo.git",
+    "git@git.example.test:acme/%2fprivate.git"
+  ])("rejects unsafe manual Clone URL %s before opening a trusted prompt", async (remoteUrl) => {
+    const api = transportApi();
+
+    await expect(
+      api.cloneRepository("external.example", {
+        source: {
+          kind: "manual",
+          remoteUrl
+        },
+        transportKind: "https",
+        profileId: null,
+        folderName: "repo",
+        projectTarget: { kind: "existing", projectId },
+        operationId: transportOperationId
+      })
+    ).rejects.toThrow("unsafe Git remote");
+    expect(transportPrompts.confirm).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("uses a Host-validated cached repository name for an intent confirmation", async () => {
+    invoke.mockResolvedValue(transportContracts.intent);
+    const api = transportApi();
+    await api.getCloneIntent("git-ramus.git-client", { intentId: cloneIntentId });
+    invoke.mockClear();
+    vi.mocked(transportPrompts.confirm).mockResolvedValueOnce(false);
+
+    await expect(
+      api.cloneRepository("git-ramus.git-client", {
+        source: { kind: "intent", intentId: cloneIntentId },
+        transportKind: "https",
+        profileId: transportContracts.httpsProfile.id,
+        folderName: "private-skill",
+        projectTarget: { kind: "existing", projectId },
+        operationId: transportOperationId
+      })
+    ).resolves.toBeNull();
+
+    expect(transportPrompts.confirm).toHaveBeenCalledWith({
+      pluginId: "git-ramus.git-client",
+      operationId: transportOperationId,
+      kind: "sourceTrust",
+      operation: "clone",
+      resourceLabel: "skills/private-skill"
+    });
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("keeps SSH key paths in a trusted native Profile payload", async () => {
+    invoke.mockResolvedValue(transportContracts.sshProfile);
+    const api = transportApi();
+    const request = {
+      kind: "ssh" as const,
+      displayName: "Work SSH",
+      identitiesOnly: true,
+      sshKeyAction: "selectFile" as const
+    };
+
+    await expect(api.createTransportProfile("git-ramus.git-client", request)).resolves.toEqual(
+      transportContracts.sshProfile
+    );
+    expect(invoke).toHaveBeenCalledWith("git_transport_profile_create", {
+      request: {
+        pluginId: "git-ramus.git-client",
+        kind: "ssh",
+        displayName: "Work SSH",
+        identitiesOnly: true,
+        sshKeyPath: "C:/Users/test/.ssh/id_ed25519"
+      }
+    });
+    expect(JSON.stringify(request)).not.toContain("C:/Users/test");
+    expect(JSON.stringify(transportContracts.sshProfile)).not.toContain("C:/Users/test");
+  });
+
+  it("never invokes Rust when a trusted picker or confirmation is cancelled", async () => {
+    const api = transportApi();
+    vi.mocked(transportFiles.selectSshPrivateKey).mockResolvedValueOnce(null);
+    await expect(
+      api.createTransportProfile("git-ramus.git-client", {
+        kind: "ssh",
+        displayName: "Work SSH",
+        identitiesOnly: true,
+        sshKeyAction: "selectFile"
+      })
+    ).resolves.toBeNull();
+
+    vi.mocked(transportPrompts.confirm).mockResolvedValueOnce(false);
+    await expect(
+      api.fetchRepository("git-ramus.git-client", {
+        projectId,
+        repositoryId: transportContracts.networkState.repositoryId,
+        operationId: transportOperationId,
+        remoteName: "origin"
+      })
+    ).resolves.toBeNull();
+
+    vi.mocked(transportPrompts.confirm).mockResolvedValueOnce(false);
+    await expect(
+      api.bindRepositoryTransport("git-ramus.git-client", {
+        projectId,
+        repositoryId: transportContracts.networkState.repositoryId,
+        transportProfileId: transportContracts.sshProfile.id,
+        replaceExisting: true
+      })
+    ).resolves.toBeNull();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("cancels a pending trusted confirmation before native network work can start", async () => {
+    const promptBroker = createGitTransportPromptBroker(new ProviderPromptGate());
+    invoke.mockImplementation(async (command: string) => {
+      if (command === "git_transport_operation_cancel") return null;
+      throw new Error(`unexpected command: ${command}`);
+    });
+    const api = createTauriHostApi({
+      prompts: providerPrompts,
+      files: providerFiles,
+      transportPrompts: promptBroker,
+      transportFiles,
+      cloneNavigation
+    });
+
+    const pendingFetch = api.fetchRepository("git-ramus.git-client", {
+      projectId,
+      repositoryId: transportContracts.networkState.repositoryId,
+      operationId: transportOperationId,
+      remoteName: "origin"
+    });
+    expect(promptBroker.current()?.request.operationId).toBe(transportOperationId);
+
+    await api.cancelTransportOperation("git-ramus.git-client", {
+      operationId: transportOperationId
+    });
+
+    await expect(pendingFetch).resolves.toBeNull();
+    expect(promptBroker.current()).toBeNull();
+    expect(invoke.mock.calls).toEqual([
+      [
+        "git_transport_operation_cancel",
+        {
+          request: {
+            pluginId: "git-ramus.git-client",
+            operationId: transportOperationId
+          }
+        }
+      ]
+    ]);
+  });
+
+  it("publishes a Git Client Clone route after creating a Provider intent", async () => {
+    invoke.mockResolvedValue({ intentId: cloneIntentId });
+    const api = transportApi();
+
+    await expect(
+      api.createCloneIntent("git-ramus.provider-center", {
+        accountId: providerAccountId,
+        repositoryId: "42"
+      })
+    ).resolves.toEqual({ intentId: cloneIntentId });
+
+    expect(invoke).toHaveBeenCalledWith("git_clone_intent_create", {
+      request: {
+        pluginId: "git-ramus.provider-center",
+        accountId: providerAccountId,
+        repositoryId: "42"
+      }
+    });
+    expect(cloneNavigation.publish).toHaveBeenCalledWith(`/clone/${cloneIntentId}`);
+  });
+
+  it("queues concurrent persisted Clone intents without losing either navigation", async () => {
+    const secondIntentId = "d9202a5a-5f1f-41dc-98c7-605beb91418f";
+    invoke
+      .mockResolvedValueOnce({ intentId: cloneIntentId })
+      .mockResolvedValueOnce({ intentId: secondIntentId });
+    const navigation = createCloneNavigationBroker();
+    const api = createTauriHostApi({
+      prompts: providerPrompts,
+      files: providerFiles,
+      transportPrompts,
+      transportFiles,
+      cloneNavigation: navigation
+    });
+
+    await Promise.all([
+      api.createCloneIntent("git-ramus.provider-center", {
+        accountId: providerAccountId,
+        repositoryId: "42"
+      }),
+      api.createCloneIntent("git-ramus.provider-center", {
+        accountId: providerAccountId,
+        repositoryId: "43"
+      })
+    ]);
+
+    const first = navigation.current()!;
+    expect(first.route).toBe(`/clone/${cloneIntentId}`);
+    navigation.consume(first.id);
+    expect(navigation.current()?.route).toBe(`/clone/${secondIntentId}`);
+  });
+
+  it("confirms Repository network work before injecting interactiveConfirmed", async () => {
+    const result = {
+      operationId: transportOperationId,
+      repositoryId: transportContracts.networkState.repositoryId,
+      remoteName: "origin",
+      job: transportContracts.cloneResult.job,
+      snapshot: transportContracts.cloneResult.snapshot,
+      networkState: transportContracts.networkState
+    };
+    invoke.mockResolvedValue(result);
+    const api = transportApi();
+    const request = {
+      projectId,
+      repositoryId: transportContracts.networkState.repositoryId,
+      operationId: transportOperationId,
+      remoteName: "origin"
+    };
+
+    await expect(api.fetchRepository("git-ramus.git-client", request)).resolves.toEqual(result);
+    expect(transportPrompts.confirm).toHaveBeenCalledWith({
+      pluginId: "git-ramus.git-client",
+      operationId: transportOperationId,
+      kind: "network",
+      operation: "fetch",
+      resourceLabel: `origin · repository ${transportContracts.networkState.repositoryId}`
+    });
+    expect(invoke).toHaveBeenCalledWith("git_repository_fetch", {
+      request: {
+        pluginId: "git-ramus.git-client",
+        ...request,
+        interactiveConfirmed: true
+      }
+    });
+  });
+
+  it("maps every remaining transport contract to its exact typed native command", async () => {
+    const networkResult = {
+      operationId: transportOperationId,
+      repositoryId: transportContracts.networkState.repositoryId,
+      remoteName: "origin",
+      job: transportContracts.cloneResult.job,
+      snapshot: transportContracts.cloneResult.snapshot,
+      networkState: transportContracts.networkState
+    };
+    const deletionImpact = {
+      profileId: transportContracts.httpsProfile.id,
+      repositories: []
+    };
+    const effectiveTransport = {
+      repositoryId: transportContracts.networkState.repositoryId,
+      source: "systemGit",
+      kind: null,
+      profile: null,
+      driftStatus: null
+    };
+    const responses: Record<string, unknown> = {
+      git_transport_profile_list: {
+        items: [transportContracts.sshProfile, transportContracts.httpsProfile]
+      },
+      git_transport_profile_create: transportContracts.httpsProfile,
+      git_transport_profile_update: transportContracts.httpsProfile,
+      git_transport_profile_deletion_impact: deletionImpact,
+      git_transport_profile_delete: null,
+      git_repository_effective_transport: effectiveTransport,
+      git_repository_network_state: transportContracts.networkState,
+      git_repository_bind_transport: transportContracts.binding,
+      git_repository_unbind_transport: null,
+      git_clone_intent_get: transportContracts.intent,
+      git_repository_pull: networkResult,
+      git_repository_push: networkResult,
+      git_transport_operation_cancel: null
+    };
+    invoke.mockImplementation(async (command: string) => responses[command]);
+    const api = transportApi();
+    const repositoryRequest = {
+      projectId,
+      repositoryId: transportContracts.networkState.repositoryId
+    };
+
+    await api.listTransportProfiles("git-ramus.git-client");
+    await api.createTransportProfile("git-ramus.git-client", {
+      kind: "https",
+      displayName: "Work HTTPS",
+      username: "creator",
+      useHttpPath: true
+    });
+    await api.updateTransportProfile("git-ramus.git-client", {
+      kind: "https",
+      profileId: transportContracts.httpsProfile.id,
+      displayName: "Work HTTPS",
+      username: "creator",
+      useHttpPath: true
+    });
+    await api.getTransportProfileDeletionImpact("git-ramus.git-client", {
+      profileId: transportContracts.httpsProfile.id
+    });
+    await api.deleteTransportProfile("git-ramus.git-client", {
+      profileId: transportContracts.httpsProfile.id,
+      resolutions: []
+    });
+    await api.getEffectiveRepositoryTransport("git-ramus.git-client", repositoryRequest);
+    await api.getRepositoryNetworkState("git-ramus.git-client", repositoryRequest);
+    await api.bindRepositoryTransport("git-ramus.git-client", {
+      ...repositoryRequest,
+      transportProfileId: transportContracts.sshProfile.id,
+      replaceExisting: false
+    });
+    await api.unbindRepositoryTransport("git-ramus.git-client", {
+      ...repositoryRequest,
+      driftResolution: "reject"
+    });
+    await api.getCloneIntent("git-ramus.git-client", { intentId: cloneIntentId });
+    await api.pullRepository("git-ramus.git-client", {
+      ...repositoryRequest,
+      operationId: transportOperationId
+    });
+    await api.pushRepository("git-ramus.git-client", {
+      ...repositoryRequest,
+      operationId: transportOperationId,
+      target: null
+    });
+    await api.cancelTransportOperation("git-ramus.git-client", {
+      operationId: transportOperationId
+    });
+
+    expect(transportPrompts.confirm).toHaveBeenCalledWith({
+      pluginId: "git-ramus.git-client",
+      operationId: transportOperationId,
+      kind: "network",
+      operation: "pull",
+      resourceLabel: expect.stringContaining("https://gitlab.example.test/skills/private-skill.git")
+    });
+    expect(invoke.mock.calls.map(([command]) => command)).toEqual(Object.keys(responses));
+  });
+});
+
+describe("trusted Git transport native ports", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+  });
+
+  it("uses only the two Host-owned path selection commands", async () => {
+    invoke
+      .mockResolvedValueOnce("D:/Projects")
+      .mockResolvedValueOnce("C:/Users/test/.ssh/id_ed25519");
+
+    await expect(nativeGitTransportFilePort.selectDestinationParent()).resolves.toBe("D:/Projects");
+    await expect(nativeGitTransportFilePort.selectSshPrivateKey()).resolves.toBe(
+      "C:/Users/test/.ssh/id_ed25519"
+    );
+    expect(invoke.mock.calls).toEqual([
+      [
+        "git_transport_select_destination_parent",
+        { request: { pluginId: "git-ramus.git-client" } }
+      ],
+      ["git_transport_select_ssh_key", { request: { pluginId: "git-ramus.git-client" } }]
+    ]);
+  });
+
+  it("preserves cancellation and rejects relative or whitespace-altered paths", async () => {
+    invoke.mockResolvedValueOnce(null);
+    await expect(nativeGitTransportFilePort.selectDestinationParent()).resolves.toBeNull();
+    invoke.mockResolvedValueOnce("relative/key");
+    await expect(nativeGitTransportFilePort.selectSshPrivateKey()).rejects.toThrow("invalid path");
+    invoke.mockResolvedValueOnce("D:/Projects/selected ");
+    await expect(nativeGitTransportFilePort.selectDestinationParent()).rejects.toThrow(
+      "invalid path"
+    );
   });
 });
 
