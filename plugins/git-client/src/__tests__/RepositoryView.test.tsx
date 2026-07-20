@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -8,6 +8,7 @@ import type {
   IdentityProfile,
   ParsedChangeEntry
 } from "@git-ramus/contracts";
+import transportContracts from "../../../../packages/contracts/src/__fixtures__/transport-contracts.json";
 import { IdentityPicker } from "../components/IdentityPicker";
 import { RepositoryView, type RepositoryApi } from "../views/RepositoryView";
 
@@ -103,6 +104,23 @@ const conflicted = change("src/conflict.ts", {
 afterEach(cleanup);
 
 describe("RepositoryView", () => {
+  it("composes Network operations and refreshes repository status after terminal work", async () => {
+    const user = userEvent.setup();
+    const api = createApi({ changes: [] });
+    vi.mocked(api.getRepositoryTrustStatus).mockResolvedValue({ trusted: true });
+    render(<RepositoryView api={api} context={{ projectId }} repository={repository} />);
+
+    const fetch = await screen.findByRole("button", { name: "Fetch" });
+    await waitFor(() => expect(fetch).toBeEnabled());
+    const initialRefreshes = vi.mocked(api.getRepositorySnapshot).mock.calls.length;
+    await user.click(fetch);
+
+    expect(await screen.findByText("Network operation cancelled.")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(api.getRepositorySnapshot).toHaveBeenCalledTimes(initialRefreshes + 1)
+    );
+  });
+
   it("separates all change groups and renders the selected diff", async () => {
     const user = userEvent.setup();
     const api = createApi({ changes: [staged, unstaged, untracked, conflicted] });
@@ -925,7 +943,29 @@ function createApi({ changes }: { changes: ParsedChangeEntry[] }): RepositoryApi
       boundAt: "2026-07-17T00:00:00Z"
     })),
     unbindRepositoryIdentity: vi.fn(async () => undefined),
-    getEffectiveRepositoryIdentity: vi.fn(async () => effectiveIdentity)
+    getEffectiveRepositoryIdentity: vi.fn(async () => effectiveIdentity),
+    listTransportProfiles: vi.fn(async () => ({
+      items: [transportContracts.httpsProfile] as never
+    })),
+    getEffectiveRepositoryTransport: vi.fn(async () => ({
+      repositoryId,
+      source: "systemGit" as const,
+      kind: null,
+      profile: null,
+      driftStatus: null
+    })),
+    getRepositoryNetworkState: vi.fn(
+      async () =>
+        ({
+          ...transportContracts.networkState,
+          repositoryId
+        }) as never
+    ),
+    bindRepositoryTransport: vi.fn(async () => null),
+    unbindRepositoryTransport: vi.fn(async () => undefined),
+    fetchRepository: vi.fn(async () => null),
+    pullRepository: vi.fn(async () => null),
+    pushRepository: vi.fn(async () => null)
   };
 }
 

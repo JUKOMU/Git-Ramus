@@ -10,6 +10,7 @@ import type { GitClientApi } from "../api";
 import { normalizeError } from "../api";
 import { ChangeList } from "../components/ChangeList";
 import { IdentityPicker } from "../components/IdentityPicker";
+import { RepositoryNetworkPanel } from "../components/RepositoryNetworkPanel";
 import { RepositoryIdentityBinding } from "../components/RepositoryIdentityBinding";
 
 export type RepositoryApi = Pick<
@@ -26,14 +27,26 @@ export type RepositoryApi = Pick<
   | "bindRepositoryIdentity"
   | "unbindRepositoryIdentity"
   | "getEffectiveRepositoryIdentity"
+  | "listTransportProfiles"
+  | "getEffectiveRepositoryTransport"
+  | "getRepositoryNetworkState"
+  | "bindRepositoryTransport"
+  | "unbindRepositoryTransport"
+  | "fetchRepository"
+  | "pullRepository"
+  | "pushRepository"
 >;
 
 interface RepositoryViewProps {
   api: RepositoryApi;
   context: GitContextRequest;
-  repository: Repository;
+  repository: RepositorySelectionSummary;
   onBack?(): void;
 }
+
+export type RepositorySelectionSummary = Omit<Repository, "canonicalPath"> & {
+  canonicalPath?: string;
+};
 
 interface DiffRequestState {
   path: string;
@@ -399,7 +412,11 @@ export function RepositoryView({ api, context, repository, onBack }: RepositoryV
           )}
           <p className="eyebrow">Repository</p>
           <h2>{repository.displayName}</h2>
-          <p className="path">{repository.canonicalPath}</p>
+          <p className="path">
+            {record?.repository.canonicalPath ??
+              repository.canonicalPath ??
+              "Local path managed by the host"}
+          </p>
         </div>
         <div className="repository-status">
           <span>{record?.snapshot?.branch ?? "Branch unknown"}</span>
@@ -446,6 +463,14 @@ export function RepositoryView({ api, context, repository, onBack }: RepositoryV
         <ErrorNotice error={actionError} onRetry={() => void refresh()} />
       )}
       {loading ? <p>Loading repository…</p> : null}
+
+      <RepositoryNetworkPanel
+        api={api}
+        repository={repository}
+        context={context}
+        trusted={trusted === true}
+        onCompleted={refresh}
+      />
 
       <div className="repository-layout">
         <div className="changes-panel">

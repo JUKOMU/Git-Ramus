@@ -294,6 +294,89 @@ td {
   margin: var(--gr-spacing-md, 16px) 0;
 }
 
+.clone-source-card,
+.clone-options-card,
+.clone-project-card,
+.repository-network-panel {
+  margin-bottom: var(--gr-spacing-lg, 24px);
+}
+
+.clone-provider-summary,
+.network-remotes article {
+  display: grid;
+  gap: 2px;
+}
+
+.clone-transport-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gr-spacing-md, 12px);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.clone-transport-options legend {
+  margin-bottom: var(--gr-spacing-sm, 8px);
+  color: var(--gr-colors-textMuted, #94a3b8);
+  font-size: 12px;
+}
+
+.clone-form-grid,
+.network-operation-grid,
+.network-push-target {
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+}
+
+.clone-project-modes,
+.clone-actions,
+.repository-transport-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gr-spacing-md, 12px);
+}
+
+.clone-project-modes {
+  margin-bottom: var(--gr-spacing-md, 12px);
+}
+
+.network-remotes,
+.network-operation-grid,
+.network-push-target,
+.repository-transport-settings,
+.transport-drift-actions {
+  display: grid;
+  gap: var(--gr-spacing-md, 12px);
+}
+
+.network-remotes {
+  margin: var(--gr-spacing-md, 12px) 0;
+}
+
+.network-remotes article {
+  padding: var(--gr-spacing-sm, 8px) 0;
+  border-top: 1px solid var(--gr-colors-border, #2c3a52);
+}
+
+.network-operation-grid {
+  grid-template-columns: minmax(180px, 1fr) repeat(3, auto);
+  align-items: end;
+  margin: var(--gr-spacing-md, 12px) 0;
+}
+
+.network-push-target {
+  margin: var(--gr-spacing-md, 12px) 0;
+  padding: var(--gr-spacing-md, 12px);
+  border: 1px solid var(--gr-colors-border, #2c3a52);
+  border-radius: var(--gr-shape-radius, 8px);
+}
+
+.repository-transport-settings {
+  margin-top: var(--gr-spacing-lg, 24px);
+  padding-top: var(--gr-spacing-md, 12px);
+  border-top: 1px solid var(--gr-colors-border, #2c3a52);
+}
+
 .checkbox-label {
   display: inline-flex;
   align-items: center;
@@ -391,7 +474,10 @@ pre {
   .filters,
   .form-grid,
   .identity-form-grid,
-  .transport-profile-form-grid {
+  .transport-profile-form-grid,
+  .clone-form-grid,
+  .network-operation-grid,
+  .network-push-target {
     grid-template-columns: 1fr;
   }
 }

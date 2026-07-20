@@ -1,10 +1,12 @@
-import type { GitContextRequest, Repository } from "@git-ramus/contracts";
+import { cloneIntentRequestSchema } from "@git-ramus/contracts";
+import type { CloneResult, GitContextRequest, Repository } from "@git-ramus/contracts";
 import { useState } from "react";
 import type { GitClientApi } from "./api";
 import { IdentitiesView } from "./views/IdentitiesView";
+import { CloneView } from "./views/CloneView";
 import { OverviewView } from "./views/OverviewView";
 import { ProjectsView } from "./views/ProjectsView";
-import { RepositoryView } from "./views/RepositoryView";
+import { RepositoryView, type RepositorySelectionSummary } from "./views/RepositoryView";
 import { TransportProfilesView } from "./views/TransportProfilesView";
 import { WorkspacesView } from "./views/WorkspacesView";
 
@@ -15,7 +17,7 @@ interface AppProps {
 
 interface RepositorySelection {
   route: string;
-  repository: Repository;
+  repository: RepositorySelectionSummary;
   context: GitContextRequest;
 }
 
@@ -37,6 +39,26 @@ export function App({ api, route }: AppProps) {
   const openRepository = (repository: Repository, context: GitContextRequest) => {
     setRepositorySelection({ route, repository, context });
   };
+
+  const openClonedRepository = (result: CloneResult) => {
+    setRepositorySelection({
+      route,
+      repository: result.repository,
+      context: { projectId: result.project.id }
+    });
+  };
+
+  if (route === "/clone") {
+    return <CloneView api={api} intentId={null} onCloned={openClonedRepository} />;
+  }
+  if (route.startsWith("/clone/")) {
+    const parsed = cloneIntentRequestSchema.safeParse({ intentId: route.slice("/clone/".length) });
+    if (parsed.success) {
+      return (
+        <CloneView api={api} intentId={parsed.data.intentId} onCloned={openClonedRepository} />
+      );
+    }
+  }
 
   switch (route) {
     case "/":

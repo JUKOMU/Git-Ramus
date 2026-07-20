@@ -212,6 +212,7 @@ describe("shared contracts", () => {
     expect(parsed.id).toBe("git-ramus.git-client");
     expect(parsed.contributions.navigation.map(({ route }) => route)).toEqual([
       "/overview",
+      "/clone",
       "/projects",
       "/workspaces",
       "/identities",

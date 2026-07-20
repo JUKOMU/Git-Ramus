@@ -19,6 +19,12 @@
         "icon": "layout-dashboard"
       },
       {
+        "id": "clone",
+        "label": "Clone repository",
+        "route": "/clone",
+        "icon": "download"
+      },
+      {
         "id": "projects",
         "label": "Projects",
         "route": "/projects",
