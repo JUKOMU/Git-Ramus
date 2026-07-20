@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "id": "git-ramus.provider-center",
+  "name": "Providers",
+  "version": "0.1.0",
+  "publisher": "git-ramus",
+  "description": "GitHub and GitLab accounts, repositories, and local remote bindings.",
+  "kind": "builtin",
+  "sdkVersion": "^0.1.0",
+  "entrypoints": {
+    "ui": "ui.html"
+  },
+  "contributions": {
+    "navigation": [
+      {
+        "id": "providers",
+        "label": "Providers",
+        "route": "/providers",
+        "icon": "cloud"
+      }
+    ]
+  },
+  "permissions": [
+    {
+      "capability": "providers:read",
+      "resources": ["providers"]
+    },
+    {
+      "capability": "providers:manage",
+      "resources": ["providers"]
+    },
+    {
+      "capability": "repositories:read",
+      "resources": ["repositories"]
+    }
+  ]
+}

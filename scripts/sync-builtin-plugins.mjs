@@ -22,6 +22,11 @@ const plugins = [
     id: "git-ramus.git-client"
   },
   {
+    workspace: "@git-ramus/provider-center",
+    source: resolve(root, "plugins/provider-center"),
+    id: "git-ramus.provider-center"
+  },
+  {
     workspace: "@git-ramus/builtin-compact-theme",
     source: resolve(root, "plugins/builtin-compact-theme"),
     id: "git-ramus.compact-theme"

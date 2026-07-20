@@ -17,6 +17,7 @@ test("sync stages each built-in UI, backend Provider, and only the declared them
 
   assert.deepEqual(await sortedEntries("git-ramus.welcome"), ["plugin.json", "ui.html"]);
   assert.deepEqual(await sortedEntries("git-ramus.git-client"), ["plugin.json", "ui.html"]);
+  assert.deepEqual(await sortedEntries("git-ramus.provider-center"), ["plugin.json", "ui.html"]);
   assert.deepEqual(await sortedEntries("git-ramus.compact-theme"), [
     "plugin.json",
     "theme.json",
