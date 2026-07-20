@@ -342,7 +342,7 @@ Staging 与 Final Path 位于同一父目录，保证正常文件系统上的原
 
 1. 验证 Repository Context、Trust、Remote 和 Transport Profile。
 2. 默认 Remote 为当前 upstream 对应 Remote；没有 upstream 时优先 `origin`；用户可以在现有 Remote 中选择。
-3. 执行受控 `git fetch --progress <remote>`。
+3. 执行受控 `git fetch --progress -- <remote>`；同时拒绝以 `-` 开头的 Remote 名，防止名称被解释为命令选项。
 4. 首版不自动 `--prune`，也不接受插件传入额外参数。
 5. 成功、失败或取消后刷新 Remote 与 Snapshot，更新 ahead/behind。
 
@@ -372,7 +372,7 @@ Fetch 不自动重试。认证或网络错误提供用户确认后的重试动�
 
 - HEAD 必须是本地分支。
 - 宿主解析 upstream Remote 和 Branch。
-- 执行等价于将当前 `HEAD` 推送到已解析 upstream 的结构化命令。
+- 执行等价于将当前 `HEAD` 推送到已解析 upstream 的结构化命令；Remote 位置参数前固定加入 `--`。
 - 不允许插件传 RefSpec。
 
 ### 13.2 upstream 缺失
@@ -380,7 +380,7 @@ Fetch 不自动重试。认证或网络错误提供用户确认后的重试动�
 - Host API 返回当前 Repository 的 Remote 候选。
 - 用户选择 Remote，并输入或确认远端分支名。
 - 分支名使用 `git check-ref-format --branch` 和 Host Schema 双重验证。
-- 宿主构造 `HEAD:refs/heads/<validated-branch>` 并执行 `--set-upstream`。
+- 宿主构造 `HEAD:refs/heads/<validated-branch>` 并执行 `--set-upstream -- <remote> <constructed-refspec>`。
 
 ### 13.3 禁止行为
 
@@ -455,15 +455,15 @@ UI 不显示 SSH Key 完整路径、GCM 凭据或 Provider PAT。
 
 新增能力使用 Repository/Project 资源范围：
 
-- `git.transport.read`：读取脱敏 Profile、Remote、upstream 和任务摘要。
-- `git.transport.manage`：创建/修改 Profile 和绑定；需要 Trusted Host 确认文件选择及冲突覆盖。
-- `git.network.execute`：Clone/Fetch/Pull/Push。
+- `git.transport:read`：读取脱敏 Profile、Remote、upstream 和任务摘要。
+- `git.transport:manage`：创建/修改 Profile 和绑定；需要 Trusted Host 确认文件选择及冲突覆盖。
+- `git.network:execute`：Clone/Fetch/Pull/Push。
 
 首版规则：
 
 - Signed built-in Git Client 可以申请上述能力。
 - Provider Center 只能创建经过验证的 Clone Intent，不能直接执行 Git、管理 Profile 或选择目录。
-- 外部插件即使获得 `git.network.execute` 授权，也不能直接启用 Interactive Policy；每次需要认证的操作必须经过可信 Host 确认。
+- 外部插件即使获得 `git.network:execute` 授权，也不能直接启用 Interactive Policy；每次需要认证的操作必须经过可信 Host 确认。
 - 任何 Network RPC 都必须验证调用 Plugin、Manifest 权限、Repository/Project Resource 和 Rate Limit。
 - 新增权限不会因插件升级自动扩张。
 
