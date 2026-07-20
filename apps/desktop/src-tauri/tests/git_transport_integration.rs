@@ -1,7 +1,8 @@
 use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, mpsc};
+use std::time::Duration;
 
 use chrono::Utc;
 use futures_util::future::BoxFuture;
@@ -55,6 +56,104 @@ struct RecordingNetworkProgressReporter {
 struct RecordingGitRunner {
     inner: Arc<dyn GitRunner>,
     commands: Arc<Mutex<Vec<Vec<String>>>>,
+}
+
+#[derive(Default)]
+struct GitCommandGate {
+    state: Mutex<(bool, bool)>,
+    changed: Condvar,
+    repository_lock: Mutex<Option<Arc<std::sync::Mutex<()>>>>,
+    observed_repository_lock: Mutex<Option<bool>>,
+}
+
+struct PreflightGateGitRunner {
+    inner: Arc<dyn GitRunner>,
+    gate: Arc<GitCommandGate>,
+}
+
+impl GitCommandGate {
+    fn observe_repository_lock(&self, lock: Arc<std::sync::Mutex<()>>) {
+        *self.repository_lock.lock().unwrap() = Some(lock);
+    }
+
+    fn block_until_released(&self) {
+        let lock = self
+            .repository_lock
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("Repository lock probe is configured");
+        let lock_was_held = match lock.try_lock() {
+            Ok(guard) => {
+                drop(guard);
+                false
+            }
+            Err(std::sync::TryLockError::WouldBlock) => true,
+            Err(std::sync::TryLockError::Poisoned(_)) => true,
+        };
+        *self.observed_repository_lock.lock().unwrap() = Some(lock_was_held);
+        let mut state = self.state.lock().unwrap();
+        state.0 = true;
+        self.changed.notify_all();
+        while !state.1 {
+            state = self.changed.wait(state).unwrap();
+        }
+    }
+
+    fn wait_until_entered(&self) {
+        let state = self.state.lock().unwrap();
+        let (state, timeout) = self
+            .changed
+            .wait_timeout_while(state, Duration::from_secs(5), |state| !state.0)
+            .unwrap();
+        assert!(
+            !timeout.timed_out() && state.0,
+            "Git preflight gate was not entered"
+        );
+    }
+
+    fn release(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.1 = true;
+        self.changed.notify_all();
+    }
+
+    fn repository_lock_was_held(&self) -> bool {
+        self.observed_repository_lock
+            .lock()
+            .unwrap()
+            .expect("Repository lock was observed")
+    }
+}
+
+impl PreflightGateGitRunner {
+    fn is_push_branch_validation(command: &GitCommand) -> bool {
+        command
+            .args
+            .first()
+            .is_some_and(|argument| argument == "check-ref-format")
+            && command
+                .args
+                .get(1)
+                .is_some_and(|argument| argument == "--branch")
+    }
+}
+
+impl GitRunner for PreflightGateGitRunner {
+    fn run(&self, command: GitCommand) -> Result<GitOutput, AppError> {
+        if Self::is_push_branch_validation(&command) {
+            self.gate.block_until_released();
+        }
+        self.inner.run(command)
+    }
+
+    fn run_with_context(
+        &self,
+        command: GitCommand,
+        context: GitRunContext,
+    ) -> Result<GitOutput, AppError> {
+        self.inner.run_with_context(command, context)
+    }
 }
 
 #[derive(Clone)]
@@ -415,21 +514,27 @@ impl TransportFixture {
     }
 
     fn with_optional_local_config(local_config: Option<(&str, &str)>) -> Self {
-        Self::with_options(local_config, None, false, None)
+        Self::with_options(local_config, None, false, None, None)
     }
 
     fn with_failing_config_writes(fail_after: usize) -> Self {
-        Self::with_options(None, Some(fail_after), false, None)
+        Self::with_options(None, Some(fail_after), false, None, None)
     }
 
     fn with_https_bare_remote() -> Self {
-        let fixture = Self::with_options(None, None, true, None);
+        let fixture = Self::with_options(None, None, true, None, None);
+        fixture.trust();
+        fixture
+    }
+
+    fn with_https_bare_remote_and_preflight_gate(gate: Arc<GitCommandGate>) -> Self {
+        let fixture = Self::with_options(None, None, true, None, Some(gate));
         fixture.trust();
         fixture
     }
 
     fn with_https_bare_remote_and_clone_fault(fault: CloneFault) -> Self {
-        let fixture = Self::with_options(None, None, true, Some(fault));
+        let fixture = Self::with_options(None, None, true, Some(fault), None);
         fixture.trust();
         fixture
     }
@@ -449,6 +554,7 @@ impl TransportFixture {
         fail_config_writes_after: Option<usize>,
         with_bare_remote: bool,
         clone_fault: Option<CloneFault>,
+        preflight_gate: Option<Arc<GitCommandGate>>,
     ) -> Self {
         let directory = tempfile::tempdir().expect("temporary transport fixture");
         let repository_path = directory.path().join("repository");
@@ -579,12 +685,22 @@ impl TransportFixture {
             }),
             None => runner,
         };
+        let runner: Arc<dyn GitRunner> = match &preflight_gate {
+            Some(gate) => Arc::new(PreflightGateGitRunner {
+                inner: runner,
+                gate: gate.clone(),
+            }),
+            None => runner,
+        };
         let captured_git_commands = Arc::new(Mutex::new(Vec::new()));
         let runner: Arc<dyn GitRunner> = Arc::new(RecordingGitRunner {
             inner: runner,
             commands: captured_git_commands.clone(),
         });
         let write_locks = RepositoryWriteLocks::default();
+        if let Some(gate) = &preflight_gate {
+            gate.observe_repository_lock(write_locks.lock_for(&repository.id));
+        }
         let git = GitService::with_runner_concurrency_and_write_locks(
             database.clone(),
             runner.clone(),
@@ -1421,6 +1537,64 @@ fn push_sets_upstream_once_and_rejects_non_fast_forward_without_force() {
         "origin".to_owned(),
         "HEAD:refs/heads/feature/safe".to_owned(),
     ]));
+}
+
+#[test]
+fn push_preflight_and_execution_exclude_profile_changes_with_one_repository_lock() {
+    let gate = Arc::new(GitCommandGate::default());
+    let fixture = TransportFixture::with_https_bare_remote_and_preflight_gate(gate.clone());
+    let profile = fixture
+        .service
+        .create_https_profile("Concurrent HTTPS", "creator")
+        .unwrap();
+    fixture
+        .service
+        .bind_repository(&fixture.repository_id, &profile.id, false)
+        .unwrap();
+    fixture.commit_local("concurrent-profile.txt");
+
+    let transport = fixture.transport.clone();
+    let push_input = fixture.push_input();
+    let push = std::thread::spawn(move || {
+        transport.push(push_input, Arc::new(NoopNetworkProgressReporter))
+    });
+    gate.wait_until_entered();
+
+    let profile_service = fixture.service.clone();
+    let repository_id = fixture.repository_id.clone();
+    let (finished_tx, finished_rx) = mpsc::channel();
+    let profile_change = std::thread::spawn(move || {
+        let result = profile_service.unbind_repository(&repository_id, DriftResolution::Reject);
+        finished_tx.send(result).unwrap();
+    });
+    let while_preflight_is_blocked = finished_rx.recv_timeout(Duration::from_millis(250));
+    let profile_change_was_blocked = matches!(
+        &while_preflight_is_blocked,
+        Err(mpsc::RecvTimeoutError::Timeout)
+    );
+    let repository_lock_was_held = gate.repository_lock_was_held();
+
+    gate.release();
+    let push_result = push.join().unwrap();
+    let profile_result = match while_preflight_is_blocked {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => finished_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("Profile change completes after Push releases the Repository lock"),
+        Err(error) => panic!("Profile change channel failed: {error}"),
+    };
+    profile_change.join().unwrap();
+
+    assert!(
+        profile_change_was_blocked,
+        "Profile change completed between Push preflight and network execution"
+    );
+    assert!(
+        repository_lock_was_held,
+        "Push released the shared Repository lock before branch/Profile validation"
+    );
+    push_result.unwrap();
+    profile_result.unwrap();
 }
 
 #[test]

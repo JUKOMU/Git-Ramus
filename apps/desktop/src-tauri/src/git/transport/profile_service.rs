@@ -425,7 +425,6 @@ impl TransportProfileService {
         repository_id: &str,
     ) -> Result<EffectiveTransport, AppError> {
         let _lifecycle_guard = self.lock_lifecycle()?;
-        let repository = self.repositories.get(repository_id)?;
         let lock = self.write_locks.lock_for(repository_id);
         let _guard = match lock.try_lock() {
             Ok(guard) => guard,
@@ -434,6 +433,14 @@ impl TransportProfileService {
             }
             Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
         };
+        self.effective_for_repository_locked(repository_id)
+    }
+
+    pub(crate) fn effective_for_repository_locked(
+        &self,
+        repository_id: &str,
+    ) -> Result<EffectiveTransport, AppError> {
+        let repository = self.repositories.get(repository_id)?;
         let Some(binding) = self.store.get_binding(repository_id)? else {
             return Ok(EffectiveTransport::system_git(repository_id));
         };

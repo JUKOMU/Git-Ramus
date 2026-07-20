@@ -86,6 +86,9 @@ struct NetworkExecutionRequest {
     context: QueryContext,
     operation_id: String,
     interactive: bool,
+}
+
+struct PreparedNetworkExecution {
     job_kind: &'static str,
     title: String,
     failed_step: &'static str,
@@ -264,16 +267,7 @@ impl GitTransportService {
         {
             return Err(AppError::TrustRequired);
         }
-        let remote_name = validate_remote_name(&input.remote_name)?;
-        let remote = self
-            .repositories
-            .get_remote(&input.repository_id, remote_name)?;
-        let remote_url = remote
-            .fetch_url
-            .as_deref()
-            .ok_or_else(|| AppError::NotFound(format!("fetch URL for Remote {remote_name}")))?;
-        let validated_url = validate_clone_url(remote_url)?;
-        self.validate_effective_transport(&input.repository_id, &validated_url)?;
+        let remote_name = validate_remote_name(&input.remote_name)?.to_owned();
 
         self.execute_network(
             NetworkExecutionRequest {
@@ -281,19 +275,32 @@ impl GitTransportService {
                 context: input.context,
                 operation_id: input.operation_id,
                 interactive: input.interactive,
-                job_kind: "git.transport.fetch",
-                title: format!("Fetch {remote_name}"),
-                failed_step: "fetch",
-                args: vec![
-                    OsString::from("fetch"),
-                    OsString::from("--progress"),
-                    OsString::from("--"),
-                    OsString::from(remote_name),
-                ],
-                remote_name: Some(remote.name),
             },
             reporter,
             operation_guard,
+            move |service, request, _repository| {
+                let remote = service
+                    .repositories
+                    .get_remote(&request.repository_id, &remote_name)?;
+                let remote_url = remote.fetch_url.as_deref().ok_or_else(|| {
+                    AppError::NotFound(format!("fetch URL for Remote {remote_name}"))
+                })?;
+                let validated_url = validate_clone_url(remote_url)?;
+                service
+                    .validate_effective_transport_locked(&request.repository_id, &validated_url)?;
+                Ok(PreparedNetworkExecution {
+                    job_kind: "git.transport.fetch",
+                    title: format!("Fetch {remote_name}"),
+                    failed_step: "fetch",
+                    args: vec![
+                        OsString::from("fetch"),
+                        OsString::from("--progress"),
+                        OsString::from("--"),
+                        OsString::from(&remote_name),
+                    ],
+                    remote_name: Some(remote.name),
+                })
+            },
         )
     }
 
@@ -323,11 +330,7 @@ impl GitTransportService {
         validate_operation_id(&input.operation_id)?;
         validate_reserved_guard(&input.operation_id, operation_guard.as_ref())?;
         self.ensure_trusted_context(&input.context, &input.repository_id)?;
-        let state = self.network_state(&input.context, &input.repository_id)?;
-        let upstream = pull_preflight(&state)?;
-        let remote_name = validate_remote_name(&upstream.remote_name)?;
-        let (_, remote_url) = self.resolve_remote(&input.repository_id, remote_name, false)?;
-        self.validate_effective_transport(&input.repository_id, &remote_url)?;
+        self.ensure_network_snapshot_available(&input.context, &input.repository_id)?;
 
         self.execute_network(
             NetworkExecutionRequest {
@@ -335,18 +338,29 @@ impl GitTransportService {
                 context: input.context,
                 operation_id: input.operation_id,
                 interactive: input.interactive,
-                job_kind: "git.transport.pull",
-                title: format!("Pull {remote_name}"),
-                failed_step: "pull",
-                args: vec![
-                    OsString::from("pull"),
-                    OsString::from("--ff-only"),
-                    OsString::from("--progress"),
-                ],
-                remote_name: Some(upstream.remote_name),
             },
             reporter,
             operation_guard,
+            |service, request, _repository| {
+                let state =
+                    service.network_state_locked(&request.context, &request.repository_id)?;
+                let upstream = pull_preflight(&state)?;
+                let remote_name = validate_remote_name(&upstream.remote_name)?;
+                let (_, remote_url) =
+                    service.resolve_remote(&request.repository_id, remote_name, false)?;
+                service.validate_effective_transport_locked(&request.repository_id, &remote_url)?;
+                Ok(PreparedNetworkExecution {
+                    job_kind: "git.transport.pull",
+                    title: format!("Pull {remote_name}"),
+                    failed_step: "pull",
+                    args: vec![
+                        OsString::from("pull"),
+                        OsString::from("--ff-only"),
+                        OsString::from("--progress"),
+                    ],
+                    remote_name: Some(upstream.remote_name),
+                })
+            },
         )
     }
 
@@ -376,42 +390,8 @@ impl GitTransportService {
         validate_operation_id(&input.operation_id)?;
         validate_reserved_guard(&input.operation_id, operation_guard.as_ref())?;
         self.ensure_trusted_context(&input.context, &input.repository_id)?;
-        let state = self.network_state(&input.context, &input.repository_id)?;
-        ensure_repository_can_write_network(&state)?;
-        let (target, set_upstream) = match (state.upstream, input.target) {
-            (Some(upstream), None) => (upstream, false),
-            (None, Some(target)) => (
-                UpstreamCandidate {
-                    remote_name: target.remote_name,
-                    branch_name: target.branch_name,
-                },
-                true,
-            ),
-            (None, None) => {
-                return Err(AppError::Transport(TransportFailure::upstream_required()));
-            }
-            (Some(_), Some(_)) => {
-                return Err(AppError::InvalidInput(
-                    "push target is allowed only when no upstream exists".to_owned(),
-                ));
-            }
-        };
-        let remote_name = validate_remote_name(&target.remote_name)?;
-        validate_branch_name_shape(&target.branch_name)?;
-        let repository = self.repositories.get(&input.repository_id)?;
-        self.validate_branch_with_git(&repository, &target.branch_name)?;
-        let (_, remote_url) = self.resolve_remote(&input.repository_id, remote_name, true)?;
-        self.validate_effective_transport(&input.repository_id, &remote_url)?;
-        let refspec = format!("HEAD:refs/heads/{}", target.branch_name);
-        let mut args = vec![OsString::from("push"), OsString::from("--progress")];
-        if set_upstream {
-            args.push(OsString::from("--set-upstream"));
-        }
-        args.extend([
-            OsString::from("--"),
-            OsString::from(remote_name),
-            OsString::from(refspec),
-        ]);
+        self.ensure_network_snapshot_available(&input.context, &input.repository_id)?;
+        let selected_target = input.target;
 
         self.execute_network(
             NetworkExecutionRequest {
@@ -419,14 +399,55 @@ impl GitTransportService {
                 context: input.context,
                 operation_id: input.operation_id,
                 interactive: input.interactive,
-                job_kind: "git.transport.push",
-                title: format!("Push {remote_name}"),
-                failed_step: "push",
-                args,
-                remote_name: Some(target.remote_name),
             },
             reporter,
             operation_guard,
+            move |service, request, repository| {
+                let state =
+                    service.network_state_locked(&request.context, &request.repository_id)?;
+                ensure_repository_can_write_network(&state)?;
+                let (target, set_upstream) = match (state.upstream, selected_target) {
+                    (Some(upstream), None) => (upstream, false),
+                    (None, Some(target)) => (
+                        UpstreamCandidate {
+                            remote_name: target.remote_name,
+                            branch_name: target.branch_name,
+                        },
+                        true,
+                    ),
+                    (None, None) => {
+                        return Err(AppError::Transport(TransportFailure::upstream_required()));
+                    }
+                    (Some(_), Some(_)) => {
+                        return Err(AppError::InvalidInput(
+                            "push target is allowed only when no upstream exists".to_owned(),
+                        ));
+                    }
+                };
+                let remote_name = validate_remote_name(&target.remote_name)?;
+                validate_branch_name_shape(&target.branch_name)?;
+                service.validate_branch_with_git(repository, &target.branch_name)?;
+                let (_, remote_url) =
+                    service.resolve_remote(&request.repository_id, remote_name, true)?;
+                service.validate_effective_transport_locked(&request.repository_id, &remote_url)?;
+                let refspec = format!("HEAD:refs/heads/{}", target.branch_name);
+                let mut args = vec![OsString::from("push"), OsString::from("--progress")];
+                if set_upstream {
+                    args.push(OsString::from("--set-upstream"));
+                }
+                args.extend([
+                    OsString::from("--"),
+                    OsString::from(remote_name),
+                    OsString::from(refspec),
+                ]);
+                Ok(PreparedNetworkExecution {
+                    job_kind: "git.transport.push",
+                    title: format!("Push {remote_name}"),
+                    failed_step: "push",
+                    args,
+                    remote_name: Some(target.remote_name),
+                })
+            },
         )
     }
 
@@ -446,6 +467,29 @@ impl GitTransportService {
         };
         let snapshot = required_refreshed_snapshot(&record)?;
         self.network_state_from_snapshot(context, repository_id, &snapshot)
+    }
+
+    fn ensure_network_snapshot_available(
+        &self,
+        context: &QueryContext,
+        repository_id: &str,
+    ) -> Result<(), AppError> {
+        let record = self.git.get_snapshot(context, repository_id)?;
+        if record.snapshot.is_none() {
+            self.git
+                .refresh_repository_in_context(context, repository_id)?;
+        }
+        Ok(())
+    }
+
+    fn network_state_locked(
+        &self,
+        context: &QueryContext,
+        repository_id: &str,
+    ) -> Result<RepositoryNetworkState, AppError> {
+        let record = self.git.get_snapshot(context, repository_id)?;
+        let snapshot = required_refreshed_snapshot(&record)?;
+        self.network_state_from_snapshot_locked(context, repository_id, &snapshot)
     }
 
     fn ensure_trusted_context(
@@ -503,12 +547,20 @@ impl GitTransportService {
         }
     }
 
-    fn execute_network(
+    fn execute_network<F>(
         &self,
         request: NetworkExecutionRequest,
         reporter: Arc<dyn NetworkProgressReporter>,
         operation_guard: Option<TransportOperationGuard>,
-    ) -> Result<NetworkOperationResult, AppError> {
+        prepare: F,
+    ) -> Result<NetworkOperationResult, AppError>
+    where
+        F: FnOnce(
+            &Self,
+            &NetworkExecutionRequest,
+            &crate::git::model::Repository,
+        ) -> Result<PreparedNetworkExecution, AppError>,
+    {
         let repository = self.repositories.get(&request.repository_id)?;
         let operation_guard = match operation_guard {
             Some(mut operation_guard) => {
@@ -532,10 +584,17 @@ impl GitTransportService {
             }
             Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
         };
+        let PreparedNetworkExecution {
+            job_kind,
+            title,
+            failed_step,
+            args,
+            remote_name,
+        } = prepare(self, &request, &repository)?;
 
-        let queued =
-            self.jobs
-                .create_with_id(&request.operation_id, request.job_kind, &request.title)?;
+        let queued = self
+            .jobs
+            .create_with_id(&request.operation_id, job_kind, &title)?;
         reporter.report(NetworkProgress {
             operation_id: request.operation_id.clone(),
             stage: NetworkStage::Validating,
@@ -580,7 +639,7 @@ impl GitTransportService {
         let execution = self.runner.run_with_context(
             GitCommand {
                 repo: PathBuf::from(&repository.canonical_path),
-                args: request.args,
+                args,
                 stdin: None,
                 timeout: NETWORK_TIMEOUT,
             },
@@ -600,7 +659,7 @@ impl GitTransportService {
                 let failure = classify_git_failure(&output.stderr)
                     .with_operation(&request.operation_id)
                     .with_resource(&request.repository_id)
-                    .with_failed_step(request.failed_step);
+                    .with_failed_step(failed_step);
                 self.finish_failed_job(&running.id, &failure, false)?;
                 reporter.report(terminal_progress(
                     &request.operation_id,
@@ -614,7 +673,7 @@ impl GitTransportService {
                 let failure = failure
                     .with_operation(&request.operation_id)
                     .with_resource(&request.repository_id)
-                    .with_failed_step(request.failed_step);
+                    .with_failed_step(failed_step);
                 self.finish_failed_job(&running.id, &failure, canceled)?;
                 reporter.report(terminal_progress(
                     &request.operation_id,
@@ -640,7 +699,7 @@ impl GitTransportService {
             let failure = TransportFailure::cancelled()
                 .with_operation(&request.operation_id)
                 .with_resource(&request.repository_id)
-                .with_failed_step(request.failed_step);
+                .with_failed_step(failed_step);
             self.finish_failed_job(&running.id, &failure, true)?;
             reporter.report(terminal_progress(
                 &request.operation_id,
@@ -656,19 +715,21 @@ impl GitTransportService {
         Ok(NetworkOperationResult {
             operation_id: request.operation_id,
             repository_id: request.repository_id,
-            remote_name: request.remote_name,
+            remote_name,
             job,
             snapshot,
             network_state,
         })
     }
 
-    fn validate_effective_transport(
+    fn validate_effective_transport_locked(
         &self,
         repository_id: &str,
         remote: &ValidatedRemoteUrl,
     ) -> Result<(), AppError> {
-        let effective = self.profiles.effective_for_repository(repository_id)?;
+        let effective = self
+            .profiles
+            .effective_for_repository_locked(repository_id)?;
         if effective.drift_status == Some(TransportDriftStatus::Drifted) {
             return Err(AppError::Transport(
                 TransportFailure::config_drift().with_resource(repository_id),
@@ -718,10 +779,6 @@ impl GitTransportService {
         repository_id: &str,
         snapshot: &RepositorySnapshot,
     ) -> Result<RepositoryNetworkState, AppError> {
-        self.git
-            .validate_repository_context(context, repository_id)?;
-        let repository = self.repositories.get(repository_id)?;
-        let repository_path = PathBuf::from(&repository.canonical_path);
         let lock = self.write_locks.lock_for(repository_id);
         let _guard = match lock.try_lock() {
             Ok(guard) => guard,
@@ -730,6 +787,19 @@ impl GitTransportService {
             }
             Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
         };
+        self.network_state_from_snapshot_locked(context, repository_id, snapshot)
+    }
+
+    fn network_state_from_snapshot_locked(
+        &self,
+        context: &QueryContext,
+        repository_id: &str,
+        snapshot: &RepositorySnapshot,
+    ) -> Result<RepositoryNetworkState, AppError> {
+        self.git
+            .validate_repository_context(context, repository_id)?;
+        let repository = self.repositories.get(repository_id)?;
+        let repository_path = PathBuf::from(&repository.canonical_path);
         let branch = optional_probe_line(
             self.runner.as_ref(),
             &repository_path,

@@ -919,7 +919,7 @@ fn clean_environment_for_policy_from<I>(
     // never inherit GIT_SSH/GIT_ASKPASS/GIT_CONFIG_* or credential-store overrides from a
     // plugin/parent process.
     for (key, value) in parent {
-        if is_safe_inherited_env(&key) {
+        if is_safe_inherited_env(&key, policy) {
             command.env(key, value);
         }
     }
@@ -932,9 +932,12 @@ fn clean_environment_for_policy_from<I>(
             "Never"
         },
     );
+    if policy != GitExecutionPolicy::ForegroundNetworkInteractive {
+        command.env("SSH_ASKPASS_REQUIRE", "never");
+    }
 }
 
-fn is_safe_inherited_env(key: &OsStr) -> bool {
+fn is_safe_inherited_env(key: &OsStr, policy: GitExecutionPolicy) -> bool {
     let Some(key) = key.to_str() else {
         return false;
     };
@@ -952,9 +955,9 @@ fn is_safe_inherited_env(key: &OsStr) -> bool {
             | "PATHEXT"
             | "SSH_AUTH_SOCK"
             | "SSH_AGENT_PID"
-            | "DISPLAY"
             | "XDG_RUNTIME_DIR"
-    ) || normalized == "LANG"
+    ) || (normalized == "DISPLAY" && policy == GitExecutionPolicy::ForegroundNetworkInteractive)
+        || normalized == "LANG"
         || normalized.starts_with("LC_")
 }
 
@@ -1041,7 +1044,12 @@ mod tests {
     fn background_network_policy_never_allows_interactive_credentials() {
         let environment = captured_environment(
             GitExecutionPolicy::BackgroundNetworkNonInteractive,
-            [("PATH", "/safe/bin"), ("GCM_INTERACTIVE", "Auto")],
+            [
+                ("PATH", "/safe/bin"),
+                ("DISPLAY", ":0"),
+                ("GCM_INTERACTIVE", "Auto"),
+                ("SSH_ASKPASS_REQUIRE", "force"),
+            ],
         );
         assert_eq!(
             environment
@@ -1049,6 +1057,13 @@ mod tests {
                 .and_then(Option::as_deref),
             Some("Never")
         );
+        assert_eq!(
+            environment
+                .get("SSH_ASKPASS_REQUIRE")
+                .and_then(Option::as_deref),
+            Some("never")
+        );
+        assert!(!environment.contains_key("DISPLAY"));
     }
 
     #[derive(Default)]
