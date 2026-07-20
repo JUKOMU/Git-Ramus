@@ -11,7 +11,7 @@ const appDataProfile = acquireE2eAppDataProfile();
 
 export const config: WebdriverIO.Config = {
   runner: "local",
-  specs: ["./foundation.e2e.ts", "./git-client.e2e.ts"],
+  specs: ["./foundation.e2e.ts", "./git-client.e2e.ts", "./provider.e2e.ts"],
   maxInstances: 1,
   injectGlobals: false,
   framework: "mocha",

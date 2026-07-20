@@ -108,7 +108,8 @@ pub fn run() {
     #[cfg(all(feature = "e2e", debug_assertions))]
     let builder = builder.invoke_handler(invoke_handlers![
         e2e::e2e_seed_fixture,
-        e2e::e2e_app_data_paths
+        e2e::e2e_app_data_paths,
+        e2e::e2e_seed_provider_fixture
     ]);
     #[cfg(not(all(feature = "e2e", debug_assertions)))]
     let builder = builder.invoke_handler(invoke_handlers![]);
@@ -123,11 +124,24 @@ const fn e2e_seed_fixture_handler_enabled() -> bool {
 }
 
 #[cfg(test)]
+const fn e2e_provider_fixture_handler_enabled() -> bool {
+    cfg!(all(feature = "e2e", debug_assertions))
+}
+
+#[cfg(test)]
 mod tests {
     #[test]
     fn e2e_seed_fixture_handler_matches_the_debug_feature_boundary() {
         assert_eq!(
             super::e2e_seed_fixture_handler_enabled(),
+            cfg!(all(feature = "e2e", debug_assertions))
+        );
+    }
+
+    #[test]
+    fn e2e_provider_fixture_handler_matches_the_debug_feature_boundary() {
+        assert_eq!(
+            super::e2e_provider_fixture_handler_enabled(),
             cfg!(all(feature = "e2e", debug_assertions))
         );
     }

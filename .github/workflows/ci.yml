@@ -31,7 +31,14 @@ jobs:
         run: >-
           cargo test --release --features e2e
           --manifest-path apps/desktop/src-tauri/Cargo.toml
-          --lib e2e_seed_fixture_handler_matches_the_debug_feature_boundary
+          --lib tests::e2e_seed_fixture_handler_matches_the_debug_feature_boundary
+          -- --exact
+      - name: Prove Provider E2E fixture commands are absent from release builds
+        run: >-
+          cargo test --release --features e2e
+          --manifest-path apps/desktop/src-tauri/Cargo.toml
+          --lib tests::e2e_provider_fixture_handler_matches_the_debug_feature_boundary
+          -- --exact
       - run: npm run desktop:build
 
   node-compat:

@@ -13,6 +13,15 @@ use crate::commands::CommandResult;
 use crate::error::{AppError, ErrorEnvelope};
 use crate::git::engine::{DEFAULT_TIMEOUT, GitCommand, GitRunner, SystemGitRunner};
 use crate::git::service::ProjectCreateInput;
+use crate::providers::e2e_adapter::{
+    E2E_PROVIDER_BASE_URL, E2E_PROVIDER_SSH_URL, E2E_PROVIDER_TOKEN,
+};
+use crate::providers::model::{
+    ProviderAccountSummary, ProviderArchivedFilter, ProviderInstanceSummary, ProviderKind,
+    ProviderRepositoryDirection, ProviderRepositoryQuery, ProviderRepositorySort, RemoteRepository,
+};
+use crate::providers::service::{CreateInstanceInput, ListRepositoriesInput};
+use crate::secrets::SensitiveString;
 
 pub const E2E_TEMP_PREFIX: &str = "git-ramus-e2e-";
 
@@ -60,6 +69,14 @@ pub struct E2eAppDataPaths {
     pub database_path: String,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct E2eProviderFixture {
+    pub instance: ProviderInstanceSummary,
+    pub account: ProviderAccountSummary,
+    pub repository: RemoteRepository,
+}
+
 #[derive(Debug)]
 struct SeededFixtureFiles {
     root_path: PathBuf,
@@ -85,6 +102,86 @@ pub fn e2e_app_data_paths(state: State<'_, AppState>) -> CommandResult<E2eAppDat
         })
     })()
     .map_err(|error: AppError| Box::new(ErrorEnvelope::from(error)))
+}
+
+#[tauri::command]
+pub async fn e2e_seed_provider_fixture(
+    state: State<'_, AppState>,
+) -> CommandResult<E2eProviderFixture> {
+    seed_provider_fixture(&state)
+        .await
+        .map_err(|error| Box::new(ErrorEnvelope::from(error)))
+}
+
+async fn seed_provider_fixture(state: &AppState) -> Result<E2eProviderFixture, AppError> {
+    let instance = match state
+        .providers
+        .list_instances()?
+        .into_iter()
+        .find(|candidate| {
+            candidate.provider_kind == ProviderKind::Gitlab
+                && candidate.base_url == E2E_PROVIDER_BASE_URL
+        }) {
+        Some(existing) => state.providers.validate_instance(&existing.id).await?,
+        None => {
+            state
+                .providers
+                .create_instance(CreateInstanceInput {
+                    provider_kind: ProviderKind::Gitlab,
+                    display_name: "E2E GitLab".to_owned(),
+                    base_url: E2E_PROVIDER_BASE_URL.to_owned(),
+                    custom_ca_path: None,
+                })
+                .await?
+        }
+    };
+    let account = match state
+        .providers
+        .list_accounts(&instance.id)?
+        .into_iter()
+        .find(|candidate| candidate.provider_user_id == "9001")
+    {
+        Some(existing) => state.providers.validate_account(&existing.id).await?,
+        None => {
+            state
+                .providers
+                .connect_account(
+                    &instance.id,
+                    SensitiveString::new(E2E_PROVIDER_TOKEN.to_owned()),
+                )
+                .await?
+        }
+    };
+    let page = state
+        .providers
+        .list_repositories(
+            "git-ramus.provider-center",
+            ListRepositoriesInput {
+                account_id: account.id.clone(),
+                query: ProviderRepositoryQuery {
+                    search: String::new(),
+                    visibility: None,
+                    namespace: None,
+                    archived: ProviderArchivedFilter::All,
+                    sort: ProviderRepositorySort::Name,
+                    direction: ProviderRepositoryDirection::Asc,
+                    page_size: 30,
+                },
+                cursor: None,
+                operation_id: Uuid::new_v4().to_string(),
+            },
+        )
+        .await?;
+    let repository = page
+        .items
+        .into_iter()
+        .find(|candidate| candidate.repository_id == "4242")
+        .ok_or_else(|| AppError::NotFound("E2E Provider repository".to_owned()))?;
+    Ok(E2eProviderFixture {
+        instance,
+        account,
+        repository,
+    })
 }
 
 fn seed_fixture(state: &AppState) -> Result<E2eFixture, AppError> {
@@ -213,6 +310,13 @@ fn create_repository(
         repository,
         ["-c", "init.defaultBranch=main", "init"],
     )?;
+    if dirty {
+        run_git(
+            runner,
+            repository,
+            ["remote", "add", "origin", E2E_PROVIDER_SSH_URL],
+        )?;
+    }
     fs::write(repository.join("initial.txt"), b"initial\n")?;
     fs::write(repository.join("staged.txt"), b"staged initial\n")?;
     fs::write(repository.join("unstaged.txt"), b"unstaged initial\n")?;

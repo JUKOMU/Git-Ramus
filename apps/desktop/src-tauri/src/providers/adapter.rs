@@ -136,6 +136,14 @@ impl ProviderAdapterRegistry {
         self.installation_enabled(&registration.plugin_id)
     }
 
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    pub(crate) fn replace_gitlab_for_e2e(&mut self, adapter: Arc<dyn RepositoryDiscoveryProvider>) {
+        self.gitlab = Some(AdapterRegistration {
+            plugin_id: "git-ramus.provider.gitlab".to_owned(),
+            adapter,
+        });
+    }
+
     fn register(
         &mut self,
         kind: ProviderKind,

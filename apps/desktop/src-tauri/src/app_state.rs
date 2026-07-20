@@ -15,7 +15,11 @@ use crate::plugins::permissions::PermissionGateway;
 use crate::providers::adapter::ProviderAdapterRegistry;
 use crate::providers::service::ProviderService;
 use crate::providers::store::ProviderStore;
-use crate::secrets::{KeyringSecretStore, SecretStore};
+#[cfg(not(all(feature = "e2e", debug_assertions)))]
+use crate::secrets::KeyringSecretStore;
+#[cfg(all(feature = "e2e", debug_assertions))]
+use crate::secrets::MemorySecretStore;
+use crate::secrets::SecretStore;
 use crate::themes::ThemeManager;
 
 pub struct AppState {
@@ -109,9 +113,19 @@ impl AppState {
             }
         }
         let write_locks = RepositoryWriteLocks::default();
+        #[cfg(all(feature = "e2e", debug_assertions))]
+        let secrets: Arc<dyn SecretStore> = Arc::new(MemorySecretStore::default());
+        #[cfg(not(all(feature = "e2e", debug_assertions)))]
         let secrets: Arc<dyn SecretStore> =
             Arc::new(KeyringSecretStore::new("io.git-ramus.desktop"));
         let provider_adapters = ProviderAdapterRegistry::from_plugins(database.clone(), &plugins)?;
+        #[cfg(all(feature = "e2e", debug_assertions))]
+        let provider_adapters = {
+            let mut provider_adapters = provider_adapters;
+            provider_adapters
+                .replace_gitlab_for_e2e(Arc::new(crate::providers::e2e_adapter::E2eProvider));
+            provider_adapters
+        };
         let providers = ProviderService::new(
             ProviderStore::new(database.clone()),
             Arc::clone(&secrets),
@@ -134,6 +148,11 @@ impl AppState {
             e2e_database_path,
         })
     }
+}
+
+#[cfg(test)]
+const fn e2e_uses_memory_secret_store() -> bool {
+    cfg!(all(feature = "e2e", debug_assertions))
 }
 
 fn platform_app_data_dir(app: &AppHandle) -> Result<PathBuf, AppError> {
@@ -296,6 +315,14 @@ mod tests {
                 .permissions
                 .is_allowed("git-ramus.welcome", "app:read", "info")
                 .expect("permission reads")
+        );
+    }
+
+    #[test]
+    fn e2e_app_state_secret_store_matches_the_debug_feature_boundary() {
+        assert_eq!(
+            super::e2e_uses_memory_secret_store(),
+            cfg!(all(feature = "e2e", debug_assertions))
         );
     }
 }

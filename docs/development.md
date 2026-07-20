@@ -35,15 +35,33 @@ npm run desktop:dev
 
 ## Native E2E
 
-The E2E build enables the `e2e` Cargo feature. The embedded WebDriver server and
-`e2e_seed_fixture` command are compiled and registered only when both `e2e` and Rust
-`debug_assertions` are active. A release build does not contain either handler, even if it is built
-with `--features e2e`.
+The E2E build enables the `e2e` Cargo feature. The embedded WebDriver server,
+`e2e_seed_fixture`, and `e2e_seed_provider_fixture` commands are compiled and registered only
+when both `e2e` and Rust `debug_assertions` are active. A release build does not contain either
+fixture handler, even if it is built with `--features e2e`.
 
 ```powershell
 npm run build:e2e --workspace @git-ramus/desktop
 npm run test:e2e --workspace @git-ramus/desktop
 ```
+
+Provider discovery unit and integration checks can be run without a network account:
+
+```powershell
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml providers::
+npm run test --workspace @git-ramus/provider-center
+```
+
+The native Provider journey uses a compiled mock adapter and `MemorySecretStore` in debug E2E
+builds. The fixed PAT exists only transiently in trusted Provider service/IPC memory and is never
+returned to the plugin iframe or written to the operating-system keychain. Release builds keep the
+real adapters and keychain store and contain no fixture command.
+
+For a release-candidate smoke check, configure and validate one GitHub.com instance, one
+GitLab.com instance, and one HTTPS self-managed GitLab instance with an additional CA selected
+through the trusted file picker. Reconnect and rotate an account, browse a private repository,
+and confirm a local remote binding. Git transport remains the user's normal SSH/GCM path; this
+Provider discovery slice does not replace Git authentication or push behavior.
 
 The production plugin frame remains an opaque, cross-origin `sandbox="allow-scripts"` iframe. The
 journeys never read its DOM and never add `allow-same-origin`. Host-side data attributes expose only
