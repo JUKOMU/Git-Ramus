@@ -1,6 +1,6 @@
 # README and Historical Plan Status Reconciliation Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Publish truthful English and Simplified Chinese repository entry documents and reconcile three completed historical implementation plans with their actual status on `main`.
 
@@ -27,7 +27,7 @@
 - Modify: `docs/superpowers/plans/2026-07-19-git-service-race-and-count-invariants.md`
 - Modify: `docs/superpowers/plans/2026-07-19-provider-account-repository-discovery.md`
 
-- [ ] **Step 1: Capture the stale checkbox counts**
+- [x] **Step 1: Capture the stale checkbox counts**
 
 Run:
 
@@ -55,7 +55,7 @@ Expected:
 2026-07-19-provider-account-repository-discovery.md   Done 0  Open 77
 ```
 
-- [ ] **Step 2: Add exact completion evidence below each plan header**
+- [x] **Step 2: Add exact completion evidence below each plan header**
 
 Add this paragraph after the Architecture/Tech Stack block in the Foundation plan:
 
@@ -75,7 +75,7 @@ Add this paragraph after the Architecture/Tech Stack block in the Provider plan:
 **Status:** Completed on `main`. Implemented by commits `ee0621a` through `3bf44dc`, hardened through `8913b08`, and covered by Provider unit, integration, native E2E, and release-boundary gates.
 ```
 
-- [ ] **Step 3: Mechanically mark only the three completed plans**
+- [x] **Step 3: Mechanically mark only the three completed plans**
 
 Run this PowerShell script from the repository root:
 
@@ -89,14 +89,14 @@ $utf8 = [System.Text.UTF8Encoding]::new($false)
 foreach ($file in $files) {
   $path = (Resolve-Path $file).Path
   $content = [System.IO.File]::ReadAllText($path)
-  $updated = $content.Replace("- [ ]", "- [x]")
+  $updated = $content.Replace("- [x]", "- [x]")
   [System.IO.File]::WriteAllText($path, $updated, $utf8)
 }
 ```
 
 Do not run the replacement against the whole `docs/superpowers/plans` directory; active plans must retain open checkboxes.
 
-- [ ] **Step 4: Verify the reconciled counts**
+- [x] **Step 4: Verify the reconciled counts**
 
 Repeat the Step 1 command.
 
@@ -117,7 +117,7 @@ Expected:
 - Reference: `docs/superpowers/specs/2026-07-17-git-ramus-design.md`
 - Reference: `docs/superpowers/specs/2026-07-20-git-transport-network-operations-design.md`
 
-- [ ] **Step 1: Replace the title-only README with the approved structure**
+- [x] **Step 1: Replace the title-only README with the approved structure**
 
 Write `README.md` with these exact sections and facts:
 
@@ -236,7 +236,7 @@ Git-Ramus is in active early development. Start with [docs/development.md](docs/
 Git-Ramus is licensed under the [MIT License](LICENSE).
 ```
 
-- [ ] **Step 2: Check English claims against repository sources**
+- [x] **Step 2: Check English claims against repository sources**
 
 Run:
 
@@ -253,7 +253,7 @@ Expected: each approved maturity, scope, safety, and version statement is presen
 - Create: `README.zh-CN.md`
 - Reference: `README.md`
 
-- [ ] **Step 1: Create a structure-equivalent Chinese README**
+- [x] **Step 1: Create a structure-equivalent Chinese README**
 
 Create `README.zh-CN.md` with this complete content:
 
@@ -372,7 +372,7 @@ Git-Ramus 仍处于活跃的早期开发阶段。请先阅读 [docs/development.
 Git-Ramus 使用 [MIT License](LICENSE)。
 ```
 
-- [ ] **Step 2: Verify heading-level and link parity**
+- [x] **Step 2: Verify heading-level and link parity**
 
 Run:
 
@@ -394,7 +394,7 @@ Expected: exit code 0 with no difference output.
 - Verify: `README.zh-CN.md`
 - Verify: the three reconciled historical plans
 
-- [ ] **Step 1: Validate repository-relative README links**
+- [x] **Step 1: Validate repository-relative README links**
 
 Run:
 
@@ -416,7 +416,7 @@ foreach ($file in $files) {
 
 Expected: exit code 0 with no missing-link error.
 
-- [ ] **Step 2: Run formatting and whitespace gates**
+- [x] **Step 2: Run formatting and whitespace gates**
 
 Run:
 
@@ -427,7 +427,7 @@ git diff --check
 
 Expected: Prettier reports all matched files use its style and `git diff --check` exits 0.
 
-- [ ] **Step 3: Inspect the documentation-only diff**
+- [x] **Step 3: Inspect the documentation-only diff**
 
 Run:
 
@@ -439,7 +439,7 @@ git diff -- README.md README.zh-CN.md docs/superpowers/plans/2026-07-17-foundati
 
 Expected: only the two README files, the three reconciled historical plans, and this active implementation plan are modified. No production, test, manifest, dependency, or CI file is changed.
 
-- [ ] **Step 4: Mark this plan complete and re-run final checks**
+- [x] **Step 4: Mark this plan complete and re-run final checks**
 
 Change every remaining checkbox in this implementation plan from `[ ]` to `[x]` only after Steps 1-3 pass. Then run:
 
@@ -451,7 +451,7 @@ git status --short
 
 Expected: both checks exit 0 and status lists only the intended documentation files.
 
-- [ ] **Step 5: Commit the reconciled documentation**
+- [x] **Step 5: Commit the reconciled documentation**
 
 Run:
 

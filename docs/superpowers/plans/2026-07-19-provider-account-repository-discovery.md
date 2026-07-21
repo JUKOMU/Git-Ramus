@@ -1,12 +1,14 @@
 # Provider Account and Repository Discovery Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Build the first secure Provider vertical slice for GitHub.com, GitLab.com, and HTTPS self-managed GitLab: multiple PAT accounts, repository discovery, scoped plugin access, and confirmed bindings to existing local Git remotes.
 
 **Architecture:** Rust owns Provider persistence, system-keychain access, scoped HTTP/TLS, pagination, cancellation, adapter execution, and binding invariants. GitHub and GitLab are backend-only built-in plugins registered through typed manifest contributions; one sandboxed Provider Center plugin uses typed RPC, while PAT and Provider-access prompts remain in trusted Shell UI outside the iframe.
 
 **Tech Stack:** Tauri 2.11, Rust 1.88/edition 2024, rusqlite, reqwest 0.13.4 with platform TLS verification, Tokio, React 19, TypeScript 6, Zod 4, Vite single-file plugins, Vitest/Testing Library, Rust httpmock, WebdriverIO Tauri E2E
+
+**Status:** Completed on `main`. Implemented by commits `ee0621a` through `3bf44dc`, hardened through `8913b08`, and covered by Provider unit, integration, native E2E, and release-boundary gates.
 
 ---
 
@@ -138,7 +140,7 @@ Provider API implementation must follow the current official behavior documented
 - Modify: `packages/contracts/src/index.ts`
 - Test: `packages/contracts/src/__tests__/contracts.test.ts`
 
-- [ ] **Step 1: Write failing contract tests**
+- [x] **Step 1: Write failing contract tests**
 
 Add imports for the new schemas and these focused cases:
 
@@ -216,7 +218,7 @@ it("parses Provider pages without accepting a secret field", () => {
 Define `backendManifest`, `externalUiManifest`, `instanceId`, and `accountSummary` as complete immutable fixtures in the test file; use valid UUIDs and RFC 3339 timestamps.
 Create `provider-contracts.json` with top-level keys `instance`, `authorizedAccount`, `repositoryPage`, `binding`, and `error`; parse each value through its strict TypeScript schema and assert recursively that no key matches `/pat|secretRef|authorization|customCaPath/iu`.
 
-- [ ] **Step 2: Run the contract test and verify RED**
+- [x] **Step 2: Run the contract test and verify RED**
 
 Run:
 
@@ -226,7 +228,7 @@ npm run test --workspace @git-ramus/contracts -- contracts
 
 Expected: FAIL because Provider contribution and Provider DTO schemas do not exist and `entrypoints.ui` is still required.
 
-- [ ] **Step 3: Implement the Provider schema surface**
+- [x] **Step 3: Implement the Provider schema surface**
 
 Create `provider.ts` with strict Zod objects and inferred types. Use these exact public enums and request boundaries:
 
@@ -335,7 +337,7 @@ Modify `plugin.ts` so `entrypoints.ui` is optional, add a strict `providerContri
 
 Change `pluginDescriptorSchema.uiUrl` to `z.string().regex(/^(?:git-ramus-plugin:\/\/localhost|https?:\/\/git-ramus-plugin\.localhost)\/[a-z0-9.-]+\/ui\.html$/u).nullable()` and export `provider.ts` from `index.ts`.
 
-- [ ] **Step 4: Run focused validation and verify GREEN**
+- [x] **Step 4: Run focused validation and verify GREEN**
 
 Run:
 
@@ -347,7 +349,7 @@ npm run test --workspace @git-ramus/contracts -- contracts
 
 Expected: typecheck PASS and all contract tests PASS, including rejection of secret fields and external Provider contributions.
 
-- [ ] **Step 5: Commit the contract**
+- [x] **Step 5: Commit the contract**
 
 ```powershell
 git add -- packages/contracts/src/provider.ts packages/contracts/src/plugin.ts packages/contracts/src/index.ts packages/contracts/src/__fixtures__/provider-contracts.json packages/contracts/src/__tests__/contracts.test.ts
@@ -369,7 +371,7 @@ git commit -m "feat: add provider discovery contracts"
 - Modify: `scripts/sync-builtin-plugins-lib.mjs`
 - Test: `scripts/sync-builtin-plugins.test.mjs`
 
-- [ ] **Step 1: Write failing Rust and staging tests**
+- [x] **Step 1: Write failing Rust and staging tests**
 
 In `registry.rs`, add a helper that writes this backend-only manifest and assert discovery succeeds with no UI:
 
@@ -395,7 +397,7 @@ assert.deepEqual(await sortedEntries("git-ramus.provider.github"), ["plugin.json
 assert.deepEqual(await sortedEntries("git-ramus.provider.gitlab"), ["plugin.json"]);
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 ```powershell
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml plugins::
@@ -404,7 +406,7 @@ node --test scripts/sync-builtin-plugins.test.mjs
 
 Expected: Rust fails because `ui` and `ui_url` are mandatory; Node fails because backend-only manifests are neither declared nor stageable.
 
-- [ ] **Step 3: Mirror the manifest contract in Rust**
+- [x] **Step 3: Mirror the manifest contract in Rust**
 
 Use optional UI fields and typed Provider contributions:
 
@@ -452,7 +454,7 @@ return <PluginFrame descriptor={uiDescriptor} hostApi={hostApi} route={route} th
 
 Change `PluginFrameProps.descriptor` to `PluginDescriptor & { uiUrl: string }`. Add a component test proving a null-URL backend descriptor creates no iframe.
 
-- [ ] **Step 4: Add exact backend manifests and safe staging**
+- [x] **Step 4: Add exact backend manifests and safe staging**
 
 Create the GitHub manifest:
 
@@ -486,7 +488,7 @@ Create the GitLab manifest with ID `git-ramus.provider.gitlab`, modes `cloud` an
 
 Add both entries to `sync-builtin-plugins.mjs` with `workspace: null`. Change the build callback to return immediately for a null workspace. In `stagePlugin`, always copy `plugin.json`; only require `entrypoints.ui === "ui.html"`, build output, and `dist/index.html` when `ui` exists. Reject a backend-only manifest without a non-empty Provider contribution.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 ```powershell
 npx prettier --write plugins/provider-github plugins/provider-gitlab scripts
@@ -511,7 +513,7 @@ git commit -m "feat: register backend-only provider plugins"
 - Create: `apps/desktop/src-tauri/src/providers/store.rs`
 - Modify: `apps/desktop/src-tauri/src/lib.rs`
 
-- [ ] **Step 1: Write failing v3 migration and store tests**
+- [x] **Step 1: Write failing v3 migration and store tests**
 
 Add database tests for version 3 and table names, then add `providers/store.rs` tests covering the invariants:
 
@@ -545,7 +547,7 @@ fn deleting_a_local_remote_cascades_only_its_provider_binding() {
 
 Also test v2 upgrade preservation, first-account default assignment transaction, binding impact counts, and cleanup records refusing to delete a still-referenced SecretRef.
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [x] **Step 2: Run focused tests and verify RED**
 
 ```powershell
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml db::
@@ -554,7 +556,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml providers::store
 
 Expected: version remains 2 and the Provider module/store do not exist.
 
-- [ ] **Step 3: Add the transactional v3 migration**
+- [x] **Step 3: Add the transactional v3 migration**
 
 Create the migration with these concrete tables and constraints:
 
@@ -629,7 +631,7 @@ COMMIT;
 
 Add useful indexes on binding instance/account and account instance. Update `migrations.rs` to run `MIGRATION_3` only when the current version is below 3.
 
-- [ ] **Step 4: Implement focused models and SQL store methods**
+- [x] **Step 4: Implement focused models and SQL store methods**
 
 Define `ProviderKind`, `ProviderInstance`, `ProviderInstanceSummary`, `NewProviderAccount`, `ProviderAccount`, `ProviderAccountSummary`, `ProviderAuthorizedAccount`, `ProviderBinding`, `BindingSource`, `AccountDeletionImpact`, and `SecretCleanupRecord` with camelCase Serde output where public. `NewProviderAccount` has no caller-controlled default flag. Keep `secret_ref` on the internal `ProviderAccount` only; `ProviderAuthorizedAccount` combines safe instance/account summaries and contains no internal fields.
 
@@ -679,7 +681,7 @@ impl ProviderStore {
 
 Cleanup records store only a SecretRef, timestamps/counts, and a stable redacted error code. A successful attempt deletes the queue row; a failed attempt increments the count and updates `last_error_code`. Reject arbitrary error text at this boundary.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 ```powershell
 cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml
@@ -702,7 +704,7 @@ git commit -m "feat: persist provider discovery state"
 - Create: `apps/desktop/src-tauri/src/providers/url.rs`
 - Modify: `apps/desktop/src-tauri/src/providers/mod.rs`
 
-- [ ] **Step 1: Write failing parser, persistence, and URL tests**
+- [x] **Step 1: Write failing parser, persistence, and URL tests**
 
 Add the exact remote-config fixture and assertions:
 
@@ -736,7 +738,7 @@ Normalize `https://token@gitlab.example/group/repo.git?x=secret#fragment` to hos
 
 In `git_service_integration.rs`, create `origin`, rescan, and assert `RepositoryRepository::list_remotes` contains the effective URLs.
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [x] **Step 2: Run focused tests and verify RED**
 
 ```powershell
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml git::parser::tests::parses_effective_fetch_and_push_urls
@@ -746,7 +748,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --test git_service_
 
 Expected: missing parser, URL module, and remote refresh behavior cause failure.
 
-- [ ] **Step 3: Implement remote parsing and transactional replacement**
+- [x] **Step 3: Implement remote parsing and transactional replacement**
 
 Add:
 
@@ -781,7 +783,7 @@ git config --local --null --get-regexp ^remote\..*\.(url|pushurl)$
 
 Git exits with code 1 when there are no matching keys; treat that as an empty remote set. Other failures preserve the previous rows and do not make status refresh fail.
 
-- [ ] **Step 4: Implement strict instance/remote normalization**
+- [x] **Step 4: Implement strict instance/remote normalization**
 
 Add `url = "2.5.8"` as a direct Cargo dependency before importing `url::Url`; do not rely on a transitive Tauri dependency.
 
@@ -797,7 +799,7 @@ pub fn detect_remote(instance: &NormalizedInstance, remote: &NormalizedRemoteUrl
 
 For GitHub, require exactly `https://github.com` and derive `https://api.github.com`. For GitLab, require HTTPS, preserve a relative installation root, append `/api/v4`, reject credentials/query/fragment/control characters, lowercase only the host, remove default ports, and preserve repository-path case. `detect_remote` removes the GitLab instance root before producing namespace/path.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 ```powershell
 cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml
@@ -823,7 +825,7 @@ git commit -m "feat: synchronize and normalize repository remotes"
 - Modify: `apps/desktop/src-tauri/src/providers/mod.rs`
 - Create: `apps/desktop/src-tauri/tests/provider_integration.rs`
 
-- [ ] **Step 1: Write failing security and lifecycle tests**
+- [x] **Step 1: Write failing security and lifecycle tests**
 
 Add unit tests with these assertions:
 
@@ -870,7 +872,7 @@ fn provider_failures_serialize_without_tokens_or_urls() {
 
 In `provider_integration.rs`, add async tests proving that a same-origin redirect is followed, a cross-origin redirect is not followed and receives no authorization header, a body over the configured maximum fails before unbounded accumulation, a delayed response respects total timeout/cancellation, a missing CA file fails before network access, a self-signed server fails without its CA, and the same server succeeds with its CA. Add a scripted server that returns 503 then 200 and assert exactly two calls, a server that remains 503 and assert exactly three calls followed by `provider.instance-unreachable`, plus a 429 response with `Retry-After` and assert exactly one call.
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [x] **Step 2: Run focused tests and verify RED**
 
 ```powershell
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml secrets::tests::sensitive_strings_never_debug
@@ -881,7 +883,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --test provider_int
 
 Expected: the sensitive type, Provider error, cursor/operation registries, and HTTP client are absent.
 
-- [ ] **Step 3: Add pinned dependencies and redacted Provider failures**
+- [x] **Step 3: Add pinned dependencies and redacted Provider failures**
 
 Add direct dependencies already compatible with Rust 1.88:
 
@@ -919,7 +921,7 @@ ProviderFailure::busy(retry_after_ms)
 
 Add `with_request_context(plugin_id, operation_id)` for the service layer; repository list/match/cancel failures must populate both existing `ErrorEnvelope` fields. Map constructors to the exact `provider.*` codes in the specification plus `provider.request-canceled` and retryable `provider.request-busy`; never retain a `reqwest::Error`, response body, URL, token, or header inside `ProviderFailure`.
 
-- [ ] **Step 4: Implement the scoped streaming HTTP client**
+- [x] **Step 4: Implement the scoped streaming HTTP client**
 
 Define a client that accepts only relative API paths and structured query pairs:
 
@@ -957,7 +959,7 @@ Keep production limits in an immutable `HttpLimits::production()` value. A crate
 
 Retry only idempotent GET attempts that fail with a transient transport error or HTTP 502/503/504. Allow at most two retries (three attempts total), with bounded 100 ms then 250 ms delays plus 0–25 ms jitter derived from `SystemTime`; cancellation must interrupt both request and backoff. Never auto-retry 401/403/404/429, TLS failures, schema failures, redirects rejected by policy, or an oversized body. Return parsed `Retry-After` metadata for 429 instead of sleeping. Keep a test-only zero-delay policy so retry-count tests remain deterministic.
 
-- [ ] **Step 5: Implement one-use cursors, cancellation, and the adapter contract**
+- [x] **Step 5: Implement one-use cursors, cancellation, and the adapter contract**
 
 Use bounded host memory only:
 
@@ -1008,7 +1010,7 @@ pub trait RepositoryDiscoveryProvider: Send + Sync {
 }
 ```
 
-- [ ] **Step 6: Add a real self-signed TLS integration helper and verify GREEN**
+- [x] **Step 6: Add a real self-signed TLS integration helper and verify GREEN**
 
 In `provider_integration.rs`, generate a localhost certificate with `rcgen::generate_simple_self_signed`, serve one bounded HTTP response through `tokio_rustls::TlsAcceptor`, write the CA PEM to a `tempfile`, and build two `ProviderInstance` values: one without `custom_ca_path`, one with it. Assert the first returns `provider.tls-failed` and the second returns status 200/body JSON. Keep the test server to one accepted connection per assertion so it cannot hang the suite.
 
@@ -1025,7 +1027,7 @@ cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- 
 
 Expected: all focused tests and Clippy PASS; cross-origin mock receives zero authenticated calls, oversized input is rejected, and custom CA succeeds without a skip-verification option.
 
-- [ ] **Step 7: Commit the Provider foundation**
+- [x] **Step 7: Commit the Provider foundation**
 
 ```powershell
 git add -- apps/desktop/src-tauri/Cargo.toml apps/desktop/src-tauri/Cargo.lock apps/desktop/src-tauri/src/secrets.rs apps/desktop/src-tauri/src/error.rs apps/desktop/src-tauri/src/providers apps/desktop/src-tauri/tests/provider_integration.rs
@@ -1040,7 +1042,7 @@ git commit -m "feat: add secure provider http foundation"
 - Modify: `apps/desktop/src-tauri/src/providers/mod.rs`
 - Modify: `apps/desktop/src-tauri/tests/provider_integration.rs`
 
-- [ ] **Step 1: Write failing GitHub adapter tests**
+- [x] **Step 1: Write failing GitHub adapter tests**
 
 Use `httpmock::MockServer::start_async()` and `ScopedHttpClient::for_test_http`. Mount `/user` and `/user/repos` with exact headers:
 
@@ -1065,7 +1067,7 @@ assert_eq!(page.rate_limit.unwrap().remaining, Some(4999));
 
 Add account-affiliation fixtures for an owner repository, an organization-member private repository, an archived repository, and a fork. Mount `/search/repositories`, assert it receives zero calls, and prove an unrelated public fixture never enters results. Add tests for `/repos/octo/private-skill`, a 401 mapping to authentication-required, a 403 with `x-ratelimit-remaining: 0` mapping to rate-limited, a 403 without exhaustion mapping to permission-insufficient, a privacy-preserving 404 mapping to permission-insufficient during verification, and response JSON containing unknown extra fields.
 
-- [ ] **Step 2: Run the tests and verify RED**
+- [x] **Step 2: Run the tests and verify RED**
 
 ```powershell
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --test provider_integration github_
@@ -1073,7 +1075,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --test provider_int
 
 Expected: FAIL because `GithubProvider` does not exist.
 
-- [ ] **Step 3: Implement exact GitHub API mapping**
+- [x] **Step 3: Implement exact GitHub API mapping**
 
 Add a zero-sized `GithubProvider`. Build every request with:
 
@@ -1098,7 +1100,7 @@ Deserialize into private response structs with only the fields required by `Remo
 
 Map a verification 404 to the same `provider.permission-insufficient` envelope as an inaccessible repository so the caller cannot distinguish private existence. Let the HTTP foundation exhaust bounded 5xx retries before mapping to `provider.instance-unreachable`.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 ```powershell
 cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml
@@ -1116,7 +1118,7 @@ git commit -m "feat: discover github repositories"
 - Modify: `apps/desktop/src-tauri/src/providers/mod.rs`
 - Modify: `apps/desktop/src-tauri/tests/provider_integration.rs`
 
-- [ ] **Step 1: Write failing GitLab adapter tests**
+- [x] **Step 1: Write failing GitLab adapter tests**
 
 Mount a mock under a relative installation root such as `/gitlab/api/v4`. Require `PRIVATE-TOKEN: gitlab-test-token` on authenticated requests. Return `/user` and two paginated `/projects` responses with `X-Next-Page`, `RateLimit-*`, and these fields:
 
@@ -1140,7 +1142,7 @@ Mount a mock under a relative installation root such as `/gitlab/api/v4`. Requir
 
 Assert the request includes `membership=true`, `simple=true`, `per_page=100`, page/sort fields, and a server-side `search` term when supplied. Reject any `/projects` call lacking `membership=true` and prove an unrelated public fixture never enters results. Use personal, nested-group private/internal, archived, and fork fixtures; assert visibility, effective permission, pagination, and relative-root URLs map correctly. Add 401, 403, privacy-preserving 404, 429+Retry-After, malformed JSON, and cross-origin Link tests.
 
-- [ ] **Step 2: Run the tests and verify RED**
+- [x] **Step 2: Run the tests and verify RED**
 
 ```powershell
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --test provider_integration gitlab_
@@ -1148,7 +1150,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --test provider_int
 
 Expected: FAIL because `GitlabProvider` does not exist.
 
-- [ ] **Step 3: Implement exact GitLab REST v4 mapping**
+- [x] **Step 3: Implement exact GitLab REST v4 mapping**
 
 Use `PRIVATE-TOKEN` for PAT authentication and `Accept: application/json`. Implement:
 
@@ -1166,7 +1168,7 @@ Keep `membership=true` even when `search` is present so global unrelated public 
 
 Map a project-verification 404 to `provider.permission-insufficient` without echoing the path, and let exhausted 5xx retries surface as `provider.instance-unreachable`.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 ```powershell
 cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml
@@ -1188,7 +1190,7 @@ git commit -m "feat: discover gitlab repositories"
 - Modify: `apps/desktop/src-tauri/src/lib.rs`
 - Modify: `apps/desktop/src-tauri/tests/provider_integration.rs`
 
-- [ ] **Step 1: Write failing registry and account-lifecycle tests**
+- [x] **Step 1: Write failing registry and account-lifecycle tests**
 
 Create a deterministic `FakeProvider` and a scripted `SecretStore`. Cover these exact behaviors:
 
@@ -1225,7 +1227,7 @@ Also test GitHub fixed URLs, HTTPS GitLab normalization, first/second/default ac
 Toggle the built-in Provider installation's `enabled` column off and back on in the fixture: calls while disabled must return the stable disabled state without deleting rows, and the next call after re-enable must succeed without recreating the instance/account.
 Add a file-backed restart test: create an instance, two account summaries, and one binding; drop/reopen the database and reconstruct `ProviderService` with the same scripted secret store; assert all summaries/bindings remain and `validate_account` reads the PAT through its SecretRef rather than SQLite.
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [x] **Step 2: Run focused tests and verify RED**
 
 ```powershell
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml providers::service::tests::account_
@@ -1234,7 +1236,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --test provider_int
 
 Expected: FAIL because the adapter registry and Provider service do not exist.
 
-- [ ] **Step 3: Gate the compiled built-in adapters by enabled state**
+- [x] **Step 3: Gate the compiled built-in adapters by enabled state**
 
 Implement `ProviderAdapterRegistry::from_plugins(database, plugin_registry)` so it:
 
@@ -1246,7 +1248,7 @@ Implement `ProviderAdapterRegistry::from_plugins(database, plugin_registry)` so 
 
 Expose `get(kind)` and `is_enabled(kind)`. Keep only the two compile-time adapter constructors in memory, but re-read the installation's enabled flag before returning an adapter so an external plugin-management slice can disable/re-enable it without reconstructing domain state. Do not allow runtime code or a manifest path to construct an arbitrary adapter.
 
-- [ ] **Step 4: Implement instance creation/update/validation**
+- [x] **Step 4: Implement instance creation/update/validation**
 
 Construct `ProviderService` from `ProviderStore`, `Arc<dyn SecretStore>`, adapter registry, cursor/operation registries, and an in-memory health map.
 
@@ -1260,7 +1262,7 @@ pub fn delete_instance(&self, instance_id: &str) -> Result<(), AppError>;
 
 Canonicalize a selected CA path, expose only `file_name()` as `customCaLabel`, build the scoped client, call the adapter's validation, and persist only after successful TLS/API validation. Updating/removing CA must validate the replacement configuration before committing it.
 
-- [ ] **Step 5: Implement account connect, rotate, default, validation, and deletion**
+- [x] **Step 5: Implement account connect, rotate, default, validation, and deletion**
 
 Add the concrete lifecycle surface:
 
@@ -1293,7 +1295,7 @@ Rotation validates the same `provider_user_id`, commits the new SecretRef, then 
 
 At startup, retry `provider_secret_cleanup` records only after checking `secret_ref_is_referenced == false`.
 
-- [ ] **Step 6: Wire AppState and verify GREEN**
+- [x] **Step 6: Wire AppState and verify GREEN**
 
 Build the secret store before `ProviderService`, then add `pub providers: ProviderService` to `AppState`. Production uses `KeyringSecretStore`; debug E2E will be switched to memory in Task 14. Call safe cleanup retry after construction and before returning state.
 
@@ -1308,7 +1310,7 @@ cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- 
 
 Expected: all lifecycle/compensation tests PASS and serialized database/error payloads contain no test PAT.
 
-- [ ] **Step 7: Commit account lifecycle**
+- [x] **Step 7: Commit account lifecycle**
 
 ```powershell
 git add -- apps/desktop/src-tauri/src/providers apps/desktop/src-tauri/src/secrets.rs apps/desktop/src-tauri/src/app_state.rs apps/desktop/src-tauri/src/lib.rs apps/desktop/src-tauri/tests/provider_integration.rs
@@ -1325,7 +1327,7 @@ git commit -m "feat: manage provider instances and accounts"
 - Modify: `apps/desktop/src-tauri/src/providers/model.rs`
 - Modify: `apps/desktop/src-tauri/tests/provider_integration.rs`
 
-- [ ] **Step 1: Write failing discovery and matching tests**
+- [x] **Step 1: Write failing discovery and matching tests**
 
 Use a fake adapter with three upstream pages. The first contains only filtered-out repositories, the second contains two matches, and the third contains another match. Assert one UI page is filled across upstream pages and its cursor carries the remainder:
 
@@ -1352,7 +1354,7 @@ Add tests that:
 - Account-scoped binding listing includes that account's explicit bindings and its current inherited bindings, but never another account's explicit binding.
 - Switching the instance default moves only inherited bindings into the new default account's view; explicit bindings remain attached to their selected account.
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [x] **Step 2: Run focused tests and verify RED**
 
 ```powershell
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml providers::service::tests::discovery_
@@ -1362,7 +1364,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --test provider_int
 
 Expected: list, cancellation, matching, and binding methods are absent.
 
-- [ ] **Step 3: Implement consistent filtering and opaque pagination**
+- [x] **Step 3: Implement consistent filtering and opaque pagination**
 
 Add:
 
@@ -1384,7 +1386,7 @@ Register the account-scoped operation before reading the secret or waiting for c
 
 On an adapter failure while consuming a continuation cursor, return `provider.partial-result` with the failed step and safe recovery action; the Provider Center keeps already-rendered items. On the initial page, preserve the specific normalized failure instead. Update account health to rate-limited/action-required/unavailable without persisting raw error text.
 
-- [ ] **Step 4: Implement matching and binding from current local state**
+- [x] **Step 4: Implement matching and binding from current local state**
 
 Add:
 
@@ -1407,7 +1409,7 @@ For each stored local remote, normalize effective fetch/push URLs, retain only c
 
 `list_bindings_for_account` returns explicit bindings for that account plus inherited bindings only when the account is the current instance default. It never returns another explicit account's binding, even to a caller that guesses the binding's local repository ID.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 ```powershell
 cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml
@@ -1430,7 +1432,7 @@ git commit -m "feat: discover and bind provider repositories"
 - Test: `apps/desktop/src-tauri/src/plugins/permissions.rs`
 - Test: `apps/desktop/src-tauri/src/commands.rs`
 
-- [ ] **Step 1: Write failing dynamic-grant and command tests**
+- [x] **Step 1: Write failing dynamic-grant and command tests**
 
 Extend permission tests with one built-in Provider Center and one external test manifest:
 
@@ -1463,7 +1465,7 @@ Add command serialization tests that call the command adapters over a `ServiceFi
 
 Load `packages/contracts/src/__fixtures__/provider-contracts.json` with `include_str!`, deserialize its instance/account/page/binding/error values into the Rust public DTOs, serialize them back to `serde_json::Value`, and assert exact equality with the canonical fixture. This is the cross-language field-name/nullability guard.
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [x] **Step 2: Run focused tests and verify RED**
 
 ```powershell
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml plugins::permissions
@@ -1472,7 +1474,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml commands::tests::pr
 
 Expected: dynamic grant APIs, manifest-request inspection, and Provider commands do not exist.
 
-- [ ] **Step 3: Add declared and dynamic permission operations**
+- [x] **Step 3: Add declared and dynamic permission operations**
 
 Add these exact APIs:
 
@@ -1493,7 +1495,7 @@ impl PermissionGateway {
 
 `provider_permission_revoke_account` marks the calling plugin's exact grant revoked first, then calls `cancel_for_plugin_account` and awaits `wait_for_plugin_account_idle` before returning. Add a test with a blocked fake adapter proving revocation cancels the in-flight request and the next call is denied before network access.
 
-- [ ] **Step 4: Add strict Provider command request types**
+- [x] **Step 4: Add strict Provider command request types**
 
 Define `#[serde(rename_all = "camelCase", deny_unknown_fields)]` structs and command functions for these command names:
 
@@ -1533,7 +1535,7 @@ Every repository-list, match, and cancel request carries `plugin_id`, `account_i
 
 Register all commands in `invoke_handlers!`; do not add a generic Provider request or raw HTTP command.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 ```powershell
 cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml
@@ -1556,7 +1558,7 @@ git commit -m "feat: expose scoped provider commands"
 - Modify: `apps/desktop/src/__tests__/FoundationFlow.test.tsx`
 - Modify: `apps/desktop/src/__tests__/App.test.tsx`
 
-- [ ] **Step 1: Write failing Host API secret-boundary tests**
+- [x] **Step 1: Write failing Host API secret-boundary tests**
 
 Create an injected prompt port and assert PAT/CA are added only after the plugin request has crossed into the trusted host:
 
@@ -1576,7 +1578,7 @@ expect(JSON.stringify({ instanceId })).not.toContain("glpat-host-only");
 
 Test credential cancellation returns `null` and does not invoke Rust. Test `customCaAction: "selectFile"` invokes the native file picker with certificate filters and sends the path only to the internal Tauri request; the returned DTO contains only `customCaConfigured`/`customCaLabel`.
 
-- [ ] **Step 2: Write failing multi-requirement RPC tests**
+- [x] **Step 2: Write failing multi-requirement RPC tests**
 
 Add a fake Provider HostApi and these cases:
 
@@ -1607,7 +1609,7 @@ it("requires both Provider and repository read grants before matching", async ()
 
 Add negative tests: denied calls never open a credential/access prompt, malformed UUIDs never call authorization, an external plugin can call `providers.requestReadAccess` only when `provider_permission_is_declared` returns true, and revoking an exact account makes the next repository call fail.
 
-- [ ] **Step 3: Run TypeScript tests and verify RED**
+- [x] **Step 3: Run TypeScript tests and verify RED**
 
 ```powershell
 npm run test --workspace @git-ramus/desktop -- hostApi rpcRouter
@@ -1615,7 +1617,7 @@ npm run test --workspace @git-ramus/desktop -- hostApi rpcRouter
 
 Expected: missing Provider HostApi methods, prompt port, request schemas, and multi-requirement route handling cause failure.
 
-- [ ] **Step 4: Implement a factory-backed trusted Host API**
+- [x] **Step 4: Implement a factory-backed trusted Host API**
 
 Create `apps/desktop/src/providers/promptPorts.ts` with these ports; neither is exported to plugin code:
 
@@ -1659,7 +1661,7 @@ Add typed HostApi methods corresponding to all Provider RPC operations. Parse ev
 
 Create the default `tauriHostApi` with `unavailableProviderPromptPort` and `nativeCertificateFileSelectionPort`. Tests inject a fake prompt port. Task 12 replaces only the default prompt dependency with the singleton broker-backed port after the trusted dialogs exist.
 
-- [ ] **Step 5: Generalize the route authorization table without weakening existing routes**
+- [x] **Step 5: Generalize the route authorization table without weakening existing routes**
 
 Replace one fixed capability/resource with explicit requirements:
 
@@ -1696,7 +1698,7 @@ providers.listBindings / bindRemote / unbindRemote
 
 No schema may contain `pat`, `secretRef`, `customCaPath`, a filesystem path, or an arbitrary URL for the HTTP client.
 
-- [ ] **Step 6: Verify and commit**
+- [x] **Step 6: Verify and commit**
 
 ```powershell
 npx prettier --write apps/desktop/src/providers/promptPorts.ts apps/desktop/src/lib apps/desktop/src/plugins apps/desktop/src/__tests__
@@ -1719,7 +1721,7 @@ git commit -m "feat: route provider rpc through trusted host"
 - Modify: `apps/desktop/src/__tests__/App.test.tsx`
 - Modify: `apps/desktop/src/lib/hostApi.ts`
 
-- [ ] **Step 1: Write failing broker and dialog tests**
+- [x] **Step 1: Write failing broker and dialog tests**
 
 Add tests that:
 
@@ -1746,7 +1748,7 @@ Also assert:
 - Neither dialog is rendered inside `PluginHost` or any iframe.
 - Unmount resolves an active prompt as canceled and zeroes component state.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 ```powershell
 npm run test --workspace @git-ramus/desktop -- providerPrompts App
@@ -1754,7 +1756,7 @@ npm run test --workspace @git-ramus/desktop -- providerPrompts App
 
 Expected: prompt broker/dialog components and App integration do not exist.
 
-- [ ] **Step 3: Implement one-at-a-time prompt brokers**
+- [x] **Step 3: Implement one-at-a-time prompt brokers**
 
 Implement a generic broker with subscribe/request/resolve/cancel semantics:
 
@@ -1769,7 +1771,7 @@ export interface PromptBroker<Request, Result> {
 
 Use generated UUIDs and one shared `ProviderPromptGate` across the credential and access brokers. A request atomically acquires the gate; `resolve`, `cancel`, or unmount clears broker state and releases it before settling the promise. Listeners receive request metadata but never past results. Import the port types from `promptPorts.ts`; export singleton credential/access brokers and `providerPromptBrokerPort`, which delegates credential and access requests to those two gated brokers. Change only the default `tauriHostApi` prompt dependency from `unavailableProviderPromptPort` to `providerPromptBrokerPort`; retain the native certificate-file port from Task 11.
 
-- [ ] **Step 4: Implement and mount the dialogs**
+- [x] **Step 4: Implement and mount the dialogs**
 
 `ProviderCredentialDialog` keeps the PAT only in local component state. On submit, move it to the broker, immediately set state to `""`, and close. Display provider/account label, least-privilege guidance, Connect/Rotate wording, and Cancel.
 
@@ -1808,7 +1810,7 @@ return (
 
 Implement both prompts as an accessible `role="dialog"`, `aria-modal="true"` overlay styled through existing semantic `--gr-*` tokens. Focus the first control on open, trap Tab within the prompt, restore focus to the previously active Shell element on close, and close on Escape through the broker's cancel path.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 ```powershell
 npx prettier --write apps/desktop/src/providers apps/desktop/src/App.tsx apps/desktop/src/app.css apps/desktop/src/__tests__/App.test.tsx apps/desktop/src/lib/hostApi.ts
@@ -1843,7 +1845,7 @@ git commit -m "feat: add trusted provider credential prompts"
 - Modify: `scripts/sync-builtin-plugins.test.mjs`
 - Modify: `package-lock.json`
 
-- [ ] **Step 1: Scaffold the package and write failing API tests**
+- [x] **Step 1: Scaffold the package and write failing API tests**
 
 Create `package.json` with the exact workspace metadata and pinned versions already used by Git Client:
 
@@ -1928,7 +1930,7 @@ it("cancels an in-flight repository page with the same operation id", async () =
 
 Test every API method against the route names from Task 11 and assert no request contains `pat`, `secretRef`, `customCaPath`, or a local filesystem path.
 
-- [ ] **Step 2: Run API tests and verify RED**
+- [x] **Step 2: Run API tests and verify RED**
 
 ```powershell
 npm run test --workspace @git-ramus/provider-center -- api
@@ -1936,7 +1938,7 @@ npm run test --workspace @git-ramus/provider-center -- api
 
 Expected: the workspace/API do not exist.
 
-- [ ] **Step 3: Implement the typed API wrapper**
+- [x] **Step 3: Implement the typed API wrapper**
 
 Define `ProviderCenterApi` with instance/account/discovery/match/bind methods and parse normalized errors through `errorEnvelopeSchema`. For repository discovery:
 
@@ -1967,7 +1969,7 @@ async function listRepositories(input: ListInput, signal?: AbortSignal) {
 
 Use the same pattern for local-remote matching. Do not add general HTTP or secret methods.
 
-- [ ] **Step 4: Write failing component journeys**
+- [x] **Step 4: Write failing component journeys**
 
 Test these complete user flows with fake APIs:
 
@@ -1985,7 +1987,7 @@ Test these complete user flows with fake APIs:
 
 Use accessible names rather than CSS selectors in Testing Library assertions.
 
-- [ ] **Step 5: Implement focused Provider Center components**
+- [x] **Step 5: Implement focused Provider Center components**
 
 `App.tsx` supports `/` and `/providers` and owns selected instance/account IDs. Keep network state in the narrowest component:
 
@@ -1996,7 +1998,7 @@ Use accessible names rather than CSS selectors in Testing Library assertions.
 
 Use a request-generation integer in addition to `AbortController`; a response updates state only when its generation is current. Show `ErrorEnvelope.message`, recovery action labels, and `retryAfterMs`, never `details` wholesale.
 
-- [ ] **Step 6: Add the manifest, token-based styles, and staging entry**
+- [x] **Step 6: Add the manifest, token-based styles, and staging entry**
 
 Create this manifest:
 
@@ -2029,7 +2031,7 @@ Create this manifest:
 
 Provider Center owns no visual theme. Use only `--gr-colors-*`, `--gr-spacing-*`, `--gr-shape-*`, `--gr-typography-*`, and density tokens with safe fallbacks so theme/UI style plugins replace its appearance through the existing host token channel. Add a test that scans `style.css` and rejects hex/rgb/hsl literals outside documented safe fallbacks. Add the workspace to the sync list and assert its staged directory is exactly `plugin.json` plus `ui.html`.
 
-- [ ] **Step 7: Verify and commit**
+- [x] **Step 7: Verify and commit**
 
 ```powershell
 npm install --package-lock-only
@@ -2057,7 +2059,7 @@ git commit -m "feat: add unified provider center"
 - Modify: `apps/desktop/e2e/wdio.conf.ts`
 - Modify: `docs/development.md`
 
-- [ ] **Step 1: Write failing e2e-boundary tests**
+- [x] **Step 1: Write failing e2e-boundary tests**
 
 Add Rust tests that assert the fixture adapter and fixture command are available only under both `feature = "e2e"` and `debug_assertions`, matching the existing Git fixture boundary. Add a test that debug E2E AppState uses `MemorySecretStore`, while release-with-e2e still constructs no fixture handler.
 
@@ -2138,7 +2140,7 @@ it("discovers a private GitLab repository and confirms a local remote binding", 
 
 Import `resolve` from `node:path`, promisify `node:child_process.execFile`, and use `seedFixture`/`cleanupGitClientJourney` from `fixture-project.ts`. Create `fixture-provider.ts` with strict parsers for only the instance/account/repository summaries returned by `e2e_seed_provider_fixture`; its cleanup calls the production account deletion command with `resolution: { kind: "unbind" }`, deletes the now-empty instance, and ignores only `resource.not-found`. In `after`, run Provider cleanup before `cleanupGitClientJourney({ workspaceId: null, identityId: null, fixture: gitFixture })` so bindings are removed before local remotes disappear.
 
-- [ ] **Step 2: Run boundary/unit tests and verify RED**
+- [x] **Step 2: Run boundary/unit tests and verify RED**
 
 ```powershell
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml e2e_provider_fixture_handler
@@ -2147,7 +2149,7 @@ npm run typecheck --workspace @git-ramus/desktop
 
 Expected: fixture adapter/command and Provider E2E spec are absent.
 
-- [ ] **Step 3: Implement the debug-only deterministic adapter and fixture**
+- [x] **Step 3: Implement the debug-only deterministic adapter and fixture**
 
 Under `#[cfg(all(feature = "e2e", debug_assertions))]`, implement a `RepositoryDiscoveryProvider` that:
 
@@ -2165,7 +2167,7 @@ git remote add origin git@gitlab.example.test:skills/private-skill.git
 
 The E2E test scans the primary project before seeding Provider state, so production remote synchronization persists the new origin. Register the Provider fixture command only in the existing debug+feature handler list.
 
-- [ ] **Step 4: Complete native E2E and developer documentation**
+- [x] **Step 4: Complete native E2E and developer documentation**
 
 Add `./provider.e2e.ts` to the serial WDIO specs list. The test may inspect only trusted Shell elements and host-side RPC method markers; do not weaken `sandbox="allow-scripts"` or read the opaque plugin DOM. In `.github/workflows/ci.yml`, add a second release-with-e2e boundary step that runs `e2e_provider_fixture_handler_matches_the_debug_feature_boundary`; retain the existing Windows/Ubuntu E2E matrix unchanged so both platforms execute the Provider spec through WDIO.
 
@@ -2177,7 +2179,7 @@ Document:
 - Manual release-candidate smoke steps for GitHub.com, GitLab.com, and HTTPS self-managed GitLab with an extra CA.
 - Confirmation that Git operations continue to use SSH/GCM and are not part of this slice.
 
-- [ ] **Step 5: Run focused native E2E**
+- [x] **Step 5: Run focused native E2E**
 
 ```powershell
 npm run prepare:plugins --workspace @git-ramus/desktop
@@ -2187,7 +2189,7 @@ npm run test:e2e --workspace @git-ramus/desktop
 
 Expected: Foundation, Git Client, and Provider journeys PASS; no real network credential or persistent OS-keychain entry is used.
 
-- [ ] **Step 6: Run the full release gate**
+- [x] **Step 6: Run the full release gate**
 
 ```powershell
 npx prettier --write .
@@ -2206,7 +2208,7 @@ git status --short
 
 Expected: formatting, lint, TypeScript, Rust, contracts, plugin tests, adapter tests, migration tests, audit, release-boundary test, desktop build, and native E2E all PASS. `git status --short` lists only Task 14 files and any checked-off plan state.
 
-- [ ] **Step 7: Commit the native journey and documentation**
+- [x] **Step 7: Commit the native journey and documentation**
 
 ```powershell
 git add -- .github/workflows/ci.yml apps/desktop/src-tauri/src/providers/e2e_adapter.rs apps/desktop/src-tauri/src/providers/mod.rs apps/desktop/src-tauri/src/app_state.rs apps/desktop/src-tauri/src/e2e.rs apps/desktop/src-tauri/src/lib.rs apps/desktop/e2e/fixture-provider.ts apps/desktop/e2e/provider.e2e.ts apps/desktop/e2e/wdio.conf.ts docs/development.md

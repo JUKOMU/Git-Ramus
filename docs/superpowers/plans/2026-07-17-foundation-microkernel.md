@@ -1,12 +1,14 @@
 # Foundation / Microkernel Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Build a bootable Git-Ramus desktop foundation with a Tauri/Rust trusted kernel, React shell, SQLite and Keychain abstractions, task center, typed plugin contracts, sandboxed plugin UI, permission gateway, and one working built-in plugin.
 
 **Architecture:** The Rust process owns persistence, secrets, plugin discovery, permission decisions, background job state, and a read-only custom protocol that serves verified plugin HTML with a network-denying response CSP. The trusted React shell renders navigation and hosts each plugin in a `sandbox="allow-scripts"` iframe; plugin messages cross a typed RPC bridge and are authorized by Rust before handlers run. This phase loads only bundled plugins, while later phases add Git/Release installation and upgrade hardening.
 
 **Tech Stack:** Tauri 2.11, Rust 1.88 (edition 2024), React 19.2, TypeScript 6, Vite 8, Zod 4, SQLite/rusqlite, keyring 4, Vitest/Testing Library, WebdriverIO Tauri service, npm workspaces.
+
+**Status:** Completed on `main`. Implemented by commits `778fc45` through `571ce80`, verified by `82f5b6e` and `571ce80`, and integrated by merge commit `125a116`.
 
 ---
 
@@ -89,7 +91,7 @@ It does not implement repositories, Git commands, identity profiles, Provider AP
 - Create: `.prettierrc.json`
 - Create: `.prettierignore`
 
-- [ ] **Step 1: Install and verify the Rust toolchain without changing project files**
+- [x] **Step 1: Install and verify the Rust toolchain without changing project files**
 
 Run in PowerShell:
 
@@ -106,7 +108,7 @@ cargo +1.88.0 --version
 
 Expected: both commands report version `1.88.0`; the current workspace observation `rustc: missing` is resolved.
 
-- [ ] **Step 2: Add the root workspace configuration**
+- [x] **Step 2: Add the root workspace configuration**
 
 Create `package.json`:
 
@@ -165,7 +167,7 @@ profile = "minimal"
 components = ["rustfmt", "clippy"]
 ```
 
-- [ ] **Step 3: Add strict shared TypeScript, lint, and format configuration**
+- [x] **Step 3: Add strict shared TypeScript, lint, and format configuration**
 
 Create `tsconfig.base.json`:
 
@@ -269,7 +271,7 @@ apps/desktop/src-tauri/resources/plugins/
 *.log
 ```
 
-- [ ] **Step 4: Generate the JavaScript lock file and verify root tooling**
+- [x] **Step 4: Generate the JavaScript lock file and verify root tooling**
 
 Run:
 
@@ -281,7 +283,7 @@ npm run lint
 
 Expected: npm creates `package-lock.json`; Prettier reports all tracked non-design files formatted; ESLint exits 0.
 
-- [ ] **Step 5: Commit repository tooling**
+- [x] **Step 5: Commit repository tooling**
 
 ```powershell
 git add .gitignore .nvmrc rust-toolchain.toml package.json package-lock.json tsconfig.base.json eslint.config.mjs .prettierrc.json .prettierignore
@@ -304,7 +306,7 @@ git commit -m "chore: bootstrap workspace tooling"
 - Create: `plugins/builtin-welcome/plugin.json`
 - Modify: `package-lock.json`
 
-- [ ] **Step 1: Create the package and a failing contract test**
+- [x] **Step 1: Create the package and a failing contract test**
 
 Create `packages/contracts/package.json`:
 
@@ -469,7 +471,7 @@ describe("shared contracts", () => {
 });
 ```
 
-- [ ] **Step 2: Run the test to prove the contracts do not exist yet**
+- [x] **Step 2: Run the test to prove the contracts do not exist yet**
 
 Run:
 
@@ -480,7 +482,7 @@ npm run test --workspace @git-ramus/contracts
 
 Expected: FAIL because `packages/contracts/src/index.ts` cannot be resolved.
 
-- [ ] **Step 3: Implement the plugin and RPC schemas**
+- [x] **Step 3: Implement the plugin and RPC schemas**
 
 Create `packages/contracts/src/plugin.ts`:
 
@@ -609,7 +611,7 @@ export type HostToPluginMessage = z.infer<typeof hostToPluginMessageSchema>;
 export type PluginToHostMessage = z.infer<typeof pluginToHostMessageSchema>;
 ```
 
-- [ ] **Step 4: Implement the job and error schemas and exports**
+- [x] **Step 4: Implement the job and error schemas and exports**
 
 Create `packages/contracts/src/errors.ts`:
 
@@ -697,7 +699,7 @@ export * from "./plugin";
 export * from "./rpc";
 ```
 
-- [ ] **Step 5: Verify the contracts pass type-check and tests**
+- [x] **Step 5: Verify the contracts pass type-check and tests**
 
 Run:
 
@@ -708,7 +710,7 @@ npm run test --workspace @git-ramus/contracts
 
 Expected: TypeScript exits 0 and Vitest reports 7 passing tests.
 
-- [ ] **Step 6: Commit shared contracts**
+- [x] **Step 6: Commit shared contracts**
 
 ```powershell
 git add packages/contracts plugins/builtin-welcome/package.json plugins/builtin-welcome/plugin.json package-lock.json
@@ -731,7 +733,7 @@ git commit -m "feat: define plugin host contracts"
 - Create: `apps/desktop/src-tauri/src/commands.rs`
 - Modify: `package-lock.json`
 
-- [ ] **Step 1: Add the desktop workspace and Rust dependencies**
+- [x] **Step 1: Add the desktop workspace and Rust dependencies**
 
 Create `apps/desktop/package.json`:
 
@@ -815,7 +817,7 @@ fn main() {
 
 Run `npm install` so the workspace and lock file include desktop dependencies.
 
-- [ ] **Step 2: Write a failing Rust test for stable application metadata**
+- [x] **Step 2: Write a failing Rust test for stable application metadata**
 
 Create `apps/desktop/src-tauri/src/commands.rs`:
 
@@ -978,7 +980,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml commands::tests
 
 Expected: FAIL with an unresolved import for `app_info`.
 
-- [ ] **Step 3: Implement the minimal Tauri command and application runner**
+- [x] **Step 3: Implement the minimal Tauri command and application runner**
 
 Insert this function above the test module in `apps/desktop/src-tauri/src/commands.rs`:
 
@@ -1019,7 +1021,7 @@ fn main() {
 }
 ```
 
-- [ ] **Step 4: Add the secure base Tauri configuration**
+- [x] **Step 4: Add the secure base Tauri configuration**
 
 Create `apps/desktop/src-tauri/tauri.conf.json`:
 
@@ -1070,7 +1072,7 @@ Create `apps/desktop/src-tauri/capabilities/default.json`:
 }
 ```
 
-- [ ] **Step 5: Verify Rust tests and formatting**
+- [x] **Step 5: Verify Rust tests and formatting**
 
 Run:
 
@@ -1082,7 +1084,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 
 Expected: all commands exit 0; the metadata and stable error-envelope tests pass.
 
-- [ ] **Step 6: Commit the Tauri process scaffold**
+- [x] **Step 6: Commit the Tauri process scaffold**
 
 ```powershell
 git add apps/desktop/package.json apps/desktop/src-tauri package-lock.json
@@ -1105,7 +1107,7 @@ git commit -m "feat: scaffold trusted Tauri host"
 - Create: `apps/desktop/src/test/setup.ts`
 - Create: `apps/desktop/src/__tests__/App.test.tsx`
 
-- [ ] **Step 1: Add frontend compiler and test configuration**
+- [x] **Step 1: Add frontend compiler and test configuration**
 
 Create `apps/desktop/tsconfig.json`:
 
@@ -1153,7 +1155,7 @@ Create `apps/desktop/src/vite-env.d.ts`:
 /// <reference types="vite/client" />
 ```
 
-- [ ] **Step 2: Write a failing shell test**
+- [x] **Step 2: Write a failing shell test**
 
 Create `apps/desktop/src/__tests__/App.test.tsx`:
 
@@ -1186,7 +1188,7 @@ npm run test --workspace @git-ramus/desktop
 
 Expected: FAIL because `src/App.tsx` and `src/lib/hostApi.ts` do not exist.
 
-- [ ] **Step 3: Implement the typed host API and trusted layout**
+- [x] **Step 3: Implement the typed host API and trusted layout**
 
 Create `apps/desktop/src/lib/hostApi.ts`:
 
@@ -1281,7 +1283,7 @@ export function App({ hostApi = tauriHostApi }: AppProps) {
 }
 ```
 
-- [ ] **Step 4: Add the frontend entrypoint and deterministic base styling**
+- [x] **Step 4: Add the frontend entrypoint and deterministic base styling**
 
 Create `apps/desktop/index.html`:
 
@@ -1419,7 +1421,7 @@ button {
 }
 ```
 
-- [ ] **Step 5: Verify shell tests, type-check, and web build**
+- [x] **Step 5: Verify shell tests, type-check, and web build**
 
 Run:
 
@@ -1431,7 +1433,7 @@ npm run build:web --workspace @git-ramus/desktop
 
 Expected: one passing test; TypeScript exits 0; Vite creates `apps/desktop/dist`.
 
-- [ ] **Step 6: Commit the trusted React shell**
+- [x] **Step 6: Commit the trusted React shell**
 
 ```powershell
 git add apps/desktop
@@ -1447,7 +1449,7 @@ git commit -m "feat: add trusted desktop shell"
 - Create: `apps/desktop/src-tauri/src/db/migrations.rs`
 - Modify: `apps/desktop/src-tauri/src/lib.rs`
 
-- [ ] **Step 1: Write failing database migration tests**
+- [x] **Step 1: Write failing database migration tests**
 
 Create `apps/desktop/src-tauri/src/db/mod.rs`:
 
@@ -1509,7 +1511,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml db::tests
 
 Expected: both tests FAIL because `Database::open_in_memory` and `with_connection` do not exist.
 
-- [ ] **Step 2: Add the explicit core schema**
+- [x] **Step 2: Add the explicit core schema**
 
 Create `apps/desktop/src-tauri/migrations/0001_core.sql`:
 
@@ -1563,7 +1565,7 @@ PRAGMA user_version = 1;
 COMMIT;
 ```
 
-- [ ] **Step 3: Implement database opening, configuration, and migrations**
+- [x] **Step 3: Implement database opening, configuration, and migrations**
 
 Replace the non-test portion of `apps/desktop/src-tauri/src/db/mod.rs` above `#[cfg(test)]` with:
 
@@ -1637,7 +1639,7 @@ pub(super) fn run(connection: &mut Connection) -> Result<(), AppError> {
 }
 ```
 
-- [ ] **Step 4: Run migration tests and the full Rust suite**
+- [x] **Step 4: Run migration tests and the full Rust suite**
 
 Run:
 
@@ -1648,7 +1650,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 
 Expected: both database tests and the full Rust suite pass.
 
-- [ ] **Step 5: Commit the database foundation**
+- [x] **Step 5: Commit the database foundation**
 
 ```powershell
 git add apps/desktop/src-tauri/migrations apps/desktop/src-tauri/src/db apps/desktop/src-tauri/src/lib.rs
@@ -1662,7 +1664,7 @@ git commit -m "feat: add core SQLite storage"
 - Create: `apps/desktop/src-tauri/src/secrets.rs`
 - Modify: `apps/desktop/src-tauri/src/lib.rs`
 
-- [ ] **Step 1: Write failing tests against an in-memory SecretStore**
+- [x] **Step 1: Write failing tests against an in-memory SecretStore**
 
 Create `apps/desktop/src-tauri/src/secrets.rs`:
 
@@ -1713,7 +1715,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml secrets::tests
 
 Expected: FAIL because `MemorySecretStore` does not implement the trait methods.
 
-- [ ] **Step 2: Implement the test store and production Keyring adapter**
+- [x] **Step 2: Implement the test store and production Keyring adapter**
 
 Insert these implementations before the test module in `apps/desktop/src-tauri/src/secrets.rs`:
 
@@ -1774,7 +1776,7 @@ impl SecretStore for KeyringSecretStore {
 }
 ```
 
-- [ ] **Step 3: Verify secrets are never serialized or exposed as commands**
+- [x] **Step 3: Verify secrets are never serialized or exposed as commands**
 
 Run:
 
@@ -1787,7 +1789,7 @@ if ($LASTEXITCODE -eq 0) { throw "secret APIs leaked into IPC: $matches" }
 
 Expected: the unit test passes and PowerShell prints `No secret APIs are exposed by commands.rs`.
 
-- [ ] **Step 4: Commit the secret-store boundary**
+- [x] **Step 4: Commit the secret-store boundary**
 
 ```powershell
 git add apps/desktop/src-tauri/src/secrets.rs apps/desktop/src-tauri/src/lib.rs
@@ -1804,7 +1806,7 @@ git commit -m "feat: add secure secret store abstraction"
 - Create: `apps/desktop/src-tauri/src/jobs/service.rs`
 - Modify: `apps/desktop/src-tauri/src/lib.rs`
 
-- [ ] **Step 1: Define the job model and failing transition tests**
+- [x] **Step 1: Define the job model and failing transition tests**
 
 Create `apps/desktop/src-tauri/src/jobs/model.rs`:
 
@@ -1979,7 +1981,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml jobs::service::test
 
 Expected: FAIL because lifecycle methods are not defined.
 
-- [ ] **Step 2: Implement job persistence**
+- [x] **Step 2: Implement job persistence**
 
 Replace `apps/desktop/src-tauri/src/jobs/repository.rs` with:
 
@@ -2075,7 +2077,7 @@ impl JobRepository {
 }
 ```
 
-- [ ] **Step 3: Implement guarded job transitions**
+- [x] **Step 3: Implement guarded job transitions**
 
 Replace the `impl JobService` block in `apps/desktop/src-tauri/src/jobs/service.rs` with:
 
@@ -2192,7 +2194,7 @@ impl JobService {
 }
 ```
 
-- [ ] **Step 4: Run job and full Rust tests**
+- [x] **Step 4: Run job and full Rust tests**
 
 Run:
 
@@ -2204,7 +2206,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 
 Expected: all three lifecycle tests and the full suite pass.
 
-- [ ] **Step 5: Commit persistent jobs**
+- [x] **Step 5: Commit persistent jobs**
 
 ```powershell
 git add apps/desktop/src-tauri/src/jobs apps/desktop/src-tauri/src/lib.rs
@@ -2220,7 +2222,7 @@ git commit -m "feat: add persistent job service"
 - Create: `apps/desktop/src-tauri/src/plugins/registry.rs`
 - Modify: `apps/desktop/src-tauri/src/lib.rs`
 
-- [ ] **Step 1: Write failing Manifest parity and path-safety tests**
+- [x] **Step 1: Write failing Manifest parity and path-safety tests**
 
 Create `apps/desktop/src-tauri/src/plugins/mod.rs`:
 
@@ -2328,7 +2330,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml plugins::manifest::
 
 Expected: FAIL because `PluginManifest::validate` does not exist.
 
-- [ ] **Step 2: Implement deterministic Manifest validation**
+- [x] **Step 2: Implement deterministic Manifest validation**
 
 Insert this implementation before the tests in `apps/desktop/src-tauri/src/plugins/manifest.rs`:
 
@@ -2424,7 +2426,7 @@ fn is_capability_part(value: &str) -> bool {
 }
 ```
 
-- [ ] **Step 3: Write failing bundled-plugin registry tests**
+- [x] **Step 3: Write failing bundled-plugin registry tests**
 
 Create `apps/desktop/src-tauri/src/plugins/registry.rs`:
 
@@ -2507,7 +2509,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml plugins::registry::
 
 Expected: FAIL because registry discovery methods are undefined.
 
-- [ ] **Step 4: Implement registry discovery without following entrypoint escapes**
+- [x] **Step 4: Implement registry discovery without following entrypoint escapes**
 
 Insert this implementation before the tests in `apps/desktop/src-tauri/src/plugins/registry.rs`:
 
@@ -2580,7 +2582,7 @@ impl PluginRegistry {
 }
 ```
 
-- [ ] **Step 5: Verify Rust/TypeScript Manifest parity and registry safety**
+- [x] **Step 5: Verify Rust/TypeScript Manifest parity and registry safety**
 
 Run:
 
@@ -2591,7 +2593,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml plugins::
 
 Expected: TypeScript contract tests pass; four Rust plugin tests pass.
 
-- [ ] **Step 6: Commit bundled-plugin discovery**
+- [x] **Step 6: Commit bundled-plugin discovery**
 
 ```powershell
 git add apps/desktop/src-tauri/src/plugins apps/desktop/src-tauri/src/lib.rs
@@ -2605,7 +2607,7 @@ git commit -m "feat: discover bundled plugins safely"
 - Create: `apps/desktop/src-tauri/src/plugins/permissions.rs`
 - Modify: `apps/desktop/src-tauri/src/plugins/mod.rs`
 
-- [ ] **Step 1: Write failing permission grant, denial, and revocation tests**
+- [x] **Step 1: Write failing permission grant, denial, and revocation tests**
 
 Create `apps/desktop/src-tauri/src/plugins/permissions.rs`:
 
@@ -2683,7 +2685,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml plugins::permission
 
 Expected: FAIL because gateway methods are undefined.
 
-- [ ] **Step 2: Implement exact-resource grants and revocation**
+- [x] **Step 2: Implement exact-resource grants and revocation**
 
 Insert this implementation before the tests in `apps/desktop/src-tauri/src/plugins/permissions.rs`:
 
@@ -2746,7 +2748,7 @@ impl PermissionGateway {
 }
 ```
 
-- [ ] **Step 3: Add a negative test for an undeclared permission expansion**
+- [x] **Step 3: Add a negative test for an undeclared permission expansion**
 
 Append this test inside the existing test module:
 
@@ -2765,7 +2767,7 @@ fn undeclared_capability_is_never_granted() {
 }
 ```
 
-- [ ] **Step 4: Verify permission tests and SQL formatting**
+- [x] **Step 4: Verify permission tests and SQL formatting**
 
 Run:
 
@@ -2776,7 +2778,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml plugins::permission
 
 Expected: three permission tests pass.
 
-- [ ] **Step 5: Commit the permission gateway**
+- [x] **Step 5: Commit the permission gateway**
 
 ```powershell
 git add apps/desktop/src-tauri/src/plugins/permissions.rs apps/desktop/src-tauri/src/plugins/mod.rs
@@ -2795,7 +2797,7 @@ git commit -m "feat: enforce plugin permission grants"
 - Create: `packages/plugin-sdk/src/__tests__/client.test.ts`
 - Modify: `package-lock.json`
 
-- [ ] **Step 1: Create the SDK package and a failing request lifecycle test**
+- [x] **Step 1: Create the SDK package and a failing request lifecycle test**
 
 Create `packages/plugin-sdk/package.json`:
 
@@ -2897,7 +2899,7 @@ npm run test --workspace @git-ramus/plugin-sdk
 
 Expected: FAIL because `src/client.ts` does not exist.
 
-- [ ] **Step 2: Implement the transport-neutral client with correlated requests**
+- [x] **Step 2: Implement the transport-neutral client with correlated requests**
 
 Create `packages/plugin-sdk/src/client.ts`:
 
@@ -2987,7 +2989,7 @@ function settle(request: PendingRequest, result: RpcResult) {
 }
 ```
 
-- [ ] **Step 3: Implement the browser transport with parent-source filtering**
+- [x] **Step 3: Implement the browser transport with parent-source filtering**
 
 Create `packages/plugin-sdk/src/browserTransport.ts`:
 
@@ -3028,7 +3030,7 @@ export * from "./browserTransport";
 export * from "./client";
 ```
 
-- [ ] **Step 4: Verify SDK tests and contracts**
+- [x] **Step 4: Verify SDK tests and contracts**
 
 Run:
 
@@ -3040,7 +3042,7 @@ npm run test --workspace @git-ramus/contracts
 
 Expected: all commands pass; the SDK test reports one passing request lifecycle.
 
-- [ ] **Step 5: Commit the public plugin SDK**
+- [x] **Step 5: Commit the public plugin SDK**
 
 ```powershell
 git add packages/plugin-sdk package-lock.json
@@ -3057,7 +3059,7 @@ git commit -m "feat: add typed plugin SDK"
 - Create: `apps/desktop/src/plugins/__tests__/PluginFrame.test.tsx`
 - Modify: `apps/desktop/src/lib/hostApi.ts`
 
-- [ ] **Step 1: Write failing sandbox and RPC authorization tests**
+- [x] **Step 1: Write failing sandbox and RPC authorization tests**
 
 Create `apps/desktop/src/plugins/__tests__/PluginFrame.test.tsx`:
 
@@ -3185,7 +3187,7 @@ npm run test --workspace @git-ramus/desktop -- PluginFrame
 
 Expected: FAIL because `PluginFrame` and `rpcRouter` do not exist and `HostApi` lacks plugin methods.
 
-- [ ] **Step 2: Extend the typed HostApi without exposing a generic invoke escape hatch**
+- [x] **Step 2: Extend the typed HostApi without exposing a generic invoke escape hatch**
 
 Replace `apps/desktop/src/lib/hostApi.ts` with:
 
@@ -3252,7 +3254,7 @@ const hostApi: HostApi = {
 };
 ```
 
-- [ ] **Step 3: Implement deterministic CSP injection**
+- [x] **Step 3: Implement deterministic CSP injection**
 
 Create `apps/desktop/src/plugins/sandboxDocument.ts`:
 
@@ -3279,7 +3281,7 @@ export function buildSandboxUrl(html: string): string {
 }
 ```
 
-- [ ] **Step 4: Implement the explicit RPC route table**
+- [x] **Step 4: Implement the explicit RPC route table**
 
 Create `apps/desktop/src/plugins/rpcRouter.ts`:
 
@@ -3342,7 +3344,7 @@ function isEchoParams(value: unknown): value is { message: string } {
 }
 ```
 
-- [ ] **Step 5: Implement the iframe message boundary**
+- [x] **Step 5: Implement the iframe message boundary**
 
 Create `apps/desktop/src/plugins/PluginFrame.tsx`:
 
@@ -3446,7 +3448,7 @@ function toPluginError(error: unknown, pluginId: string): ErrorEnvelope {
 }
 ```
 
-- [ ] **Step 6: Verify sandbox, routing, lint, and type safety**
+- [x] **Step 6: Verify sandbox, routing, lint, and type safety**
 
 Run:
 
@@ -3458,7 +3460,7 @@ npm run lint
 
 Expected: four PluginFrame tests pass; TypeScript and ESLint exit 0.
 
-- [ ] **Step 7: Commit the sandboxed host bridge**
+- [x] **Step 7: Commit the sandboxed host bridge**
 
 ```powershell
 git add apps/desktop/src/plugins apps/desktop/src/lib/hostApi.ts apps/desktop/src/__tests__/App.test.tsx
@@ -3481,7 +3483,7 @@ git commit -m "feat: sandbox plugin UI and authorize RPC"
 - Modify: `apps/desktop/src-tauri/tauri.conf.json`
 - Modify: `package-lock.json`
 
-- [ ] **Step 1: Add the plugin build and a failing UI behavior test**
+- [x] **Step 1: Add the plugin build and a failing UI behavior test**
 
 Replace `plugins/builtin-welcome/package.json` with:
 
@@ -3551,7 +3553,7 @@ npm run test --workspace @git-ramus/builtin-welcome
 
 Expected: FAIL because `src/main.ts` does not exist.
 
-- [ ] **Step 2: Implement the plugin UI using only the public SDK**
+- [x] **Step 2: Implement the plugin UI using only the public SDK**
 
 Create `plugins/builtin-welcome/src/main.ts`:
 
@@ -3686,7 +3688,7 @@ Create `plugins/builtin-welcome/index.html`:
 </html>
 ```
 
-- [ ] **Step 3: Configure a single-file plugin bundle**
+- [x] **Step 3: Configure a single-file plugin bundle**
 
 Create `plugins/builtin-welcome/vite.config.ts`:
 
@@ -3713,7 +3715,7 @@ Add this import as the first line of `plugins/builtin-welcome/src/main.ts`:
 import "./style.css";
 ```
 
-- [ ] **Step 4: Add deterministic built-in artifact staging**
+- [x] **Step 4: Add deterministic built-in artifact staging**
 
 Create `scripts/sync-builtin-plugins.mjs`:
 
@@ -3758,7 +3760,7 @@ Change `beforeBuildCommand` to:
 "beforeBuildCommand": "npm run prepare:desktop"
 ```
 
-- [ ] **Step 5: Verify the plugin test, single-file output, and staged resource**
+- [x] **Step 5: Verify the plugin test, single-file output, and staged resource**
 
 Run:
 
@@ -3770,7 +3772,7 @@ Select-String -Path apps/desktop/src-tauri/resources/plugins/git-ramus.welcome/u
 
 Expected: the unit test passes; `ui.html` is a single HTML file containing the Welcome markup and bundled script.
 
-- [ ] **Step 6: Commit the Welcome plugin source and staging script**
+- [x] **Step 6: Commit the Welcome plugin source and staging script**
 
 ```powershell
 git add plugins/builtin-welcome scripts/sync-builtin-plugins.mjs apps/desktop/package.json apps/desktop/src-tauri/tauri.conf.json package-lock.json
@@ -3791,7 +3793,7 @@ git commit -m "feat: add bundled welcome plugin"
 - Create: `apps/desktop/src/__tests__/FoundationFlow.test.tsx`
 - Modify: `apps/desktop/src/__tests__/App.test.tsx`
 
-- [ ] **Step 1: Write a failing frontend integration test**
+- [x] **Step 1: Write a failing frontend integration test**
 
 Create `apps/desktop/src/__tests__/FoundationFlow.test.tsx`:
 
@@ -3866,7 +3868,7 @@ npm run test --workspace @git-ramus/desktop -- FoundationFlow
 
 Expected: FAIL because `App` does not load plugins/jobs and `PluginHost` / `TaskCenter` do not exist.
 
-- [ ] **Step 2: Compose kernel services from Tauri application paths**
+- [x] **Step 2: Compose kernel services from Tauri application paths**
 
 Create `apps/desktop/src-tauri/src/app_state.rs`:
 
@@ -4014,7 +4016,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: Implement the narrow command surface and asynchronous echo job**
+- [x] **Step 3: Implement the narrow command surface and asynchronous echo job**
 
 Replace `apps/desktop/src-tauri/src/commands.rs` with:
 
@@ -4156,7 +4158,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 4: Register AppState and all commands**
+- [x] **Step 4: Register AppState and all commands**
 
 Replace `apps/desktop/src-tauri/src/lib.rs` with:
 
@@ -4192,7 +4194,7 @@ pub fn run() {
 }
 ```
 
-- [ ] **Step 5: Render plugin navigation and the persistent task center**
+- [x] **Step 5: Render plugin navigation and the persistent task center**
 
 Create `apps/desktop/src/plugins/PluginHost.tsx`:
 
@@ -4319,7 +4321,7 @@ export function AppShell(props: AppShellProps) {
 }
 ```
 
-- [ ] **Step 6: Load host state and react to job events**
+- [x] **Step 6: Load host state and react to job events**
 
 Replace `apps/desktop/src/App.tsx` with:
 
@@ -4403,7 +4405,7 @@ function upsertJob(jobs: Job[], update: Job): Job[] {
 }
 ```
 
-- [ ] **Step 7: Run Rust, frontend, and full workspace verification**
+- [x] **Step 7: Run Rust, frontend, and full workspace verification**
 
 Run:
 
@@ -4420,7 +4422,7 @@ npm run desktop:build
 
 Expected: all Rust and frontend tests pass; `FoundationFlow` passes; Tauri produces the no-bundle desktop executable.
 
-- [ ] **Step 8: Manually smoke the bundled plugin and task flow**
+- [x] **Step 8: Manually smoke the bundled plugin and task flow**
 
 Run:
 
@@ -4430,7 +4432,7 @@ npm run desktop:dev
 
 Expected: the app opens; Welcome appears in navigation; selecting it renders the sandboxed page; “Run background echo task” creates a visible Task Center item that reaches 100%.
 
-- [ ] **Step 9: Commit the integrated microkernel vertical slice**
+- [x] **Step 9: Commit the integrated microkernel vertical slice**
 
 ```powershell
 git add apps/desktop/src apps/desktop/src-tauri/src
@@ -4453,7 +4455,7 @@ git commit -m "feat: integrate microkernel plugin flow"
 - Create: `docs/development.md`
 - Modify: `package-lock.json`
 
-- [ ] **Step 1: Add test-only WebdriverIO dependencies and scripts**
+- [x] **Step 1: Add test-only WebdriverIO dependencies and scripts**
 
 Add these dev dependencies to `apps/desktop/package.json`:
 
@@ -4481,7 +4483,7 @@ Replace the existing desktop `typecheck` script with:
 
 Run `npm install` to update `package-lock.json`.
 
-- [ ] **Step 2: Register the embedded WebDriver only in E2E builds**
+- [x] **Step 2: Register the embedded WebDriver only in E2E builds**
 
 Add to `apps/desktop/src-tauri/Cargo.toml`:
 
@@ -4534,7 +4536,7 @@ Add `"wdio-webdriver:default"` to the `permissions` array in `apps/desktop/src-t
 
 Do not expose the richer `tauri-plugin-wdio` frontend bridge. This journey uses only basic WebDriver element operations, so no execute, mock, or log-forwarding commands enter the application.
 
-- [ ] **Step 3: Write the native desktop journey before configuring the runner**
+- [x] **Step 3: Write the native desktop journey before configuring the runner**
 
 Create `apps/desktop/e2e/foundation.e2e.ts`:
 
@@ -4569,7 +4571,7 @@ npm run test:e2e --workspace @git-ramus/desktop
 
 Expected: FAIL because `e2e/wdio.conf.ts` does not exist.
 
-- [ ] **Step 4: Configure the embedded Tauri WebDriver runner**
+- [x] **Step 4: Configure the embedded Tauri WebDriver runner**
 
 Create `apps/desktop/e2e/tsconfig.json`:
 
@@ -4618,7 +4620,7 @@ export const config: WebdriverIO.Config = {
 };
 ```
 
-- [ ] **Step 5: Build and run the native E2E locally**
+- [x] **Step 5: Build and run the native E2E locally**
 
 Run:
 
@@ -4630,7 +4632,7 @@ npm run test:e2e --workspace @git-ramus/desktop
 
 Expected: desktop and E2E TypeScript exit 0; WebdriverIO reports one passing native desktop journey.
 
-- [ ] **Step 6: Add Windows/Linux CI with separate fast and E2E gates**
+- [x] **Step 6: Add Windows/Linux CI with separate fast and E2E gates**
 
 Create `.github/workflows/ci.yml`:
 
@@ -4702,7 +4704,7 @@ jobs:
         run: xvfb-run -a npm run test:e2e --workspace @git-ramus/desktop
 ```
 
-- [ ] **Step 7: Document exact development and verification commands**
+- [x] **Step 7: Document exact development and verification commands**
 
 Create `docs/development.md`:
 
@@ -4746,7 +4748,7 @@ npm run test:e2e --workspace @git-ramus/desktop
 Built-in plugin resources are generated under `apps/desktop/src-tauri/resources/plugins/` and are intentionally ignored by Git.
 ````
 
-- [ ] **Step 8: Run the complete Foundation release gate**
+- [x] **Step 8: Run the complete Foundation release gate**
 
 Run:
 
@@ -4765,7 +4767,7 @@ git status --short
 
 Expected: all commands pass; native E2E reports one passing journey; `git status --short` lists only the intended E2E, CI, and development-documentation changes before commit.
 
-- [ ] **Step 9: Commit the verified Foundation phase**
+- [x] **Step 9: Commit the verified Foundation phase**
 
 ```powershell
 git add apps/desktop .github/workflows/ci.yml docs/development.md package-lock.json
@@ -4774,14 +4776,14 @@ git commit -m "test: gate the foundation microkernel"
 
 ## Final verification checklist
 
-- [ ] `npm run check` passes.
-- [ ] `cargo fmt --check`, `cargo clippy -D warnings`, and `cargo test` pass.
-- [ ] `npm run desktop:build` produces a no-bundle Tauri executable.
-- [ ] The Welcome plugin appears through Manifest contributions, not hard-coded navigation.
-- [ ] The plugin iframe has only `allow-scripts` and a CSP with `default-src 'none'` / `connect-src 'none'`.
-- [ ] An unauthorized capability/resource pair returns `allowed: false` and never reaches a handler.
-- [ ] IPC errors preserve stable category, failed-step, retry timing, and recovery-action fields without exposing secrets.
-- [ ] The echo task persists in SQLite, emits progress, supports cancel, and appears in Task Center.
-- [ ] No IPC command returns a secret value.
-- [ ] Native WebdriverIO E2E passes on the implementation machine.
-- [ ] `git diff --check` reports no whitespace errors.
+- [x] `npm run check` passes.
+- [x] `cargo fmt --check`, `cargo clippy -D warnings`, and `cargo test` pass.
+- [x] `npm run desktop:build` produces a no-bundle Tauri executable.
+- [x] The Welcome plugin appears through Manifest contributions, not hard-coded navigation.
+- [x] The plugin iframe has only `allow-scripts` and a CSP with `default-src 'none'` / `connect-src 'none'`.
+- [x] An unauthorized capability/resource pair returns `allowed: false` and never reaches a handler.
+- [x] IPC errors preserve stable category, failed-step, retry timing, and recovery-action fields without exposing secrets.
+- [x] The echo task persists in SQLite, emits progress, supports cancel, and appears in Task Center.
+- [x] No IPC command returns a secret value.
+- [x] Native WebdriverIO E2E passes on the implementation machine.
+- [x] `git diff --check` reports no whitespace errors.
