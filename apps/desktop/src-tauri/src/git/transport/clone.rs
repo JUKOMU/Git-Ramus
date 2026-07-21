@@ -1975,7 +1975,7 @@ mod tests {
         let parent = tempfile::tempdir().unwrap();
         let paths = ClonePaths::allocate(parent.path(), "repository", OPERATION_ID).unwrap();
         assert!(!paths.staging.exists());
-        assert_eq!(paths.marker.parent(), Some(parent.path()));
+        assert_eq!(paths.marker.parent(), Some(paths.parent.as_path()));
         paths.write_marker().unwrap();
         std::fs::create_dir(&paths.staging).unwrap();
         assert!(paths.cleanup_owned_staging().is_ok());
