@@ -110,22 +110,7 @@ export function InstancePanel({
         ))}
       </div>
 
-      <form
-        className="form-stack"
-        aria-label="Create Provider instance"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void run(async () => {
-            const created = await api.createInstance({
-              providerKind: kind,
-              displayName,
-              baseUrl,
-              customCaAction: kind === "gitlab" && customCa ? "selectFile" : "none"
-            });
-            if (created !== null) await onRefresh(created.id);
-          });
-        }}
-      >
+      <form className="form-stack" aria-label="Create Provider instance">
         <h3>Add instance</h3>
         <label>
           Provider type
@@ -171,7 +156,22 @@ export function InstancePanel({
             </label>
           </>
         ) : null}
-        <button type="submit" disabled={busy || displayName.trim().length === 0}>
+        <button
+          type="button"
+          disabled={busy || displayName.trim().length === 0}
+          onClick={(event) => {
+            if (event.currentTarget.form?.reportValidity() === false) return;
+            void run(async () => {
+              const created = await api.createInstance({
+                providerKind: kind,
+                displayName,
+                baseUrl,
+                customCaAction: kind === "gitlab" && customCa ? "selectFile" : "none"
+              });
+              if (created !== null) await onRefresh(created.id);
+            });
+          }}
+        >
           Create instance
         </button>
       </form>
@@ -209,22 +209,7 @@ export function InstancePanel({
           >
             Delete instance
           </button>
-          <form
-            className="form-stack"
-            aria-label="Edit Provider instance"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void run(async () => {
-                const updated = await api.updateInstance({
-                  instanceId: selected.id,
-                  displayName: editDisplayName,
-                  baseUrl: editBaseUrl,
-                  customCaAction: selected.providerKind === "github" ? "keep" : editCustomCaAction
-                });
-                if (updated !== null) await onRefresh(updated.id, selected.id);
-              });
-            }}
-          >
+          <form className="form-stack" aria-label="Edit Provider instance">
             <h3>Edit instance</h3>
             <label>
               Display name
@@ -262,10 +247,22 @@ export function InstancePanel({
               </label>
             ) : null}
             <button
-              type="submit"
+              type="button"
               disabled={
                 busy || editDisplayName.trim().length === 0 || editBaseUrl.trim().length === 0
               }
+              onClick={(event) => {
+                if (event.currentTarget.form?.reportValidity() === false) return;
+                void run(async () => {
+                  const updated = await api.updateInstance({
+                    instanceId: selected.id,
+                    displayName: editDisplayName,
+                    baseUrl: editBaseUrl,
+                    customCaAction: selected.providerKind === "github" ? "keep" : editCustomCaAction
+                  });
+                  if (updated !== null) await onRefresh(updated.id, selected.id);
+                });
+              }}
             >
               Save instance
             </button>

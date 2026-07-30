@@ -3,7 +3,7 @@ import type {
   IdentityProfile,
   IdentityUpdateRequest
 } from "@git-ramus/contracts";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { GitClientApi } from "../api";
 import { normalizeError } from "../api";
 
@@ -113,8 +113,7 @@ export function IdentitiesView({ api }: IdentitiesViewProps) {
     setOperation(null);
   };
 
-  const createIdentity = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  const createIdentity = async () => {
     if (loading || !validDraft(draft) || !beginOperation({ kind: "create" })) return;
     const generation = generationRef.current;
     const request = identityRequest(draft);
@@ -144,8 +143,7 @@ export function IdentitiesView({ api }: IdentitiesViewProps) {
     }
   };
 
-  const updateIdentity = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  const updateIdentity = async () => {
     if (
       editingIdentity === null ||
       !validDraft(draft) ||
@@ -266,11 +264,7 @@ export function IdentitiesView({ api }: IdentitiesViewProps) {
 
       <section className="card identity-editor">
         <h3>{editingIdentity === null ? "New identity" : "Edit identity"}</h3>
-        <form
-          onSubmit={(event) =>
-            void (editingIdentity === null ? createIdentity(event) : updateIdentity(event))
-          }
-        >
+        <form>
           <div className="form-grid identity-form-grid">
             <label>
               Profile name
@@ -390,7 +384,14 @@ export function IdentitiesView({ api }: IdentitiesViewProps) {
             </label>
           ) : null}
           <div className="button-row identity-form-actions">
-            <button type="submit" disabled={busy || loading || !validDraft(draft)}>
+            <button
+              type="button"
+              disabled={busy || loading || !validDraft(draft)}
+              onClick={(event) => {
+                if (event.currentTarget.form?.reportValidity() === false) return;
+                void (editingIdentity === null ? createIdentity() : updateIdentity());
+              }}
+            >
               {operation?.kind === "create"
                 ? "Creating identity…"
                 : operation?.kind === "update"

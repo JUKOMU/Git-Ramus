@@ -4,7 +4,7 @@ import type {
   TransportProfileSummary,
   TransportProfileUpdateRequest
 } from "@git-ramus/contracts";
-import { useState, type FormEvent } from "react";
+import { useState } from "react";
 
 export type TransportProfileMutation =
   TransportProfileCreateRequest | TransportProfileUpdateRequest;
@@ -30,8 +30,7 @@ export function TransportProfileForm({
   const valid =
     displayName.trim().length > 0 && (kind === "ssh" || httpsUsername.trim().length > 0);
 
-  const submitHttps = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  const submitHttps = () => {
     if (!valid || busy) return;
     const common = {
       kind: "https" as const,
@@ -66,16 +65,7 @@ export function TransportProfileForm({
           </h3>
         </div>
       </header>
-      <form
-        onSubmit={
-          kind === "https"
-            ? submitHttps
-            : (event) => {
-                event.preventDefault();
-                if (profile !== null) submitSsh("keep");
-              }
-        }
-      >
+      <form>
         <div className="form-grid transport-profile-form-grid">
           <label>
             Profile name
@@ -125,7 +115,15 @@ export function TransportProfileForm({
         )}
         <div className="button-row transport-profile-actions">
           {kind === "https" || profile !== null ? (
-            <button type="submit" disabled={busy || !valid}>
+            <button
+              type="button"
+              disabled={busy || !valid}
+              onClick={(event) => {
+                if (event.currentTarget.form?.reportValidity() === false) return;
+                if (kind === "https") submitHttps();
+                else submitSsh("keep");
+              }}
+            >
               {busy ? "Saving profile…" : "Save profile"}
             </button>
           ) : null}
