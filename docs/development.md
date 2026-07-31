@@ -43,8 +43,23 @@ contain those fixture handlers or the transport URL rewrite, even if it is built
 
 ```powershell
 npm run build:e2e --workspace @git-ramus/desktop
+npm run test:e2e:plugin-forms --workspace @git-ramus/desktop
 npm run test:e2e --workspace @git-ramus/desktop
 ```
+
+Run `build:e2e` before either native test command. The sandboxed-form test uses the external
+WebDriver provider and requires `tauri-driver`; its configuration can install `tauri-driver`
+automatically, and on Windows it can also download EdgeDriver. It switches into the real opaque
+`sandbox="allow-scripts"` Git Client iframe, fills and clicks the Identity form, observes only the
+Host-side RPC method/status markers, and confirms the result with the production
+`git_identity_list` command against the isolated E2E database. It does not add `allow-forms` or
+`allow-same-origin`, bypass RPC authorization, or expose form values, credentials, RPC parameters,
+database paths, or command results through Host DOM attributes.
+
+Run the external sandboxed-form test and the four embedded journeys serially. When the external run
+finishes, its launcher service shuts down the external driver; on Windows it terminates the exact
+driver process trees tracked by that service. This releases the external driver port before the
+embedded suite starts on port `4445`, so the normal embedded journeys can run immediately afterward.
 
 Provider discovery unit and integration checks can be run without a network account:
 
@@ -134,13 +149,14 @@ and confirm a local remote binding. Git transport remains the user's normal SSH/
 Provider discovery slice does not replace Git authentication or push behavior.
 
 The production plugin frame remains an opaque, cross-origin `sandbox="allow-scripts"` iframe. The
-journeys never read its DOM and never add `allow-same-origin`. Host-side data attributes expose only
-the contribution route, validated theme ID/density, RPC method names, and completion status; they do
-not expose RPC parameters, paths, request/session IDs, credentials, or command results. Git Client
-operations use the normal production Tauri commands and DTOs from the host page, matching the
-Foundation journey's approach for an opaque frame. The test-only service wrapper disables only the
-stock service's optional auto-focus hook, which requires the richer `tauri-plugin-wdio` frontend
-bridge; that bridge is not shipped by Git-Ramus.
+four embedded journeys (Foundation, Git Client, Provider, and Git Transport) never read its DOM and
+never add `allow-same-origin`. Host-side data attributes expose only the contribution route,
+validated theme ID/density, RPC method names, and completion status; they do not expose RPC
+parameters, paths, request/session IDs, credentials, or command results. Git Client operations use
+the normal production Tauri commands and DTOs from the host page, matching the Foundation journey's
+approach for an opaque frame. The test-only embedded service wrapper disables only the stock
+service's optional auto-focus hook, which requires the richer `tauri-plugin-wdio` frontend bridge;
+that bridge is not shipped by Git-Ramus.
 
 ### Git Client fixture and cleanup
 

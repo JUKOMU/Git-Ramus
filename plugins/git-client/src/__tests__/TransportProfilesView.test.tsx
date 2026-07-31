@@ -40,7 +40,9 @@ describe("TransportProfilesView", () => {
     expect(screen.getByLabelText("Profile name")).toHaveAttribute("maxlength", "128");
     await user.type(screen.getByLabelText("Profile name"), "Work HTTPS");
     await user.type(screen.getByLabelText("HTTPS username"), "creator");
-    await user.click(screen.getByRole("button", { name: "Save profile" }));
+    const createHttps = screen.getByRole("button", { name: "Save profile" });
+    expect(createHttps).toHaveAttribute("type", "button");
+    await user.click(createHttps);
     expect(api.createTransportProfile).toHaveBeenNthCalledWith(1, {
       kind: "https",
       displayName: "Work HTTPS",
@@ -85,7 +87,9 @@ describe("TransportProfilesView", () => {
     await user.type(screen.getByLabelText("Profile name"), updated.displayName);
     await user.clear(screen.getByLabelText("HTTPS username"));
     await user.type(screen.getByLabelText("HTTPS username"), updated.httpsUsername);
-    await user.click(screen.getByRole("button", { name: "Save profile" }));
+    const saveHttps = screen.getByRole("button", { name: "Save profile" });
+    expect(saveHttps).toHaveAttribute("type", "button");
+    await user.click(saveHttps);
 
     expect(api.updateTransportProfile).toHaveBeenCalledWith({
       kind: "https",
@@ -108,7 +112,9 @@ describe("TransportProfilesView", () => {
     expect(
       screen.getByRole("checkbox", { name: "Use only the selected SSH identity" })
     ).not.toBeChecked();
-    await user.click(screen.getByRole("button", { name: "Save profile" }));
+    const saveSsh = screen.getByRole("button", { name: "Save profile" });
+    expect(saveSsh).toHaveAttribute("type", "button");
+    await user.click(saveSsh);
 
     expect(api.updateTransportProfile).toHaveBeenCalledWith({
       kind: "ssh",

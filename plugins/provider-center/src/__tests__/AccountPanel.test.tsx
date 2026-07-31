@@ -48,6 +48,11 @@ describe("AccountPanel", () => {
       />
     );
 
+    expect(screen.getByRole("button", { name: "Connect account" })).toHaveAttribute(
+      "type",
+      "button"
+    );
+
     await user.click(screen.getAllByRole("button", { name: "Delete…" })[1]!);
     const dialog = await screen.findByRole("dialog", { name: "Delete account" });
     await user.click(within(dialog).getByRole("radio", { name: "Reassign bindings" }));

@@ -45,8 +45,16 @@ describe("IdentitiesView", () => {
 
     await user.type(screen.getByLabelText("Profile name"), profile.displayName);
     await user.type(screen.getByLabelText("Git user name"), profile.userName);
-    await user.type(screen.getByLabelText("Git user email"), profile.userEmail);
-    await user.click(screen.getByRole("button", { name: "Create identity" }));
+    const email = screen.getByLabelText("Git user email");
+    await user.type(email, "invalid-email");
+    const create = screen.getByRole("button", { name: "Create identity" });
+    expect(create).toHaveAttribute("type", "button");
+    await user.click(create);
+    expect(api.createIdentity).not.toHaveBeenCalled();
+    await user.clear(email);
+    await user.type(email, profile.userEmail);
+    create.focus();
+    await user.keyboard("{Enter}");
 
     expect(api.createIdentity).toHaveBeenCalledWith({
       displayName: profile.displayName,
@@ -240,7 +248,9 @@ describe("IdentitiesView", () => {
     await user.selectOptions(screen.getByLabelText("Signing format"), updatedProfile.gpgFormat);
     await user.click(screen.getByRole("checkbox", { name: "Sign commits" }));
     await user.click(screen.getByRole("checkbox", { name: "Sign tags" }));
-    await user.click(screen.getByRole("button", { name: "Save identity" }));
+    const save = screen.getByRole("button", { name: "Save identity" });
+    expect(save).toHaveAttribute("type", "button");
+    await user.click(save);
 
     expect(api.updateIdentity).toHaveBeenCalledWith({
       profileId,

@@ -1,8 +1,9 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import type { ProviderCenterApi } from "../api";
+import { InstancePanel } from "../components/InstancePanel";
 
 afterEach(cleanup);
 
@@ -54,6 +55,71 @@ describe("Provider Center", () => {
     await screen.findByRole("heading", { name: "Providers" });
     expect(screen.queryByLabelText(/personal access token/i)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/secret/i)).not.toBeInTheDocument();
+  });
+
+  it("keeps native URL validation before the explicit instance command", async () => {
+    const user = userEvent.setup();
+    const fake = api();
+    render(
+      <InstancePanel
+        api={fake}
+        instances={[]}
+        selectedInstanceId={null}
+        onSelect={vi.fn()}
+        onRefresh={vi.fn(async () => undefined)}
+      />
+    );
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Provider type" }), "gitlab");
+    const baseUrl = screen.getByRole("textbox", { name: "Base URL" });
+    await user.clear(baseUrl);
+    await user.type(baseUrl, "not-a-url");
+    await user.click(screen.getByRole("button", { name: "Create instance" }));
+
+    expect(fake.createInstance).not.toHaveBeenCalled();
+  });
+
+  it("creates and updates instances through explicit command buttons", async () => {
+    const user = userEvent.setup();
+    const fake = api();
+    const selected = instance("a");
+    const created = instance("b");
+    vi.mocked(fake.createInstance).mockResolvedValue(created);
+    vi.mocked(fake.updateInstance).mockResolvedValue(selected);
+    const onRefresh = vi.fn(async () => undefined);
+
+    render(
+      <InstancePanel
+        api={fake}
+        instances={[selected]}
+        selectedInstanceId={selected.id}
+        onSelect={vi.fn()}
+        onRefresh={onRefresh}
+      />
+    );
+
+    const create = screen.getByRole("button", { name: "Create instance" });
+    expect(create).toHaveAttribute("type", "button");
+    await user.click(create);
+    expect(fake.createInstance).toHaveBeenCalledWith({
+      providerKind: "github",
+      displayName: "GitHub",
+      baseUrl: "https://github.com",
+      customCaAction: "none"
+    });
+    expect(onRefresh).toHaveBeenCalledWith(created.id);
+
+    const save = screen.getByRole("button", { name: "Save instance" });
+    await waitFor(() => expect(save).toBeEnabled());
+    expect(save).toHaveAttribute("type", "button");
+    await user.click(save);
+    expect(fake.updateInstance).toHaveBeenCalledWith({
+      instanceId: selected.id,
+      displayName: selected.displayName,
+      baseUrl: selected.baseUrl,
+      customCaAction: "keep"
+    });
+    expect(onRefresh).toHaveBeenCalledWith(selected.id, selected.id);
   });
 
   it("discards an account response from the previously selected instance", async () => {
